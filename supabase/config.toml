@@ -1,1 +1,7 @@
 project_id = "movtatkeydoydorkzfbi"
+
+[functions.process-document]
+verify_jwt = false
+
+[functions.search-documents]
+verify_jwt = false
