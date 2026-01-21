@@ -113,7 +113,7 @@ export function useChatThreads() {
     }
   };
 
-  const sendMessage = async (content: string, webhookUrl?: string) => {
+  const sendMessage = async (content: string, webhookMode?: string) => {
     if (!user) return;
     
     let threadId = currentThreadId;
@@ -160,44 +160,21 @@ export function useChatThreads() {
       );
     }
 
-    // If webhook URL is provided, call it
-    if (webhookUrl) {
+    // Call the chat-webhook edge function
+    if (webhookMode === 'edge-function') {
       try {
-        const response = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
+        const { data, error } = await supabase.functions.invoke('chat-webhook', {
+          body: {
             threadId,
             userId: user.id,
             message: content,
             messages: [...messages, userMessage],
-          }),
+          },
         });
 
-        if (response.ok) {
-          const data = await response.json();
-          
-          // Add assistant response if provided
-          if (data.response) {
-            const { data: assistantMessage, error: assistantError } = await supabase
-              .from('messages')
-              .insert({
-                thread_id: threadId,
-                user_id: user.id,
-                role: 'assistant',
-                content: data.response,
-              })
-              .select()
-              .single();
-
-            if (!assistantError && assistantMessage) {
-              setMessages((prev) => [...prev, assistantMessage as Message]);
-            }
-          }
-        } else {
-          // Fallback response
+        if (error) {
+          console.error('Edge function error:', error);
+          // Add fallback response
           const { data: assistantMessage } = await supabase
             .from('messages')
             .insert({
@@ -205,6 +182,38 @@ export function useChatThreads() {
               user_id: user.id,
               role: 'assistant',
               content: 'I apologize, but I encountered an issue processing your request. Please try again.',
+            })
+            .select()
+            .single();
+
+          if (assistantMessage) {
+            setMessages((prev) => [...prev, assistantMessage as Message]);
+          }
+        } else if (data?.response) {
+          // Add assistant response
+          const { data: assistantMessage, error: assistantError } = await supabase
+            .from('messages')
+            .insert({
+              thread_id: threadId,
+              user_id: user.id,
+              role: 'assistant',
+              content: data.response,
+            })
+            .select()
+            .single();
+
+          if (!assistantError && assistantMessage) {
+            setMessages((prev) => [...prev, assistantMessage as Message]);
+          }
+        } else {
+          // No response from webhook
+          const { data: assistantMessage } = await supabase
+            .from('messages')
+            .insert({
+              thread_id: threadId,
+              user_id: user.id,
+              role: 'assistant',
+              content: data?.error || 'I received your message but could not generate a response.',
             })
             .select()
             .single();
@@ -222,7 +231,7 @@ export function useChatThreads() {
             thread_id: threadId,
             user_id: user.id,
             role: 'assistant',
-            content: 'I apologize, but I was unable to connect to the processing service. Please check your webhook configuration and try again.',
+            content: 'I apologize, but I was unable to connect to the processing service. Please try again later.',
           })
           .select()
           .single();
@@ -232,14 +241,14 @@ export function useChatThreads() {
         }
       }
     } else {
-      // Demo response if no webhook configured
+      // No webhook configured - this shouldn't happen now
       const { data: assistantMessage } = await supabase
         .from('messages')
         .insert({
           thread_id: threadId,
           user_id: user.id,
           role: 'assistant',
-          content: 'I received your message. The chat webhook is not configured yet. Please ensure the VITE_N8N_CHAT_WEBHOOK_URL environment variable is set.',
+          content: 'Chat service is initializing. Please try again in a moment.',
         })
         .select()
         .single();
