@@ -9,10 +9,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useChatThreads } from '@/hooks/useChatThreads';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-
-// Universal webhook URLs from environment variables
-const CHAT_WEBHOOK_URL = import.meta.env.VITE_N8N_CHAT_WEBHOOK_URL;
-const INDEX_WEBHOOK_URL = import.meta.env.VITE_N8N_INDEX_WEBHOOK_URL;
+import { supabase } from '@/integrations/supabase/client';
 
 export default function Chat() {
   const { user, loading: authLoading } = useAuth();
@@ -43,28 +40,20 @@ export default function Chat() {
   }, [messages]);
 
   const handleIndexFiles = async () => {
-    if (!INDEX_WEBHOOK_URL) {
-      toast.error('Index webhook URL is not configured');
-      return;
-    }
-
     setIsIndexing(true);
     try {
-      const response = await fetch(INDEX_WEBHOOK_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const { data, error } = await supabase.functions.invoke('index-webhook', {
+        body: {
           action: 'index',
           userId: user?.id,
-        }),
+        },
       });
 
-      if (response.ok) {
-        toast.success('File indexing started successfully');
-      } else {
+      if (error) {
+        console.error('Index error:', error);
         toast.error('Failed to start file indexing');
+      } else {
+        toast.success('File indexing started successfully');
       }
     } catch (error) {
       console.error('Index error:', error);
@@ -75,7 +64,8 @@ export default function Chat() {
   };
 
   const handleSendMessage = (content: string) => {
-    sendMessage(content, CHAT_WEBHOOK_URL || undefined);
+    // Pass 'edge-function' as a signal to use the edge function
+    sendMessage(content, 'edge-function');
   };
 
   if (authLoading || threadsLoading) {
