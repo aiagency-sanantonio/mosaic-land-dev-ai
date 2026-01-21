@@ -81,20 +81,23 @@ serve(async (req) => {
     console.log('Generating query embedding...');
     const queryEmbedding = await generateEmbedding(query, openaiApiKey);
 
-    // Search for similar documents - pass embedding as JSON array string
+    // Search for similar documents using the text-based function
     console.log('Searching for similar documents...');
     console.log(`Embedding length: ${queryEmbedding.length}`);
     
-    // Format embedding as a Postgres vector literal
-    const embeddingLiteral = JSON.stringify(queryEmbedding);
+    // Format embedding as JSON array string for text-based RPC
+    const embeddingText = JSON.stringify(queryEmbedding);
     
-    const { data: documents, error: searchError } = await supabase.rpc('match_documents', {
-      query_embedding: embeddingLiteral,
+    const { data: documents, error: searchError } = await supabase.rpc('match_documents_text', {
+      query_embedding_text: embeddingText,
       match_threshold: match_threshold,
       match_count: match_count,
     });
     
-    console.log('Search result:', { documents: documents?.length, error: searchError });
+    if (searchError) {
+      console.error('Search error:', searchError);
+    }
+    console.log(`Found ${documents?.length || 0} matching documents`);
 
     if (searchError) {
       console.error('Error searching documents:', searchError);
