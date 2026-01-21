@@ -71,6 +71,45 @@ export type Database = {
         }
         Relationships: []
       }
+      indexing_status: {
+        Row: {
+          chunks_created: number | null
+          created_at: string
+          error_message: string | null
+          file_name: string | null
+          file_path: string
+          id: string
+          indexed_at: string | null
+          metadata: Json | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          chunks_created?: number | null
+          created_at?: string
+          error_message?: string | null
+          file_name?: string | null
+          file_path: string
+          id?: string
+          indexed_at?: string | null
+          metadata?: Json | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          chunks_created?: number | null
+          created_at?: string
+          error_message?: string | null
+          file_name?: string | null
+          file_path?: string
+          id?: string
+          indexed_at?: string | null
+          metadata?: Json | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       messages: {
         Row: {
           content: string
@@ -158,6 +197,25 @@ export type Database = {
       }
       match_documents_text: {
         Args: {
+          match_count?: number
+          match_threshold?: number
+          query_embedding_text: string
+        }
+        Returns: {
+          content: string
+          file_name: string
+          file_path: string
+          id: string
+          metadata: Json
+          similarity: number
+        }[]
+      }
+      match_documents_with_filters: {
+        Args: {
+          filter_date_from?: string
+          filter_date_to?: string
+          filter_file_type?: string
+          filter_project?: string
           match_count?: number
           match_threshold?: number
           query_embedding_text: string
