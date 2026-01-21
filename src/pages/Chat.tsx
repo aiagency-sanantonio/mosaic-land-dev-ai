@@ -7,31 +7,18 @@ import { ChatInput } from '@/components/chat/ChatInput';
 import { EmptyState } from '@/components/chat/EmptyState';
 import { useAuth } from '@/hooks/useAuth';
 import { useChatThreads } from '@/hooks/useChatThreads';
-import { Loader2, Settings } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+
+// Universal webhook URLs from environment variables
+const CHAT_WEBHOOK_URL = import.meta.env.VITE_N8N_CHAT_WEBHOOK_URL;
+const INDEX_WEBHOOK_URL = import.meta.env.VITE_N8N_INDEX_WEBHOOK_URL;
 
 export default function Chat() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isIndexing, setIsIndexing] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [webhookUrl, setWebhookUrl] = useState(() => 
-    localStorage.getItem('n8n_webhook_url') || ''
-  );
-  const [indexWebhookUrl, setIndexWebhookUrl] = useState(() =>
-    localStorage.getItem('n8n_index_webhook_url') || ''
-  );
 
   const {
     threads,
@@ -55,23 +42,15 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSaveSettings = () => {
-    localStorage.setItem('n8n_webhook_url', webhookUrl);
-    localStorage.setItem('n8n_index_webhook_url', indexWebhookUrl);
-    setSettingsOpen(false);
-    toast.success('Settings saved');
-  };
-
   const handleIndexFiles = async () => {
-    if (!indexWebhookUrl) {
-      toast.error('Please configure your index webhook URL in settings');
-      setSettingsOpen(true);
+    if (!INDEX_WEBHOOK_URL) {
+      toast.error('Index webhook URL is not configured');
       return;
     }
 
     setIsIndexing(true);
     try {
-      const response = await fetch(indexWebhookUrl, {
+      const response = await fetch(INDEX_WEBHOOK_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -96,7 +75,7 @@ export default function Chat() {
   };
 
   const handleSendMessage = (content: string) => {
-    sendMessage(content, webhookUrl || undefined);
+    sendMessage(content, CHAT_WEBHOOK_URL || undefined);
   };
 
   if (authLoading || threadsLoading) {
@@ -124,7 +103,7 @@ export default function Chat() {
 
         <main className="flex-1 flex flex-col min-h-screen">
           {/* Header */}
-          <header className="h-14 border-b border-border flex items-center justify-between px-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <header className="h-14 border-b border-border flex items-center px-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
             <div className="flex items-center gap-2">
               <SidebarTrigger />
               <span className="text-sm text-muted-foreground">
@@ -133,14 +112,6 @@ export default function Chat() {
                   : 'New Chat'}
               </span>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setSettingsOpen(true)}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <Settings className="h-4 w-4" />
-            </Button>
           </header>
 
           {/* Messages area */}
@@ -185,47 +156,6 @@ export default function Chat() {
           </div>
         </main>
       </div>
-
-      {/* Settings Dialog */}
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Webhook Settings</DialogTitle>
-            <DialogDescription>
-              Configure your N8N webhook URLs for chat and file indexing.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="webhook-url">Chat Webhook URL</Label>
-              <Input
-                id="webhook-url"
-                placeholder="https://your-n8n-instance.com/webhook/..."
-                value={webhookUrl}
-                onChange={(e) => setWebhookUrl(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                This webhook will receive user messages for AI processing.
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="index-webhook-url">Index Webhook URL</Label>
-              <Input
-                id="index-webhook-url"
-                placeholder="https://your-n8n-instance.com/webhook/..."
-                value={indexWebhookUrl}
-                onChange={(e) => setIndexWebhookUrl(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                This webhook will trigger Dropbox file indexing.
-              </p>
-            </div>
-            <Button onClick={handleSaveSettings} className="w-full">
-              Save Settings
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </SidebarProvider>
   );
 }
