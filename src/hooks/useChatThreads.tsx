@@ -232,14 +232,14 @@ export function useChatThreads() {
         }
       }
     } else {
-      // Demo response if no webhook
+      // Demo response if no webhook configured
       const { data: assistantMessage } = await supabase
         .from('messages')
         .insert({
           thread_id: threadId,
           user_id: user.id,
           role: 'assistant',
-          content: 'I received your message. To enable AI responses, please configure your N8N webhook URL in the settings.',
+          content: 'I received your message. The chat webhook is not configured yet. Please ensure the VITE_N8N_CHAT_WEBHOOK_URL environment variable is set.',
         })
         .select()
         .single();
