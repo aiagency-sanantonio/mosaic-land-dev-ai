@@ -59,7 +59,7 @@ serve(async (req) => {
     }
 
     // Parse request body
-    const { query, match_count = 5, match_threshold = 0.78 } = await req.json();
+    const { query, match_count = 5, match_threshold = 0.3 } = await req.json();
 
     if (!query) {
       return new Response(
