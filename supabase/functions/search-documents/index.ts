@@ -81,10 +81,12 @@ serve(async (req) => {
     console.log('Generating query embedding...');
     const queryEmbedding = await generateEmbedding(query, openaiApiKey);
 
-    // Search for similar documents
+    // Search for similar documents using raw SQL with proper vector casting
     console.log('Searching for similar documents...');
+    const embeddingStr = `[${queryEmbedding.join(',')}]`;
+    
     const { data: documents, error: searchError } = await supabase.rpc('match_documents', {
-      query_embedding: queryEmbedding,
+      query_embedding: embeddingStr,
       match_threshold: match_threshold,
       match_count: match_count,
     });
