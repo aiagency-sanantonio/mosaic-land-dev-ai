@@ -84,7 +84,7 @@ serve(async (req) => {
     // Search for similar documents
     console.log('Searching for similar documents...');
     const { data: documents, error: searchError } = await supabase.rpc('match_documents', {
-      query_embedding: JSON.stringify(queryEmbedding),
+      query_embedding: queryEmbedding,
       match_threshold: match_threshold,
       match_count: match_count,
     });
