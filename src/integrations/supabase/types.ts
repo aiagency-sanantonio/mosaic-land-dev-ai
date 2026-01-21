@@ -156,6 +156,21 @@ export type Database = {
           similarity: number
         }[]
       }
+      match_documents_text: {
+        Args: {
+          match_count?: number
+          match_threshold?: number
+          query_embedding_text: string
+        }
+        Returns: {
+          content: string
+          file_name: string
+          file_path: string
+          id: string
+          metadata: Json
+          similarity: number
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never
