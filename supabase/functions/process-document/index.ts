@@ -122,7 +122,18 @@ serve(async (req) => {
     }
 
     // Parse request body
-    const { content, file_path, file_name, metadata = {} } = await req.json();
+    const { content, file_path, file_name, metadata: rawMetadata = {} } = await req.json();
+
+    // Handle metadata - parse if it's a string (from N8N JSON.stringify)
+    let metadata = rawMetadata;
+    if (typeof rawMetadata === 'string') {
+      try {
+        metadata = JSON.parse(rawMetadata);
+      } catch (e) {
+        console.warn('Could not parse metadata string, using empty object:', e);
+        metadata = {};
+      }
+    }
 
     if (!content) {
       return new Response(
