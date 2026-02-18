@@ -47,6 +47,7 @@ serve(async (req) => {
       date_from = null,
       date_to = null,
       summary_only = false,
+      fetch_all = false,
       limit: rawLimit = 100,
       offset: rawOffset = 0,
     } = body as {
@@ -55,12 +56,14 @@ serve(async (req) => {
       date_from?: string | null;
       date_to?: string | null;
       summary_only?: boolean;
+      fetch_all?: boolean;
       limit?: number;
       offset?: number;
     };
 
     const limit = Math.min(Number(rawLimit) || 100, 1000);
     const offset = Number(rawOffset) || 0;
+
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -88,32 +91,54 @@ serve(async (req) => {
       );
     }
 
-    // --- Records query with filters ---
-    let query = supabase
-      .from('indexing_status')
-      .select('file_path, file_name, status, chunks_created, error_message, indexed_at, created_at')
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+    // --- Helper to build a filtered query for a given page ---
+    const buildQuery = (pageOffset: number, pageSize: number) => {
+      let q = supabase
+        .from('indexing_status')
+        .select('file_path, file_name, status, chunks_created, error_message, indexed_at, created_at')
+        .order('created_at', { ascending: false })
+        .range(pageOffset, pageOffset + pageSize - 1);
 
-    if (status_filter) {
-      query = query.eq('status', status_filter);
+      if (status_filter) q = q.eq('status', status_filter);
+      if (path_prefix) q = q.like('file_path', `${path_prefix}%`);
+      if (date_from) q = q.gte('indexed_at', date_from);
+      if (date_to) {
+        const endDate = date_to.length === 10 ? `${date_to}T23:59:59Z` : date_to;
+        q = q.lte('indexed_at', endDate);
+      }
+
+      return q;
+    };
+
+    // --- fetch_all: loop through pages of 1000 until exhausted ---
+    if (fetch_all) {
+      const PAGE_SIZE = 1000;
+      const allRecords: Record<string, unknown>[] = [];
+      let pageOffset = 0;
+
+      while (true) {
+        const { data: page, error: pageError } = await buildQuery(pageOffset, PAGE_SIZE);
+        if (pageError) throw pageError;
+
+        allRecords.push(...(page ?? []));
+
+        if (!page || page.length < PAGE_SIZE) break;
+        pageOffset += PAGE_SIZE;
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          summary,
+          records: allRecords,
+          total_returned: allRecords.length,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    if (path_prefix) {
-      query = query.like('file_path', `${path_prefix}%`);
-    }
-
-    if (date_from) {
-      query = query.gte('indexed_at', date_from);
-    }
-
-    if (date_to) {
-      // Include the full end date by going to end of day
-      const endDate = date_to.length === 10 ? `${date_to}T23:59:59Z` : date_to;
-      query = query.lte('indexed_at', endDate);
-    }
-
-    const { data: records, error: recordsError } = await query;
+    // --- Default paged query ---
+    const { data: records, error: recordsError } = await buildQuery(offset, limit);
 
     if (recordsError) throw recordsError;
 
