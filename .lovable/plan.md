@@ -1,70 +1,58 @@
 
-## Fix: `not_yet_indexed` Filter in `query-dropbox-files`
+## Fix: URL Too Long When Fetching File Details in `query-dropbox-files`
 
-### What's Broken
+### Root Cause
 
-There are two bugs in `supabase/functions/query-dropbox-files/index.ts`:
+When `not_yet_indexed: true` (or any path slice is requested), the function calls:
 
-**Bug 1 — Wrong summary count (causes the `0` you're seeing)**
-
-The `not_yet_indexed` count in the summary is calculated as:
+```typescript
+supabase
+  .from('dropbox_files')
+  .select('...')
+  .in('file_path', pathSlice)
 ```
-totalFiles - indexedCount = 798 - 1400 = -602 → clamped to 0
+
+The Supabase JS client sends `.in()` values as a URL query parameter, like:
+```
+?file_path=in.(/path/one,/path/two,/path/three,...)
 ```
 
-The problem: `indexedCount` is the total number of rows in `indexing_status` with `status = success` (1,400), which is *larger* than the number of Dropbox files logged (798). This happens because `indexing_status` keeps history for files that were indexed before the `dropbox_files` table even existed.
-
-The correct count is: how many `dropbox_files` paths are **not present** in the success set — not a raw subtraction.
-
-**Bug 2 — Filter applied after a small page fetch**
-
-When `not_yet_indexed: true` but `fetch_all: false`, the function fetches only the first `limit` rows (e.g. 100), then filters them in memory. If all 100 of those rows happen to be indexed, you get 0 results back — even though later pages may have un-indexed files.
-
----
+With hundreds of long Dropbox file paths, this URL grows to thousands of characters and exceeds browser/HTTP URL length limits, causing a `TypeError: Invalid URL` and a 500 response.
 
 ### The Fix
 
-**Fix 1 — Correct the summary count**
-
-Instead of subtracting counts, count how many `dropbox_files` paths are actually missing from `indexedSet`:
+Batch the `pathSlice` array into chunks of 50 paths and run multiple `.in()` queries in parallel, then merge the results. This keeps each individual URL well within length limits.
 
 ```typescript
-// Fetch all dropbox file paths (just the paths, lightweight)
-const { data: allPaths } = await supabase
-  .from('dropbox_files')
-  .select('file_path');
+// Break into batches of 50
+const BATCH_SIZE = 50;
+const batches = [];
+for (let i = 0; i < pathSlice.length; i += BATCH_SIZE) {
+  batches.push(pathSlice.slice(i, i + BATCH_SIZE));
+}
 
-const notYetIndexedCount = (allPaths ?? []).filter(
-  r => !indexedSet.has(r.file_path)
-).length;
+// Fetch each batch in parallel
+const batchResults = await Promise.all(
+  batches.map(batch =>
+    supabase
+      .from('dropbox_files')
+      .select('file_path, file_name, ...')
+      .in('file_path', batch)
+      .order('file_path', { ascending: true })
+  )
+);
 
-const summary = {
-  total_files: totalFiles,
-  indexed: indexedCount,  // how many dropbox files ARE in the success set
-  not_yet_indexed: notYetIndexedCount,
-};
+// Merge results
+const allRecords = batchResults.flatMap(r => r.data ?? []);
 ```
-
-**Fix 2 — Apply `not_yet_indexed` filter before pagination**
-
-When `not_yet_indexed: true`, fetch all matching `file_path` values first, filter them against `indexedSet`, then slice to the requested page. This ensures pagination is correct even when most records are already indexed.
-
-The revised flow:
-1. Fetch all file paths (all records, lightweight — just `file_path`)
-2. Filter against `indexedSet` in memory
-3. Apply `extension_filter` and `path_prefix` in memory on the filtered set
-4. Slice to the requested `offset` + `limit` (or return all if `fetch_all: true`)
-5. Fetch full details only for the sliced paths
-
-This avoids the "filter after a partial page" problem entirely.
-
----
 
 ### Technical Changes
 
 **File: `supabase/functions/query-dropbox-files/index.ts`**
 
-- Rewrite the summary calculation to count actual `dropbox_files` paths not in `indexedSet`
-- When `not_yet_indexed: true`, fetch all file paths first, filter in memory, then paginate — rather than paginating first and filtering after
-- The `changed_since_indexed` logic is not affected and stays the same
-- No database schema changes required
+- Add a `BATCH_SIZE = 50` constant
+- Replace the single `.in('file_path', pathSlice)` query with a batched parallel fetch using `Promise.all`
+- Merge all batch results into a single `allRecords` array
+- Handle errors from any batch (throw on first error)
+- No schema changes required
+- No changes to the `changed_since_indexed` logic
