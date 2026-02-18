@@ -8,3 +8,9 @@ verify_jwt = false
 
 [functions.indexing-status]
 verify_jwt = false
+
+[functions.log-dropbox-files]
+verify_jwt = false
+
+[functions.query-dropbox-files]
+verify_jwt = false

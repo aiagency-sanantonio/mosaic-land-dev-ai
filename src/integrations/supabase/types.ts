@@ -71,6 +71,51 @@ export type Database = {
         }
         Relationships: []
       }
+      dropbox_files: {
+        Row: {
+          content_hash: string | null
+          created_at: string
+          discovered_at: string
+          dropbox_id: string | null
+          dropbox_modified_at: string | null
+          file_extension: string | null
+          file_name: string | null
+          file_path: string
+          file_size_bytes: number | null
+          id: string
+          last_seen_at: string
+          updated_at: string
+        }
+        Insert: {
+          content_hash?: string | null
+          created_at?: string
+          discovered_at?: string
+          dropbox_id?: string | null
+          dropbox_modified_at?: string | null
+          file_extension?: string | null
+          file_name?: string | null
+          file_path: string
+          file_size_bytes?: number | null
+          id?: string
+          last_seen_at?: string
+          updated_at?: string
+        }
+        Update: {
+          content_hash?: string | null
+          created_at?: string
+          discovered_at?: string
+          dropbox_id?: string | null
+          dropbox_modified_at?: string | null
+          file_extension?: string | null
+          file_name?: string | null
+          file_path?: string
+          file_size_bytes?: number | null
+          id?: string
+          last_seen_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       indexing_status: {
         Row: {
           chunks_created: number | null
