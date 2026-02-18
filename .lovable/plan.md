@@ -1,145 +1,70 @@
 
-## Dropbox File Discovery Log
+## Fix: `not_yet_indexed` Filter in `query-dropbox-files`
 
-### What This Solves
+### What's Broken
 
-Right now, your system only learns about a file *after* N8N tries to index it. There's no pre-flight inventory — no record of what Dropbox files exist independently of whether they've been vectorized. This makes it hard to:
-- Know what files are waiting to be processed
-- Detect files that were missed or skipped by accident
-- Build a "what's left to index?" queue
-- Track Dropbox file changes over time (new files, moved files, deleted files)
+There are two bugs in `supabase/functions/query-dropbox-files/index.ts`:
 
-This adds a `dropbox_files` table that N8N populates on every scan, giving you a complete, up-to-date map of Dropbox *before* any vectorization decisions happen.
+**Bug 1 — Wrong summary count (causes the `0` you're seeing)**
+
+The `not_yet_indexed` count in the summary is calculated as:
+```
+totalFiles - indexedCount = 798 - 1400 = -602 → clamped to 0
+```
+
+The problem: `indexedCount` is the total number of rows in `indexing_status` with `status = success` (1,400), which is *larger* than the number of Dropbox files logged (798). This happens because `indexing_status` keeps history for files that were indexed before the `dropbox_files` table even existed.
+
+The correct count is: how many `dropbox_files` paths are **not present** in the success set — not a raw subtraction.
+
+**Bug 2 — Filter applied after a small page fetch**
+
+When `not_yet_indexed: true` but `fetch_all: false`, the function fetches only the first `limit` rows (e.g. 100), then filters them in memory. If all 100 of those rows happen to be indexed, you get 0 results back — even though later pages may have un-indexed files.
 
 ---
 
-### New Table: `dropbox_files`
+### The Fix
 
-This stores everything Dropbox tells you about a file, plus a derived status so you can immediately tell what's been vectorized and what hasn't.
+**Fix 1 — Correct the summary count**
 
-| Column | Type | Purpose |
-|---|---|---|
-| `file_path` | text (unique) | Full Dropbox path — the primary key for matching |
-| `file_name` | text | Just the filename, useful for display |
-| `file_extension` | text | `.pdf`, `.docx`, etc — useful for filtering by type |
-| `file_size_bytes` | bigint | Size in bytes — useful to predict processing time |
-| `dropbox_id` | text | Dropbox's own stable file ID (survives renames) |
-| `content_hash` | text | Dropbox content hash — detect if file changed since last scan |
-| `dropbox_modified_at` | timestamptz | When Dropbox says the file was last modified |
-| `discovered_at` | timestamptz | When N8N first logged this file |
-| `last_seen_at` | timestamptz | Updated on every scan — lets you detect deleted files |
-| `created_at` / `updated_at` | timestamptz | Standard tracking |
+Instead of subtracting counts, count how many `dropbox_files` paths are actually missing from `indexedSet`:
 
-A **computed column** isn't needed — N8N (or the app) will join against `indexing_status` on `file_path` to derive the vectorization state on-demand. This keeps the two tables independent and avoids sync issues.
+```typescript
+// Fetch all dropbox file paths (just the paths, lightweight)
+const { data: allPaths } = await supabase
+  .from('dropbox_files')
+  .select('file_path');
 
----
+const notYetIndexedCount = (allPaths ?? []).filter(
+  r => !indexedSet.has(r.file_path)
+).length;
 
-### New Edge Function: `log-dropbox-files`
-
-N8N calls this at the start of every scan, passing a batch of file objects. The function upserts them all in one call.
-
-**Endpoint:** `POST /functions/v1/log-dropbox-files`
-
-**Auth:** Same `Authorization: Bearer <N8N_WEBHOOK_SECRET>` header as all other functions.
-
-**Request body:**
-```json
-{
-  "files": [
-    {
-      "file_path": "/1-Projects/Lot 42/invoice.pdf",
-      "file_name": "invoice.pdf",
-      "file_extension": ".pdf",
-      "file_size_bytes": 204800,
-      "dropbox_id": "id:abc123",
-      "content_hash": "a1b2c3d4...",
-      "dropbox_modified_at": "2026-02-10T14:30:00Z"
-    }
-  ]
-}
+const summary = {
+  total_files: totalFiles,
+  indexed: indexedCount,  // how many dropbox files ARE in the success set
+  not_yet_indexed: notYetIndexedCount,
+};
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "upserted": 312,
-  "total_received": 312
-}
-```
+**Fix 2 — Apply `not_yet_indexed` filter before pagination**
 
-The function uses `upsert` with `onConflict: 'file_path'` so re-scanning is safe — existing records get their `last_seen_at` and `content_hash` updated, new files get inserted.
+When `not_yet_indexed: true`, fetch all matching `file_path` values first, filter them against `indexedSet`, then slice to the requested page. This ensures pagination is correct even when most records are already indexed.
 
----
+The revised flow:
+1. Fetch all file paths (all records, lightweight — just `file_path`)
+2. Filter against `indexedSet` in memory
+3. Apply `extension_filter` and `path_prefix` in memory on the filtered set
+4. Slice to the requested `offset` + `limit` (or return all if `fetch_all: true`)
+5. Fetch full details only for the sliced paths
 
-### New Query Edge Function: `query-dropbox-files`
-
-A read API (same pattern as `indexing-status`) so N8N or the app can query the inventory with filters.
-
-**Endpoint:** `POST /functions/v1/query-dropbox-files`
-
-**Request body (all optional):**
-```json
-{
-  "extension_filter": ".pdf",
-  "path_prefix": "/1-Projects/",
-  "not_yet_indexed": true,
-  "changed_since_indexed": true,
-  "fetch_all": false,
-  "limit": 100,
-  "offset": 0
-}
-```
-
-The `not_yet_indexed` flag joins against `indexing_status` to return only files with no `success` record — the most useful filter for building your N8N indexing queue. The `changed_since_indexed` flag returns files whose `content_hash` or `dropbox_modified_at` changed after their last successful index, so you can re-index updated files automatically.
-
-**Response:**
-```json
-{
-  "success": true,
-  "summary": {
-    "total_files": 4900,
-    "not_yet_indexed": 3500,
-    "indexed": 1400
-  },
-  "records": [...],
-  "total_returned": 100
-}
-```
-
----
-
-### N8N Workflow Integration
-
-Your updated N8N indexing flow would look like:
-
-```text
-1. Dropbox List Files (all files in folder)
-        ↓
-2. HTTP POST → log-dropbox-files  ← NEW: log everything first
-        ↓
-3. HTTP POST → query-dropbox-files  ← NEW: get only un-indexed files
-   { "not_yet_indexed": true, "fetch_all": true }
-        ↓
-4. Loop: for each file
-        ↓
-5. Dropbox Get File Content
-        ↓
-6. HTTP POST → process-document  ← existing, unchanged
-```
-
-This replaces the current approach of calling `indexing-status` mid-workflow to deduplicate — instead, the deduplication happens at step 3 and gives you a clean list to iterate.
+This avoids the "filter after a partial page" problem entirely.
 
 ---
 
 ### Technical Changes
 
-1. **Database migration** — Create the `dropbox_files` table with appropriate RLS (service role can manage, authenticated users can view)
+**File: `supabase/functions/query-dropbox-files/index.ts`**
 
-2. **New edge function** — `supabase/functions/log-dropbox-files/index.ts` — bulk upsert endpoint for N8N to call during scans
-
-3. **New edge function** — `supabase/functions/query-dropbox-files/index.ts` — filtered query endpoint with `not_yet_indexed`, `changed_since_indexed`, and `fetch_all` support
-
-4. **Update `supabase/config.toml`** — register both new functions with `verify_jwt = false`
-
-No changes to existing functions, tables, or RLS policies.
+- Rewrite the summary calculation to count actual `dropbox_files` paths not in `indexedSet`
+- When `not_yet_indexed: true`, fetch all file paths first, filter in memory, then paginate — rather than paginating first and filtering after
+- The `changed_since_indexed` logic is not affected and stays the same
+- No database schema changes required
