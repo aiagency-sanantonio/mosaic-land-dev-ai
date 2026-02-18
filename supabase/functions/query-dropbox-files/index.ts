@@ -66,15 +66,28 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    // --- Summary counts ---
-    // Total files in inventory
-    const { count: totalCount, error: totalError } = await supabase
-      .from('dropbox_files')
-      .select('*', { count: 'exact', head: true });
+    // --- Fetch all dropbox file paths (lightweight, used for summary + not_yet_indexed filtering) ---
+    // Paginate to get all paths (bypasses 1000-row default limit)
+    const allPathRows: { file_path: string }[] = [];
+    {
+      const PAGE = 1000;
+      let pg = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('dropbox_files')
+          .select('file_path')
+          .order('file_path', { ascending: true })
+          .range(pg, pg + PAGE - 1);
+        if (error) throw error;
+        allPathRows.push(...(data ?? []));
+        if (!data || data.length < PAGE) break;
+        pg += PAGE;
+      }
+    }
 
-    if (totalError) throw totalError;
+    const totalFiles = allPathRows.length;
 
-    // Indexed files: those with a 'success' record in indexing_status
+    // --- Fetch successfully indexed paths ---
     const { data: indexedPaths, error: indexedError } = await supabase
       .from('indexing_status')
       .select('file_path')
@@ -83,62 +96,85 @@ serve(async (req) => {
     if (indexedError) throw indexedError;
 
     const indexedSet = new Set((indexedPaths ?? []).map((r) => r.file_path));
-    const totalFiles = totalCount ?? 0;
-    const indexedCount = indexedSet.size;
 
-    // Count how many dropbox files are actually in the indexed set
-    // (may be less than indexedSet.size if some indexed files were removed from Dropbox)
+    // --- Summary: count dropbox files actually present in indexedSet ---
+    const indexedCount = allPathRows.filter(r => indexedSet.has(r.file_path)).length;
+    const notYetIndexedCount = totalFiles - indexedCount;
+
     const summary = {
       total_files: totalFiles,
       indexed: indexedCount,
-      not_yet_indexed: Math.max(0, totalFiles - indexedCount),
+      not_yet_indexed: notYetIndexedCount,
     };
 
-    // --- Build the filtered query helper ---
-    const buildQuery = (pageOffset: number, pageSize: number) => {
-      let q = supabase
-        .from('dropbox_files')
-        .select('file_path, file_name, file_extension, file_size_bytes, dropbox_id, content_hash, dropbox_modified_at, discovered_at, last_seen_at')
-        .order('file_path', { ascending: true })
-        .range(pageOffset, pageOffset + pageSize - 1);
-
-      if (extension_filter) q = q.eq('file_extension', extension_filter);
-      if (path_prefix) q = q.like('file_path', `${path_prefix}%`);
-
-      return q;
-    };
-
-    // --- Fetch records (paged or all) ---
+    // --- Fetch records ---
     let allRecords: Record<string, unknown>[] = [];
 
-    if (fetch_all) {
-      const PAGE_SIZE = 1000;
-      let pageOffset = 0;
+    if (not_yet_indexed) {
+      // Fix: filter paths BEFORE pagination so we don't miss unindexed files on later pages
+      let filteredPaths = allPathRows
+        .filter(r => !indexedSet.has(r.file_path))
+        .map(r => r.file_path);
 
-      while (true) {
-        const { data: page, error: pageError } = await buildQuery(pageOffset, PAGE_SIZE);
-        if (pageError) throw pageError;
+      // Apply extension_filter and path_prefix in memory
+      if (extension_filter) {
+        filteredPaths = filteredPaths.filter(p => {
+          const ext = p.includes('.') ? '.' + p.split('.').pop() : '';
+          return ext === extension_filter || p.endsWith(extension_filter);
+        });
+      }
+      if (path_prefix) {
+        filteredPaths = filteredPaths.filter(p => p.startsWith(path_prefix));
+      }
 
-        allRecords.push(...(page ?? []));
-        if (!page || page.length < PAGE_SIZE) break;
-        pageOffset += PAGE_SIZE;
+      // Paginate or return all
+      const pathSlice = fetch_all ? filteredPaths : filteredPaths.slice(offset, offset + limit);
+
+      // Fetch full details only for the sliced paths
+      if (pathSlice.length > 0) {
+        const { data: details, error: detailsError } = await supabase
+          .from('dropbox_files')
+          .select('file_path, file_name, file_extension, file_size_bytes, dropbox_id, content_hash, dropbox_modified_at, discovered_at, last_seen_at')
+          .in('file_path', pathSlice)
+          .order('file_path', { ascending: true });
+
+        if (detailsError) throw detailsError;
+        allRecords = details ?? [];
       }
     } else {
-      const { data: records, error: recordsError } = await buildQuery(offset, limit);
-      if (recordsError) throw recordsError;
-      allRecords = records ?? [];
+      // Standard fetch (no not_yet_indexed filter) — use database-side pagination
+      const buildQuery = (pageOffset: number, pageSize: number) => {
+        let q = supabase
+          .from('dropbox_files')
+          .select('file_path, file_name, file_extension, file_size_bytes, dropbox_id, content_hash, dropbox_modified_at, discovered_at, last_seen_at')
+          .order('file_path', { ascending: true })
+          .range(pageOffset, pageOffset + pageSize - 1);
+
+        if (extension_filter) q = q.eq('file_extension', extension_filter);
+        if (path_prefix) q = q.like('file_path', `${path_prefix}%`);
+
+        return q;
+      };
+
+      if (fetch_all) {
+        const PAGE_SIZE = 1000;
+        let pageOffset = 0;
+        while (true) {
+          const { data: page, error: pageError } = await buildQuery(pageOffset, PAGE_SIZE);
+          if (pageError) throw pageError;
+          allRecords.push(...(page ?? []));
+          if (!page || page.length < PAGE_SIZE) break;
+          pageOffset += PAGE_SIZE;
+        }
+      } else {
+        const { data: records, error: recordsError } = await buildQuery(offset, limit);
+        if (recordsError) throw recordsError;
+        allRecords = records ?? [];
+      }
     }
 
-    // --- Apply in-memory filters that require joining indexing_status ---
-    if (not_yet_indexed) {
-      allRecords = allRecords.filter((r) => !indexedSet.has(r.file_path as string));
-    }
-
+    // --- Apply changed_since_indexed filter (unaffected by the above changes) ---
     if (changed_since_indexed) {
-      // Get indexed records with their content_hash stored at index time (from metadata or file hash)
-      // We compare dropbox content_hash against what was stored when last indexed
-      // Since indexing_status doesn't store content_hash, we flag files where dropbox_modified_at
-      // is after the indexed_at timestamp for successful records
       const { data: successRecords, error: successError } = await supabase
         .from('indexing_status')
         .select('file_path, indexed_at')
@@ -152,7 +188,7 @@ serve(async (req) => {
 
       allRecords = allRecords.filter((r) => {
         const indexedAt = indexedAtMap.get(r.file_path as string);
-        if (!indexedAt) return false; // Not indexed — not a "changed" file
+        if (!indexedAt) return false;
         const dropboxModified = r.dropbox_modified_at as string | null;
         if (!dropboxModified) return false;
         return new Date(dropboxModified) > new Date(indexedAt);
