@@ -130,16 +130,28 @@ serve(async (req) => {
       // Paginate or return all
       const pathSlice = fetch_all ? filteredPaths : filteredPaths.slice(offset, offset + limit);
 
-      // Fetch full details only for the sliced paths
+      // Fetch full details in batches of 50 to avoid URL length limits
       if (pathSlice.length > 0) {
-        const { data: details, error: detailsError } = await supabase
-          .from('dropbox_files')
-          .select('file_path, file_name, file_extension, file_size_bytes, dropbox_id, content_hash, dropbox_modified_at, discovered_at, last_seen_at')
-          .in('file_path', pathSlice)
-          .order('file_path', { ascending: true });
+        const BATCH_SIZE = 50;
+        const batches: string[][] = [];
+        for (let i = 0; i < pathSlice.length; i += BATCH_SIZE) {
+          batches.push(pathSlice.slice(i, i + BATCH_SIZE));
+        }
 
-        if (detailsError) throw detailsError;
-        allRecords = details ?? [];
+        const batchResults = await Promise.all(
+          batches.map(batch =>
+            supabase
+              .from('dropbox_files')
+              .select('file_path, file_name, file_extension, file_size_bytes, dropbox_id, content_hash, dropbox_modified_at, discovered_at, last_seen_at')
+              .in('file_path', batch)
+              .order('file_path', { ascending: true })
+          )
+        );
+
+        for (const result of batchResults) {
+          if (result.error) throw result.error;
+        }
+        allRecords = batchResults.flatMap(r => r.data ?? []);
       }
     } else {
       // Standard fetch (no not_yet_indexed filter) — use database-side pagination
