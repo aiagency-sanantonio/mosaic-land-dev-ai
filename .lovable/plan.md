@@ -1,81 +1,78 @@
 
-## Add Indexing Status API Endpoint
+## Update `indexing-status` to Return All Records
 
-### What It Does
+### The Problem
 
-A new backend function (`indexing-status`) that exposes the `indexing_status` table over a secure HTTP API, allowing N8N, dashboards, or any external tool to query the indexing state of files.
+There are **4,764 records** in the `indexing_status` table. The current API has two blockers to returning them all:
 
-### Security
+1. The default page size is 100, with a hard cap of 1,000 passed through to the user
+2. The database itself caps any single query at 1,000 rows
 
-Uses the same `N8N_WEBHOOK_SECRET` authorization that `process-document` and `search-documents` already use. No new secrets needed.
+Neither increasing `limit` nor removing it will work alone — a single query simply cannot fetch more than 1,000 rows.
+
+### The Solution: Internal Pagination Loop
+
+Add a `fetch_all` boolean parameter. When `true`, the function will loop through the database in pages of 1,000, collecting all results internally, then return them as a single combined response.
+
+This is invisible to N8N — you just send `{"fetch_all": true}` and get back every matching record in one JSON response.
 
 ---
 
-### API Design
+### New Parameter
 
-**Endpoint:** `POST /functions/v1/indexing-status`
-
-**Request body (all fields optional):**
-
-```text
+```
 {
-  "status_filter": "failed",          // "success" | "failed" | "skipped" | "pending" | null (all)
-  "path_prefix": "/1-Projects/",      // filter by Dropbox folder prefix
-  "date_from": "2026-01-01",          // indexed_at >= this date
-  "date_to": "2026-02-18",            // indexed_at <= this date
-  "summary_only": false,              // if true, only return counts per status
-  "limit": 100,                       // max records to return (default 100)
-  "offset": 0                         // for pagination
+  "fetch_all": true,   // NEW: bypasses limit, fetches all pages internally
+  
+  // All existing filters still work as before:
+  "status_filter": "success",
+  "path_prefix": "/1-Projects/",
+  "date_from": "2026-01-01",
+  "date_to": "2026-02-18"
 }
 ```
 
-**Response:**
+### How It Works (Internal Loop)
 
 ```text
+Page 1: rows 0–999    → fetch
+Page 2: rows 1000–1999 → fetch
+Page 3: rows 2000–2999 → fetch
+Page 4: rows 3000–3999 → fetch
+Page 5: rows 4000–4764 → fetch (764 rows — loop ends)
+
+All pages combined → single JSON response
+```
+
+The loop stops automatically when a page returns fewer rows than the page size (1,000), meaning it has hit the end.
+
+---
+
+### Technical Changes
+
+**File:** `supabase/functions/indexing-status/index.ts`
+
+1. Add `fetch_all` as a new optional boolean parameter (defaults to `false`)
+2. When `fetch_all` is `true`:
+   - Run a loop, fetching 1,000 records at a time using `.range(offset, offset + 999)`
+   - Apply all existing filters (`status_filter`, `path_prefix`, `date_from`, `date_to`) to each page
+   - Collect all results into one array
+   - Stop when a page returns fewer than 1,000 rows
+3. When `fetch_all` is `false` (default): existing behavior is unchanged — `limit` and `offset` work as before
+
+No database changes needed. No new secrets needed.
+
+---
+
+### N8N Usage for Deduplication Check
+
+To get the complete list of already-indexed file paths for filtering in N8N:
+
+```json
 {
-  "success": true,
-  "summary": {
-    "success": 1400,
-    "failed": 3,
-    "skipped": 3360,
-    "pending": 1,
-    "total": 4764
-  },
-  "records": [
-    {
-      "file_path": "/1-Projects/...",
-      "file_name": "Invoice.pdf",
-      "status": "failed",
-      "chunks_created": 0,
-      "error_message": "...",
-      "indexed_at": null,
-      "created_at": "2026-02-04T..."
-    }
-  ],
-  "total_returned": 3
+  "status_filter": "success",
+  "fetch_all": true
 }
 ```
 
----
-
-### Technical Implementation
-
-**New file:** `supabase/functions/indexing-status/index.ts`
-
-The function will:
-1. Validate the `Authorization: Bearer <N8N_WEBHOOK_SECRET>` header
-2. Parse optional filters from the request body
-3. Query `indexing_status` table using the Supabase service role client
-4. Always return a summary counts object plus the filtered records
-5. Support pagination via `limit` / `offset`
-
-**No database changes needed** — the `indexing_status` table and its RLS policies are already in place. The edge function uses the service role key which bypasses RLS.
-
----
-
-### N8N Use Cases This Enables
-
-- **Re-index failed files**: Filter `status=failed`, loop over results, re-send each `file_path` to `process-document`
-- **Coverage check**: Before indexing a Dropbox folder, call with `path_prefix` to see what's already done
-- **Audit trail**: Pull all files indexed in a date range to confirm a batch completed successfully
-- **Skip duplicates**: Check if a `file_path` already has `status=success` before sending to `process-document`
+This returns all 1,400 successfully indexed file paths in a single call. N8N can then build a lookup Set from the `file_path` field of each record and skip any Dropbox file that already appears in that set.
