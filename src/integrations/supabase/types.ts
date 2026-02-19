@@ -225,6 +225,25 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      get_unindexed_dropbox_files: {
+        Args: {
+          p_extension_filter?: string
+          p_limit?: number
+          p_offset?: number
+          p_path_prefix?: string
+        }
+        Returns: {
+          content_hash: string
+          discovered_at: string
+          dropbox_id: string
+          dropbox_modified_at: string
+          file_extension: string
+          file_name: string
+          file_path: string
+          file_size_bytes: number
+          last_seen_at: string
+        }[]
+      }
       match_documents: {
         Args: {
           match_count?: number

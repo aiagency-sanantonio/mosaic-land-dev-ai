@@ -66,8 +66,7 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    // --- Fetch all dropbox file paths (lightweight, used for summary + not_yet_indexed filtering) ---
-    // Paginate to get all paths (bypasses 1000-row default limit)
+    // --- Fetch all dropbox file paths (lightweight, used for summary) ---
     const allPathRows: { file_path: string }[] = [];
     {
       const PAGE = 1000;
@@ -97,7 +96,7 @@ serve(async (req) => {
 
     const indexedSet = new Set((indexedPaths ?? []).map((r) => r.file_path));
 
-    // --- Summary: count dropbox files actually present in indexedSet ---
+    // --- Summary ---
     const indexedCount = allPathRows.filter(r => indexedSet.has(r.file_path)).length;
     const notYetIndexedCount = totalFiles - indexedCount;
 
@@ -111,48 +110,19 @@ serve(async (req) => {
     let allRecords: Record<string, unknown>[] = [];
 
     if (not_yet_indexed) {
-      // Fix: filter paths BEFORE pagination so we don't miss unindexed files on later pages
-      let filteredPaths = allPathRows
-        .filter(r => !indexedSet.has(r.file_path))
-        .map(r => r.file_path);
+      // Use server-side RPC to avoid URL length limits
+      const rpcParams: Record<string, unknown> = {
+        p_extension_filter: extension_filter ?? null,
+        p_path_prefix: path_prefix ?? null,
+        p_limit: fetch_all ? 0 : limit,
+        p_offset: fetch_all ? 0 : offset,
+      };
 
-      // Apply extension_filter and path_prefix in memory
-      if (extension_filter) {
-        filteredPaths = filteredPaths.filter(p => {
-          const ext = p.includes('.') ? '.' + p.split('.').pop() : '';
-          return ext === extension_filter || p.endsWith(extension_filter);
-        });
-      }
-      if (path_prefix) {
-        filteredPaths = filteredPaths.filter(p => p.startsWith(path_prefix));
-      }
+      const { data, error: rpcError } = await supabase
+        .rpc('get_unindexed_dropbox_files', rpcParams);
 
-      // Paginate or return all
-      const pathSlice = fetch_all ? filteredPaths : filteredPaths.slice(offset, offset + limit);
-
-      // Fetch full details in batches of 50 to avoid URL length limits
-      if (pathSlice.length > 0) {
-        const BATCH_SIZE = 50;
-        const batches: string[][] = [];
-        for (let i = 0; i < pathSlice.length; i += BATCH_SIZE) {
-          batches.push(pathSlice.slice(i, i + BATCH_SIZE));
-        }
-
-        const batchResults = await Promise.all(
-          batches.map(batch =>
-            supabase
-              .from('dropbox_files')
-              .select('file_path, file_name, file_extension, file_size_bytes, dropbox_id, content_hash, dropbox_modified_at, discovered_at, last_seen_at')
-              .in('file_path', batch)
-              .order('file_path', { ascending: true })
-          )
-        );
-
-        for (const result of batchResults) {
-          if (result.error) throw result.error;
-        }
-        allRecords = batchResults.flatMap(r => r.data ?? []);
-      }
+      if (rpcError) throw rpcError;
+      allRecords = data ?? [];
     } else {
       // Standard fetch (no not_yet_indexed filter) — use database-side pagination
       const buildQuery = (pageOffset: number, pageSize: number) => {
