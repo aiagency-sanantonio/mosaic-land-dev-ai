@@ -110,19 +110,34 @@ serve(async (req) => {
     let allRecords: Record<string, unknown>[] = [];
 
     if (not_yet_indexed) {
-      // Use server-side RPC to avoid URL length limits
-      const rpcParams: Record<string, unknown> = {
-        p_extension_filter: extension_filter ?? null,
-        p_path_prefix: path_prefix ?? null,
-        p_limit: fetch_all ? 0 : limit,
-        p_offset: fetch_all ? 0 : offset,
-      };
-
-      const { data, error: rpcError } = await supabase
-        .rpc('get_unindexed_dropbox_files', rpcParams);
-
-      if (rpcError) throw rpcError;
-      allRecords = data ?? [];
+      if (fetch_all) {
+        // Paginate through RPC to bypass the 1000-row REST API cap
+        const PAGE_SIZE = 1000;
+        let pageOffset = 0;
+        while (true) {
+          const { data: page, error: rpcError } = await supabase
+            .rpc('get_unindexed_dropbox_files', {
+              p_extension_filter: extension_filter ?? null,
+              p_path_prefix: path_prefix ?? null,
+              p_limit: PAGE_SIZE,
+              p_offset: pageOffset,
+            });
+          if (rpcError) throw rpcError;
+          allRecords.push(...(page ?? []));
+          if (!page || page.length < PAGE_SIZE) break;
+          pageOffset += PAGE_SIZE;
+        }
+      } else {
+        const { data, error: rpcError } = await supabase
+          .rpc('get_unindexed_dropbox_files', {
+            p_extension_filter: extension_filter ?? null,
+            p_path_prefix: path_prefix ?? null,
+            p_limit: limit,
+            p_offset: offset,
+          });
+        if (rpcError) throw rpcError;
+        allRecords = data ?? [];
+      }
     } else {
       // Standard fetch (no not_yet_indexed filter) — use database-side pagination
       const buildQuery = (pageOffset: number, pageSize: number) => {
