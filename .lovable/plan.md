@@ -1,58 +1,103 @@
 
-## Fix: URL Too Long When Fetching File Details in `query-dropbox-files`
+
+## Fix: Eliminate URL Length Issue in query-dropbox-files
 
 ### Root Cause
 
-When `not_yet_indexed: true` (or any path slice is requested), the function calls:
-
-```typescript
-supabase
-  .from('dropbox_files')
-  .select('...')
-  .in('file_path', pathSlice)
-```
-
-The Supabase JS client sends `.in()` values as a URL query parameter, like:
-```
-?file_path=in.(/path/one,/path/two,/path/three,...)
-```
-
-With hundreds of long Dropbox file paths, this URL grows to thousands of characters and exceeds browser/HTTP URL length limits, causing a `TypeError: Invalid URL` and a 500 response.
+The `.in('file_path', batch)` approach puts file paths into the URL as query parameters. Your Dropbox paths are extremely long (~250 characters each URL-encoded), so even batches of 50 paths create URLs of 12,500+ characters. The Supabase REST API / Deno runtime rejects these as invalid URLs.
 
 ### The Fix
 
-Batch the `pathSlice` array into chunks of 50 paths and run multiple `.in()` queries in parallel, then merge the results. This keeps each individual URL well within length limits.
+Replace the client-side filtering + `.in()` approach with a **server-side SQL function** that does a LEFT JOIN between `dropbox_files` and `indexing_status` directly in the database. This eliminates the need to pass any file paths in URLs.
 
-```typescript
-// Break into batches of 50
-const BATCH_SIZE = 50;
-const batches = [];
-for (let i = 0; i < pathSlice.length; i += BATCH_SIZE) {
-  batches.push(pathSlice.slice(i, i + BATCH_SIZE));
-}
+### Step 1: Create a database function
 
-// Fetch each batch in parallel
-const batchResults = await Promise.all(
-  batches.map(batch =>
-    supabase
-      .from('dropbox_files')
-      .select('file_path, file_name, ...')
-      .in('file_path', batch)
-      .order('file_path', { ascending: true })
-  )
-);
+Create an RPC function `get_unindexed_dropbox_files` that:
+- LEFT JOINs `dropbox_files` with `indexing_status` (on `file_path`)
+- Filters to rows where `indexing_status` has no match (i.e., not yet indexed)
+- Supports optional `extension_filter` and `path_prefix` parameters
+- Supports `p_limit` and `p_offset` for pagination, or returns all when `p_limit = 0`
 
-// Merge results
-const allRecords = batchResults.flatMap(r => r.data ?? []);
+```sql
+CREATE OR REPLACE FUNCTION public.get_unindexed_dropbox_files(
+  p_extension_filter text DEFAULT NULL,
+  p_path_prefix text DEFAULT NULL,
+  p_limit integer DEFAULT 100,
+  p_offset integer DEFAULT 0
+)
+RETURNS TABLE (
+  file_path text,
+  file_name text,
+  file_extension text,
+  file_size_bytes bigint,
+  dropbox_id text,
+  content_hash text,
+  dropbox_modified_at timestamptz,
+  discovered_at timestamptz,
+  last_seen_at timestamptz
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path TO 'public'
+AS $$
+  SELECT
+    df.file_path,
+    df.file_name,
+    df.file_extension,
+    df.file_size_bytes,
+    df.dropbox_id,
+    df.content_hash,
+    df.dropbox_modified_at,
+    df.discovered_at,
+    df.last_seen_at
+  FROM dropbox_files df
+  LEFT JOIN indexing_status ist ON df.file_path = ist.file_path AND ist.status = 'success'
+  WHERE ist.file_path IS NULL
+    AND (p_extension_filter IS NULL OR df.file_extension = p_extension_filter)
+    AND (p_path_prefix IS NULL OR df.file_path LIKE p_path_prefix || '%')
+  ORDER BY df.file_path ASC
+  LIMIT CASE WHEN p_limit = 0 THEN NULL ELSE p_limit END
+  OFFSET p_offset;
+$$;
 ```
 
-### Technical Changes
+### Step 2: Update the edge function
 
 **File: `supabase/functions/query-dropbox-files/index.ts`**
 
-- Add a `BATCH_SIZE = 50` constant
-- Replace the single `.in('file_path', pathSlice)` query with a batched parallel fetch using `Promise.all`
-- Merge all batch results into a single `allRecords` array
-- Handle errors from any batch (throw on first error)
-- No schema changes required
-- No changes to the `changed_since_indexed` logic
+Replace the `not_yet_indexed` branch (which currently fetches all paths, filters in memory, then uses `.in()`) with a single `.rpc()` call:
+
+```typescript
+if (not_yet_indexed) {
+  const rpcParams: Record<string, unknown> = {
+    p_extension_filter: extension_filter ?? null,
+    p_path_prefix: path_prefix ?? null,
+    p_limit: fetch_all ? 0 : limit,
+    p_offset: fetch_all ? 0 : offset,
+  };
+
+  const { data, error: rpcError } = await supabase
+    .rpc('get_unindexed_dropbox_files', rpcParams);
+
+  if (rpcError) throw rpcError;
+  allRecords = data ?? [];
+}
+```
+
+This replaces approximately 40 lines of complex client-side logic (path fetching, in-memory filtering, batching, parallel queries) with a single efficient database call. No file paths are passed in URLs.
+
+### Step 3: Redeploy
+
+Deploy the updated `query-dropbox-files` edge function.
+
+### Why This Is Better
+
+- **No URL length limits**: The RPC call sends parameters in the POST body, not the URL
+- **Much faster**: The database does the JOIN instead of the edge function fetching thousands of rows and filtering in memory
+- **Simpler code**: Removes ~40 lines of complex batching/filtering logic
+- **Scales**: Works regardless of how many files or how long the paths are
+
+### Summary of Changes
+
+1. **New database migration**: Creates `get_unindexed_dropbox_files` SQL function
+2. **Update `supabase/functions/query-dropbox-files/index.ts`**: Replace the `not_yet_indexed` branch with a single `.rpc()` call; keep the summary calculation and `changed_since_indexed` logic unchanged
+3. **Deploy**: Redeploy the edge function
