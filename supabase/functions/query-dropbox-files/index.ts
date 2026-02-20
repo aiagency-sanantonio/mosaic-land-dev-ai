@@ -66,44 +66,22 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    // --- Fetch all dropbox file paths (lightweight, used for summary) ---
-    const allPathRows: { file_path: string }[] = [];
-    {
-      const PAGE = 1000;
-      let pg = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from('dropbox_files')
-          .select('file_path')
-          .order('file_path', { ascending: true })
-          .range(pg, pg + PAGE - 1);
-        if (error) throw error;
-        allPathRows.push(...(data ?? []));
-        if (!data || data.length < PAGE) break;
-        pg += PAGE;
-      }
-    }
+    // --- Efficient summary using COUNT queries ---
+    const { count: totalFiles, error: countError } = await supabase
+      .from('dropbox_files')
+      .select('*', { count: 'exact', head: true });
+    if (countError) throw countError;
 
-    const totalFiles = allPathRows.length;
-
-    // --- Fetch successfully indexed paths ---
-    const { data: indexedPaths, error: indexedError } = await supabase
+    const { count: indexedCount, error: indexedCountError } = await supabase
       .from('indexing_status')
-      .select('file_path')
+      .select('*', { count: 'exact', head: true })
       .eq('status', 'success');
-
-    if (indexedError) throw indexedError;
-
-    const indexedSet = new Set((indexedPaths ?? []).map((r) => r.file_path));
-
-    // --- Summary ---
-    const indexedCount = allPathRows.filter(r => indexedSet.has(r.file_path)).length;
-    const notYetIndexedCount = totalFiles - indexedCount;
+    if (indexedCountError) throw indexedCountError;
 
     const summary = {
-      total_files: totalFiles,
-      indexed: indexedCount,
-      not_yet_indexed: notYetIndexedCount,
+      total_files: totalFiles ?? 0,
+      indexed: indexedCount ?? 0,
+      not_yet_indexed: (totalFiles ?? 0) - (indexedCount ?? 0),
     };
 
     // --- Fetch records ---
