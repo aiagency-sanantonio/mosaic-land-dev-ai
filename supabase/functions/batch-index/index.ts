@@ -193,6 +193,36 @@ async function downloadTextFromDropbox(filePath: string, token: string): Promise
   return text;
 }
 
+/** Exchange refresh token for a fresh short-lived access token */
+async function getDropboxAccessToken(): Promise<string> {
+  const refreshToken = Deno.env.get('DROPBOX_REFRESH_TOKEN');
+  const appKey = Deno.env.get('DROPBOX_APP_KEY');
+  const appSecret = Deno.env.get('DROPBOX_APP_SECRET');
+
+  if (!refreshToken || !appKey || !appSecret) {
+    throw new Error('Dropbox OAuth not configured: need DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, DROPBOX_APP_SECRET');
+  }
+
+  const res = await fetch('https://api.dropboxapi.com/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: appKey,
+      client_secret: appSecret,
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Dropbox token refresh failed (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  return data.access_token;
+}
+
 /** Wrap a promise with a timeout */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -220,13 +250,8 @@ serve(async (req) => {
     const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const openaiApiKey = Deno.env.get('OPENAI_API_KEY')!;
-    const dropboxToken = Deno.env.get('DROPBOX_ACCESS_TOKEN');
-
-    if (!dropboxToken) {
-      return new Response(JSON.stringify({ error: 'DROPBOX_ACCESS_TOKEN not configured' }), {
-        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    // Get a fresh Dropbox access token via refresh token
+    const dropboxToken = await getDropboxAccessToken();
 
     // Verify user
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
