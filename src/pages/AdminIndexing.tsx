@@ -53,9 +53,9 @@ export default function AdminIndexing() {
         if (error) {
           // Check for token-related errors
           const errMsg = error.message || 'Unknown error';
-          if (errMsg.includes('401') || errMsg.includes('expired') || errMsg.includes('invalid_access_token')) {
-            setLastError('Dropbox token expired. Update the token in backend secrets and click Resume.');
-            toast.error('Dropbox token expired — update it and resume.');
+          if (errMsg.includes('401') || errMsg.includes('expired') || errMsg.includes('invalid_access_token') || errMsg.includes('token refresh failed')) {
+            setLastError('Dropbox token refresh failed. Check DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, and DROPBOX_APP_SECRET in backend secrets.');
+            toast.error('Dropbox token refresh failed — check secrets and resume.');
             break;
           }
           throw error;
