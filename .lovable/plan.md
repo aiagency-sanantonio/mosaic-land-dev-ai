@@ -1,42 +1,30 @@
 
 
-## Fix: Batch Indexing Infinite Loop
+## Reset Failed Files for Re-indexing
 
-### Problem
+Since you've updated the Dropbox token, we need to reset the files that failed due to the expired token so they'll be picked up again by the indexing process.
 
-The indexing is stuck in an infinite loop processing the same 3 image files every batch. Two root causes:
+### What will happen
 
-1. **Database function only skips "success" files**: The `get_unindexed_dropbox_files` RPC joins on `indexing_status` filtering `status = 'success'` only. Files marked as "skipped" or "failed" are returned again on every call.
+A database update will clear the status of files that failed with token-related errors, setting them back to "pending" so they re-enter the indexing queue on the next batch run.
 
-2. **No unique constraint on `file_path`**: The `upsert` call uses `onConflict: 'file_path'`, but there is no unique constraint on that column, so the upsert silently fails and no record gets saved.
+### Technical details
 
-### Fix (2 changes)
-
-**1. Add a unique constraint on `indexing_status.file_path`**
-
-Database migration:
-```sql
-ALTER TABLE indexing_status 
-ADD CONSTRAINT indexing_status_file_path_unique UNIQUE (file_path);
-```
-
-This makes the `upsert(..., { onConflict: 'file_path' })` actually work.
-
-**2. Update the `get_unindexed_dropbox_files` RPC to exclude ALL indexed files**
-
-Change the LEFT JOIN condition from filtering only `status = 'success'` to including any status. This way, once a file is marked as skipped, failed, or success, it won't be returned again.
+Run a SQL update against the `indexing_status` table:
 
 ```sql
-CREATE OR REPLACE FUNCTION public.get_unindexed_dropbox_files(...)
-  -- Change: remove "AND ist.status = 'success'" from the JOIN
-  LEFT JOIN indexing_status ist ON df.file_path = ist.file_path
-  WHERE ist.file_path IS NULL
-  ...
+DELETE FROM indexing_status 
+WHERE status = 'failed' AND error_message LIKE '%invalid_access_token%';
 ```
 
-### Technical Details
+We use `DELETE` rather than `UPDATE` because the `get_unindexed_dropbox_files` RPC looks for files with no entry in `indexing_status`. Removing the failed records puts those files back into the "unindexed" pool automatically.
 
-- **File:** No code file changes needed -- the edge function code is already correct
-- **Database:** Two migrations: one for the unique constraint, one to update the RPC
-- After these fixes, the existing function will correctly skip image files once and move on to PDFs, text files, etc.
+We will also reset the 571 files that were incorrectly skipped with "Insufficient content" from the old extraction logic:
+
+```sql
+DELETE FROM indexing_status 
+WHERE status = 'skipped' AND error_message LIKE 'Insufficient content%';
+```
+
+After this, navigate to /admin/indexing and resume indexing.
 
