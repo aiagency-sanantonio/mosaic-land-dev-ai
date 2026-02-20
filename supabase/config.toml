@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.query-dropbox-files]
 verify_jwt = false
+
+[functions.batch-index]
+verify_jwt = false
