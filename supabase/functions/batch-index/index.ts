@@ -7,15 +7,18 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 3;
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
+const PER_FILE_TIMEOUT_MS = 45_000;
 
-// Extensions that can be text-extracted
-const VECTORIZABLE_EXTENSIONS = new Set([
-  'txt', 'log', 'md', 'csv', 'html', 'htm', 'xml', 'json', 'rtf',
-  'eml', 'pdf', 'doc', 'docx', 'xlsx', 'xls', 'pptx',
+// Extensions that can use Dropbox /export API (returns plain text)
+const EXPORT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'xls', 'pptx']);
+
+// Extensions we download and decode as text
+const TEXT_EXTENSIONS = new Set([
+  'txt', 'log', 'md', 'csv', 'html', 'htm', 'xml', 'json', 'rtf', 'eml',
 ]);
 
 // Extensions to skip entirely
@@ -30,7 +33,7 @@ const SKIP_EXTENSIONS = new Set([
   'psd', 'ai', 'indd', 'sketch', 'fig',
 ]);
 
-// Metadata extraction patterns (same as process-document)
+// Metadata extraction patterns
 const COST_PATTERN = /\$[\d,]+(?:\.\d{2})?/g;
 const DATE_PATTERN = /\b(?:0?[1-9]|1[0-2])[-\/](?:0?[1-9]|[12]\d|3[01])[-\/](?:19|20)?\d{2}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b/gi;
 const PROJECT_PATTERN = /(?:project|lot|tract|phase|unit|parcel)[\s:#-]*([A-Za-z0-9-]+)/gi;
@@ -68,7 +71,6 @@ function extractMetadata(text: string): Record<string, unknown> {
 
 function splitText(text: string): string[] {
   const separators = ['\n\n', '\n', '. ', ' ', ''];
-  const chunks: string[] = [];
 
   function splitRecursive(text: string, sepIdx: number): string[] {
     if (text.length <= CHUNK_SIZE) return [text];
@@ -95,6 +97,7 @@ function splitText(text: string): string[] {
   }
 
   const raw = splitRecursive(text, 0);
+  const chunks: string[] = [];
   for (let i = 0; i < raw.length; i++) {
     if (i > 0 && CHUNK_OVERLAP > 0) {
       const overlap = raw[i - 1].slice(-CHUNK_OVERLAP);
@@ -138,7 +141,24 @@ async function generateEmbeddingsBatch(texts: string[], apiKey: string): Promise
   return results;
 }
 
-async function downloadFromDropbox(filePath: string, token: string): Promise<ArrayBuffer> {
+/** Use Dropbox /export API for PDF and Office docs — returns plain text */
+async function exportFromDropbox(filePath: string, token: string): Promise<string> {
+  const res = await fetch('https://content.dropboxapi.com/2/files/export', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Dropbox-API-Arg': JSON.stringify({ path: filePath }),
+    },
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Dropbox export error (${res.status}): ${errText}`);
+  }
+  return res.text();
+}
+
+/** Use Dropbox /download API for plain-text formats */
+async function downloadTextFromDropbox(filePath: string, token: string): Promise<string> {
   const res = await fetch('https://content.dropboxapi.com/2/files/download', {
     method: 'POST',
     headers: {
@@ -150,19 +170,12 @@ async function downloadFromDropbox(filePath: string, token: string): Promise<Arr
     const errText = await res.text();
     throw new Error(`Dropbox download error (${res.status}): ${errText}`);
   }
-  return res.arrayBuffer();
-}
-
-function extractTextFromBuffer(buffer: ArrayBuffer, ext: string): string {
+  const buffer = await res.arrayBuffer();
   const decoder = new TextDecoder('utf-8', { fatal: false });
-  const text = decoder.decode(buffer);
+  let text = decoder.decode(buffer);
 
-  if (['txt', 'log', 'md', 'csv', 'json', 'xml', 'html', 'htm', 'rtf'].includes(ext)) {
-    return text;
-  }
-
-  if (ext === 'eml') {
-    // Basic EML: strip headers, return body
+  // Special handling for EML: extract headers + body
+  if (filePath.toLowerCase().endsWith('.eml')) {
     const parts = text.split('\n\n');
     const headers = parts[0] || '';
     const body = parts.slice(1).join('\n\n');
@@ -177,14 +190,17 @@ function extractTextFromBuffer(buffer: ArrayBuffer, ext: string): string {
     return result;
   }
 
-  // For docx, xlsx, pptx, doc — attempt as plain text (partial extraction)
-  if (['docx', 'xlsx', 'xls', 'pptx', 'doc'].includes(ext)) {
-    // These are ZIP-based XML formats; raw text decode may capture some readable content
-    // Filter out binary noise — keep only printable ASCII + common unicode
-    return text.replace(/[^\x20-\x7E\n\r\t\u00A0-\u024F]/g, ' ').replace(/\s{3,}/g, ' ').trim();
-  }
-
   return text;
+}
+
+/** Wrap a promise with a timeout */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout after ${ms}ms processing ${label}`)), ms)
+    ),
+  ]);
 }
 
 serve(async (req) => {
@@ -193,7 +209,6 @@ serve(async (req) => {
   }
 
   try {
-    // Auth: require logged-in user
     const authHeader = req.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -213,7 +228,7 @@ serve(async (req) => {
       });
     }
 
-    // Verify user is authenticated
+    // Verify user
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
     });
@@ -225,7 +240,6 @@ serve(async (req) => {
       });
     }
 
-    // Use service role for DB operations
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Fetch unindexed files
@@ -236,8 +250,6 @@ serve(async (req) => {
     if (rpcError) throw rpcError;
 
     if (!unindexedFiles || unindexedFiles.length === 0) {
-      // Get remaining count
-      const { data: remainingData } = await supabase.rpc('get_unindexed_dropbox_files', { p_limit: 0 });
       return new Response(JSON.stringify({
         processed: 0, skipped: 0, failed: 0, remaining: 0,
         errors: [], message: 'All files have been indexed!',
@@ -256,7 +268,7 @@ serve(async (req) => {
       const fileName = file.file_name;
 
       // Skip non-vectorizable files
-      if (SKIP_EXTENSIONS.has(ext) || (!VECTORIZABLE_EXTENSIONS.has(ext) && ext !== '')) {
+      if (SKIP_EXTENSIONS.has(ext) || (!EXPORT_EXTENSIONS.has(ext) && !TEXT_EXTENSIONS.has(ext) && ext !== '')) {
         await supabase.from('indexing_status').upsert({
           file_path: filePath,
           file_name: fileName,
@@ -271,108 +283,75 @@ serve(async (req) => {
       }
 
       try {
-        // Download from Dropbox
-        const buffer = await downloadFromDropbox(filePath, dropboxToken);
+        // Process with per-file timeout
+        await withTimeout(
+          (async () => {
+            let text: string;
 
-        // Extract text
-        let text: string;
-        if (ext === 'pdf') {
-          // For PDF: try text decode, if mostly binary try basic extraction
-          const decoder = new TextDecoder('utf-8', { fatal: false });
-          const rawText = decoder.decode(buffer);
-
-          // Simple PDF text extraction: find text between BT and ET markers, or stream content
-          const textParts: string[] = [];
-          // Try to extract text from PDF text objects
-          const btEtRegex = /BT\s*([\s\S]*?)\s*ET/g;
-          let match;
-          while ((match = btEtRegex.exec(rawText)) !== null) {
-            const block = match[1];
-            // Extract text from Tj and TJ operators
-            const tjRegex = /\(([^)]*)\)\s*Tj/g;
-            let tjMatch;
-            while ((tjMatch = tjRegex.exec(block)) !== null) {
-              textParts.push(tjMatch[1]);
+            if (EXPORT_EXTENSIONS.has(ext)) {
+              // Use Dropbox /export API for PDF and Office docs
+              text = await exportFromDropbox(filePath, dropboxToken);
+            } else {
+              // Download and decode as text
+              text = await downloadTextFromDropbox(filePath, dropboxToken);
             }
-            // TJ array
-            const tjArrayRegex = /\[([^\]]*)\]\s*TJ/g;
-            let tjArrMatch;
-            while ((tjArrMatch = tjArrayRegex.exec(block)) !== null) {
-              const inner = tjArrMatch[1];
-              const stringRegex = /\(([^)]*)\)/g;
-              let strMatch;
-              while ((strMatch = stringRegex.exec(inner)) !== null) {
-                textParts.push(strMatch[1]);
-              }
+
+            // Skip if too little content
+            if (text.trim().length < 50) {
+              await supabase.from('indexing_status').upsert({
+                file_path: filePath,
+                file_name: fileName,
+                status: 'skipped',
+                chunks_created: 0,
+                error_message: 'Insufficient extractable text (< 50 chars)',
+                indexed_at: new Date().toISOString(),
+              }, { onConflict: 'file_path' });
+              skipped++;
+              activity.push({ file: fileName || filePath, status: 'skipped' });
+              return;
             }
-          }
 
-          text = textParts.join(' ').trim();
-          if (text.length < 50) {
-            // Fallback: grab any readable text
-            text = rawText.replace(/[^\x20-\x7E\n\r\t]/g, ' ').replace(/\s{3,}/g, ' ').trim();
-          }
-        } else {
-          text = extractTextFromBuffer(buffer, ext);
-        }
+            const extractedMetadata = extractMetadata(text);
 
-        // Skip if too little content
-        if (text.trim().length < 50) {
-          await supabase.from('indexing_status').upsert({
-            file_path: filePath,
-            file_name: fileName,
-            status: 'skipped',
-            chunks_created: 0,
-            error_message: 'Insufficient extractable text (< 50 chars)',
-            indexed_at: new Date().toISOString(),
-          }, { onConflict: 'file_path' });
-          skipped++;
-          activity.push({ file: fileName || filePath, status: 'skipped' });
-          continue;
-        }
+            // Delete existing chunks for this file
+            await supabase.from('documents').delete().eq('file_path', filePath);
 
-        // Extract metadata
-        const extractedMetadata = extractMetadata(text);
+            // Chunk and embed
+            const chunks = splitText(text);
+            const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
 
-        // Delete existing chunks for this file
-        await supabase.from('documents').delete().eq('file_path', filePath);
+            const documents = chunks.map((chunk, i) => ({
+              content: chunk,
+              embedding: JSON.stringify(embeddings[i]),
+              file_path: filePath,
+              file_name: fileName,
+              metadata: {
+                ...extractedMetadata,
+                chunk_index: i,
+                total_chunks: chunks.length,
+                file_extension: ext,
+              },
+            }));
 
-        // Chunk text
-        const chunks = splitText(text);
+            const { error: insertError } = await supabase.from('documents').insert(documents);
+            if (insertError) throw insertError;
 
-        // Generate embeddings
-        const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
+            await supabase.from('indexing_status').upsert({
+              file_path: filePath,
+              file_name: fileName,
+              status: 'success',
+              chunks_created: documents.length,
+              error_message: null,
+              metadata: extractedMetadata,
+              indexed_at: new Date().toISOString(),
+            }, { onConflict: 'file_path' });
 
-        // Insert chunks
-        const documents = chunks.map((chunk, i) => ({
-          content: chunk,
-          embedding: JSON.stringify(embeddings[i]),
-          file_path: filePath,
-          file_name: fileName,
-          metadata: {
-            ...extractedMetadata,
-            chunk_index: i,
-            total_chunks: chunks.length,
-            file_extension: ext,
-          },
-        }));
-
-        const { error: insertError } = await supabase.from('documents').insert(documents);
-        if (insertError) throw insertError;
-
-        // Update indexing status
-        await supabase.from('indexing_status').upsert({
-          file_path: filePath,
-          file_name: fileName,
-          status: 'success',
-          chunks_created: documents.length,
-          error_message: null,
-          metadata: extractedMetadata,
-          indexed_at: new Date().toISOString(),
-        }, { onConflict: 'file_path' });
-
-        processed++;
-        activity.push({ file: fileName || filePath, status: 'success' });
+            processed++;
+            activity.push({ file: fileName || filePath, status: 'success' });
+          })(),
+          PER_FILE_TIMEOUT_MS,
+          fileName || filePath
+        );
 
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -394,12 +373,10 @@ serve(async (req) => {
     }
 
     // Get remaining count
-    const { data: remainingFiles } = await supabase.rpc('get_unindexed_dropbox_files', { p_limit: 1 });
-    // To get total remaining we do a count query
     const { count: remainingCount } = await supabase
       .from('dropbox_files')
       .select('id', { count: 'exact', head: true });
-    
+
     const { count: indexedCount } = await supabase
       .from('indexing_status')
       .select('id', { count: 'exact', head: true });
@@ -407,12 +384,9 @@ serve(async (req) => {
     const remaining = (remainingCount || 0) - (indexedCount || 0);
 
     return new Response(JSON.stringify({
-      processed,
-      skipped,
-      failed,
+      processed, skipped, failed,
       remaining: Math.max(0, remaining),
-      errors,
-      activity,
+      errors, activity,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {
