@@ -1,143 +1,70 @@
 
 
-## Fix: Indexing Pipeline Reliability Issues
+## Solution: Python Script for Reliable Bulk Indexing
 
-### Problems Found
+### Why the Current Setup Keeps Failing
 
-**1. `query-dropbox-files` summary is extremely slow and may timeout**
-The summary calculation (lines 69-97) fetches ALL 27,256 file paths one page at a time (28 queries) just to count them. This wastes time and could cause the edge function to timeout before even returning results.
+The `process-document` edge function has a ~60 second execution limit. For large documents that produce many chunks, the embedding generation (even at 5 per batch with delays) can exceed this. When N8N sends many documents in parallel, multiple edge function instances timeout simultaneously, causing N8N to error and stop the workflow.
 
-**2. `process-document` has no retry logic for OpenAI API calls**
-The embedding generation fires 10 parallel OpenAI requests per batch with zero error handling for rate limits (HTTP 429). When N8N sends hundreds of documents rapidly, OpenAI rate-limits the requests, causing failures that crash the N8N workflow.
+### Recommended Approach: Local Python Script
 
-**3. `process-document` has no delay between embedding batches**
-Back-to-back batches of 10 parallel OpenAI calls will hit rate limits quickly during bulk indexing.
+A Python script running on your machine (or a server) bypasses both the edge function timeout and N8N execution limits. It can:
 
-**4. Response size issue**
-Returning 26,000+ full file records in a single JSON response can be very large and slow to transmit, potentially causing N8N HTTP timeouts.
+- Run for hours without any timeout
+- Process documents one at a time, sequentially
+- Automatically skip already-indexed files
+- Resume from where it left off if interrupted
+- Log progress clearly
 
----
+### How It Works
 
-### Fix 1: Replace summary with SQL COUNT queries
+1. Call `query-dropbox-files` to get unindexed file paths
+2. For each file, download content from Dropbox using the Dropbox API
+3. Chunk the text, generate embeddings via OpenAI, and insert directly into the database
+4. Update `indexing_status` after each file
+5. Add delays between files to avoid rate limits
 
-**File:** `supabase/functions/query-dropbox-files/index.ts`
+### What You Need
 
-Replace the 27-line summary section (fetching all paths into memory, then filtering) with two simple COUNT queries:
+- Python 3.8+ installed
+- `pip install openai supabase dropbox` (three packages)
+- Your existing API keys: OpenAI API key, Supabase URL + service role key, Dropbox access token
 
-```typescript
-// Efficient summary using COUNT
-const { count: totalFiles, error: countError } = await supabase
-  .from('dropbox_files')
-  .select('*', { count: 'exact', head: true });
-if (countError) throw countError;
+### The Script
 
-const { count: indexedCount, error: indexedCountError } = await supabase
-  .from('indexing_status')
-  .select('*', { count: 'exact', head: true })
-  .eq('status', 'success');
-if (indexedCountError) throw indexedCountError;
+The script would:
 
-const summary = {
-  total_files: totalFiles ?? 0,
-  indexed: indexedCount ?? 0,
-  not_yet_indexed: (totalFiles ?? 0) - (indexedCount ?? 0),
-};
+```text
+For each unindexed file:
+  1. Download from Dropbox
+  2. Extract text (handle PDF/DOCX/etc)
+  3. Split into chunks (same logic as current edge function)
+  4. Generate embeddings via OpenAI (with retry + backoff)
+  5. Insert chunks into 'documents' table
+  6. Update 'indexing_status' to 'success'
+  7. Print progress: "Processed 142/26062: filename.pdf (8 chunks)"
+  8. Wait 500ms before next file
 ```
 
-This replaces 28+ database queries with 2 fast COUNT queries.
+If the script is interrupted, re-running it automatically picks up where it left off (it queries for unindexed files each time).
 
-### Fix 2: Add retry logic and rate-limit handling to OpenAI calls
+### What Changes in Lovable
 
-**File:** `supabase/functions/process-document/index.ts`
+**No code changes needed.** The existing `process-document` edge function stays as-is for future single-document indexing (e.g., when N8N detects a new file). The Python script is only for the initial bulk backfill.
 
-Update the `generateEmbedding` function to retry on failure (especially HTTP 429 rate limits):
+### Alternative: Keep N8N But Fix the Flow
 
-```typescript
-async function generateEmbedding(text: string, openaiApiKey: string, retries = 3): Promise<number[]> {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    const response = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openaiApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'text-embedding-3-small',
-        input: text,
-      }),
-    });
+If you prefer staying in N8N, the fix is to configure the workflow to:
+- Process files **one at a time** (not in parallel)
+- Add a **Wait node** (2-3 seconds) between each document
+- Use **error handling** on the HTTP node to continue on failure instead of stopping
+- Process in batches of 500 using `limit` and `offset` instead of `fetch_all: true`
 
-    if (response.ok) {
-      const data = await response.json();
-      return data.data[0].embedding;
-    }
+This would work but will be much slower than the Python script since each call still has the edge function overhead.
 
-    const errorText = await response.text();
+### Recommendation
 
-    // Retry on rate limit (429) or server errors (5xx)
-    if ((response.status === 429 || response.status >= 500) && attempt < retries - 1) {
-      const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-      console.warn(`OpenAI API ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-      continue;
-    }
+Use the **Python script for the initial bulk indexing** of 26,000 files, then keep the N8N workflow for **ongoing incremental indexing** of new/changed files (where it only processes a handful at a time and won't hit these limits).
 
-    throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
-  }
+I can provide the complete Python script ready to run if you'd like to proceed with this approach.
 
-  throw new Error('Max retries exceeded');
-}
-```
-
-### Fix 3: Add delay between embedding batches
-
-**File:** `supabase/functions/process-document/index.ts`
-
-Add a small delay between batches in `generateEmbeddingsBatch` to avoid overwhelming the OpenAI API:
-
-```typescript
-async function generateEmbeddingsBatch(texts: string[], openaiApiKey: string): Promise<number[][]> {
-  const results: number[][] = [];
-
-  for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
-    const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-    const batchResults = await Promise.all(
-      batch.map(text => generateEmbedding(text, openaiApiKey))
-    );
-    results.push(...batchResults);
-
-    // Small delay between batches to avoid rate limits
-    if (i + EMBEDDING_BATCH_SIZE < texts.length) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
-  }
-
-  return results;
-}
-```
-
-### Fix 4: Reduce parallel embedding calls from 10 to 5
-
-Change `EMBEDDING_BATCH_SIZE` from 10 to 5 to reduce the chance of rate limiting:
-
-```typescript
-const EMBEDDING_BATCH_SIZE = 5;
-```
-
----
-
-### Summary of Changes
-
-| File | Change |
-|------|--------|
-| `supabase/functions/query-dropbox-files/index.ts` | Replace 28-query summary with 2 COUNT queries |
-| `supabase/functions/process-document/index.ts` | Add retry with exponential backoff for OpenAI calls |
-| `supabase/functions/process-document/index.ts` | Add 200ms delay between embedding batches |
-| `supabase/functions/process-document/index.ts` | Reduce batch size from 10 to 5 |
-
-### No database changes needed
-
-### Both edge functions will be redeployed
-
-### Additional Note
-If N8N Cloud has a workflow execution time limit and you have 26,000+ files to process, it may still hit that limit. In that case, you would need to configure N8N to process files in smaller batches (e.g., 500 per run) using the `limit` and `offset` parameters instead of `fetch_all: true`, and trigger multiple runs.
