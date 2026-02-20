@@ -1,98 +1,78 @@
 
 
-## Hybrid Bulk Indexing -- Button in Your App, No Keys Needed
+## Fix Bulk Indexing: Better PDF Extraction and Reliability
 
-### Overview
+### Problem Summary
 
-A new backend function processes 10 files per call using secrets already stored in your backend. Your app gets an admin page where you click "Start Indexing" and watch progress. Estimated time: **12-18 hours** for ~19,500 files.
+The batch-index function has three critical issues:
+1. PDF text extraction uses raw regex parsing that fails on most PDFs (571 skipped as "insufficient content")
+2. Processing 10 files per batch causes timeouts (the "Failed to send request" error)
+3. DOCX/XLSX files can't be extracted as plain text
 
-### What You Need to Provide
+### Solution
 
-**One thing only:** A Dropbox Access Token, which I'll securely store as a backend secret. You get this from [dropbox.com/developers/apps](https://www.dropbox.com/developers/apps) under Settings > OAuth 2 > Generate access token.
+**1. Use Dropbox's built-in PDF-to-text export instead of parsing PDFs ourselves**
 
-Since the run may take 12-18 hours and Dropbox tokens expire after ~4 hours, we'll build in support for you to update the token mid-run if needed (you'd just paste a new one and click resume).
+Dropbox has an `/export` API endpoint that can convert PDFs and Office documents to plain text. This is far more reliable than any Deno-based parser and handles:
+- Scanned PDFs (OCR)
+- Complex PDF layouts
+- DOCX, XLSX, PPTX natively
 
----
+For files where export isn't available, fall back to the current text extraction.
 
-### What Gets Built
+**2. Reduce batch size from 10 to 3 files per call**
 
-**1. New backend function: `batch-index`**
-- Fetches 10 unindexed files from the database (using existing `get_unindexed_dropbox_files` RPC)
-- Marks non-vectorizable files (images, CAD, video, etc.) as "skipped" in bulk
-- For each vectorizable file:
-  - Downloads content from Dropbox API using the stored token
-  - Extracts text (handles PDF via a lightweight Deno PDF parser, plus plain text formats like CSV, TXT, EML, HTML, XML)
-  - Chunks text (1000 chars, 200 overlap -- same as existing system)
-  - Generates embeddings via OpenAI (already stored)
-  - Inserts chunks into `documents` table
-  - Updates `indexing_status`
-- Returns `{ processed, skipped, failed, remaining, errors }` so the frontend knows progress
+This keeps each invocation well within the 60-second timeout. The frontend loop compensates by calling more frequently. Total time increases only slightly since the bottleneck is embedding generation, not loop overhead.
 
-**2. New admin page: `/admin/indexing`**
-- Protected route (requires login)
-- "Start Indexing" button that calls `batch-index` in a loop
-- Live progress: files processed, remaining, success/skip/fail counts
-- Log of recent files processed
-- "Stop" button to pause (just stops the loop -- resume anytime)
-- Status persists in React state so you see where things stand
+**3. Add per-file timeout protection**
 
-**3. Navigation update**
-- Add a link/button in the chat sidebar to access the indexing admin page
+Wrap each file's processing in a timeout (45 seconds) so one slow file doesn't kill the entire batch.
 
----
+**4. Reset the 571 incorrectly skipped files**
 
-### File Type Handling
-
-The backend function handles text extraction for common formats natively in Deno:
-- **PDF**: Using a lightweight Deno-compatible PDF text extraction library
-- **TXT, LOG, MD, CSV, HTML, XML, JSON, RTF**: Direct text read
-- **EML**: Basic email header + body parsing
-- **DOCX, XLSX, DOC, PPTX**: Attempted as plain text (may extract partial content)
-- **Images, video, CAD, archives, fonts**: Automatically skipped
-
----
-
-### How the Loop Works
-
-```text
-User clicks "Start Indexing"
-    |
-    v
-Frontend calls batch-index (10 files)
-    |
-    v
-Function returns: { processed: 8, skipped: 2, remaining: 19,480 }
-    |
-    v
-Frontend updates progress bar, calls again
-    |
-    v
-... repeats until remaining = 0 or user clicks "Stop"
-```
+Run a database update to reset files that were marked "skipped" due to "Insufficient content" so they get re-processed with the improved extraction.
 
 ---
 
 ### Technical Details
 
-**New files to create:**
-- `supabase/functions/batch-index/index.ts` -- the batch processing function
-- `src/pages/AdminIndexing.tsx` -- the admin UI page
+**File changed:** `supabase/functions/batch-index/index.ts`
 
-**Files to modify:**
-- `src/App.tsx` -- add route for `/admin/indexing`
-- `src/components/chat/ChatSidebar.tsx` -- add navigation link to admin page
-- `supabase/config.toml` -- add `[functions.batch-index]` entry
+Key changes:
+- Replace the raw PDF regex parser with Dropbox's `/2/files/export` API for PDFs and Office docs
+- Fall back to `/2/files/download` + text decode for plain text formats (TXT, CSV, EML, etc.)
+- Reduce `BATCH_SIZE` from 10 to 3
+- Add a 45-second timeout wrapper per file using `AbortController` / `Promise.race`
+- Improve error messages (capture actual error details instead of "Unknown error")
 
-**Secrets needed:**
-- `DROPBOX_ACCESS_TOKEN` -- new, will prompt you to add it
+**Database fix:** Reset the 571 skipped files so they get re-indexed:
+```sql
+DELETE FROM indexing_status 
+WHERE status = 'skipped' AND error_message = 'Insufficient content (< 50 chars)';
+```
 
-**Existing secrets used (no action needed):**
-- `OPENAI_API_KEY` -- already stored
-- `SUPABASE_SERVICE_ROLE_KEY` -- available in the environment
-- `SUPABASE_URL` -- available in the environment
+**Dropbox export API usage:**
+```text
+POST https://content.dropboxapi.com/2/files/export
+Header: Dropbox-API-Arg: {"path": "/path/to/file.pdf"}
+Response: plain text content of the PDF
+```
 
-**Performance estimate:**
-- 10 files per batch, ~30-45 seconds per batch
-- ~1,950 batches for 19,500 files
-- ~12-18 hours total (well under 1 day)
+This endpoint supports: PDF, DOCX, XLSX, PPTX, and other Office formats.
 
+**Updated processing flow per file:**
+```text
+1. Check extension
+2. If PDF/DOCX/XLSX/PPTX -> use Dropbox /export API (returns clean text)
+3. If TXT/CSV/EML/HTML/etc -> use Dropbox /download API + text decode  
+4. If image/video/CAD -> mark as skipped
+5. Chunk text -> generate embeddings -> insert into documents table
+6. Update indexing_status
+```
+
+**Estimated time with 3 files per batch:**
+- ~9,000 remaining vectorizable files (after skipping images/video)
+- 3 files per batch, ~20-30 seconds per batch
+- ~3,000 batches = roughly 18-24 hours
+
+This stays within your one-day target.
