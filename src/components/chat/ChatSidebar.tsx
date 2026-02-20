@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, MessageSquare, Trash2, LogOut, FolderSync, Settings, Mountain } from 'lucide-react';
+import { Plus, MessageSquare, Trash2, LogOut, FolderSync, Settings, Mountain, Database } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuth } from '@/hooks/useAuth';
@@ -118,6 +118,14 @@ export function ChatSidebar({
           >
             <FolderSync className={`h-4 w-4 ${isIndexing ? 'animate-spin' : ''}`} />
             {!isCollapsed && (isIndexing ? 'Indexing...' : 'Index Files')}
+          </Button>
+          <Button
+            onClick={() => navigate('/admin/indexing')}
+            variant="outline"
+            className="w-full justify-start gap-2 bg-sidebar-accent border-sidebar-border text-sidebar-foreground hover:bg-sidebar-accent/80"
+          >
+            <Database className="h-4 w-4" />
+            {!isCollapsed && 'Bulk Indexing'}
           </Button>
         </div>
 
