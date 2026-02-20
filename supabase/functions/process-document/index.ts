@@ -10,7 +10,7 @@ const corsHeaders = {
 // Chunking configuration
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
-const EMBEDDING_BATCH_SIZE = 10;
+const EMBEDDING_BATCH_SIZE = 5;
 
 // Regex patterns for metadata extraction
 const COST_PATTERN = /\$[\d,]+(?:\.\d{2})?/g;
@@ -146,30 +146,43 @@ function splitText(text: string): string[] {
   return chunks.filter(chunk => chunk.trim().length > 0);
 }
 
-// Generate embedding using OpenAI
-async function generateEmbedding(text: string, openaiApiKey: string): Promise<number[]> {
-  const response = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openaiApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'text-embedding-3-small',
-      input: text,
-    }),
-  });
+// Generate embedding using OpenAI with retry logic
+async function generateEmbedding(text: string, openaiApiKey: string, retries = 3): Promise<number[]> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const response = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-small',
+        input: text,
+      }),
+    });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`OpenAI API error: ${error}`);
+    if (response.ok) {
+      const data = await response.json();
+      return data.data[0].embedding;
+    }
+
+    const errorText = await response.text();
+
+    // Retry on rate limit (429) or server errors (5xx)
+    if ((response.status === 429 || response.status >= 500) && attempt < retries - 1) {
+      const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+      console.warn(`OpenAI API ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      continue;
+    }
+
+    throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
   }
 
-  const data = await response.json();
-  return data.data[0].embedding;
+  throw new Error('Max retries exceeded');
 }
 
-// Generate embeddings in parallel batches
+// Generate embeddings in parallel batches with throttling
 async function generateEmbeddingsBatch(texts: string[], openaiApiKey: string): Promise<number[][]> {
   const results: number[][] = [];
   
@@ -179,6 +192,11 @@ async function generateEmbeddingsBatch(texts: string[], openaiApiKey: string): P
       batch.map(text => generateEmbedding(text, openaiApiKey))
     );
     results.push(...batchResults);
+
+    // Small delay between batches to avoid rate limits
+    if (i + EMBEDDING_BATCH_SIZE < texts.length) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
   }
   
   return results;
