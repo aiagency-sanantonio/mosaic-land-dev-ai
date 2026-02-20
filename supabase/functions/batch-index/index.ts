@@ -1,6 +1,7 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
+import { unzipSync, strFromU8 } from "https://esm.sh/fflate@0.8.2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -141,8 +142,8 @@ async function generateEmbeddingsBatch(texts: string[], apiKey: string): Promise
   return results;
 }
 
-/** Use Dropbox /export API for PDF and Office docs — returns plain text */
-async function exportFromDropbox(filePath: string, token: string): Promise<string> {
+/** Use Dropbox /export API for PDF and Office docs — returns plain text, or null if non-exportable */
+async function exportFromDropbox(filePath: string, token: string): Promise<string | null> {
   const res = await fetch('https://content.dropboxapi.com/2/files/export', {
     method: 'POST',
     headers: {
@@ -152,6 +153,11 @@ async function exportFromDropbox(filePath: string, token: string): Promise<strin
   });
   if (!res.ok) {
     const errText = await res.text();
+    // Non-exportable files (regular uploads) or missing scope — signal fallback
+    if (errText.includes('non_exportable') || errText.includes('missing_scope')) {
+      console.log(`Export not available for ${filePath}, falling back to download`);
+      return null;
+    }
     throw new Error(`Dropbox export error (${res.status}): ${errText}`);
   }
   return res.text();
@@ -159,18 +165,7 @@ async function exportFromDropbox(filePath: string, token: string): Promise<strin
 
 /** Use Dropbox /download API for plain-text formats */
 async function downloadTextFromDropbox(filePath: string, token: string): Promise<string> {
-  const res = await fetch('https://content.dropboxapi.com/2/files/download', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Dropbox-API-Arg': JSON.stringify({ path: filePath }),
-    },
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Dropbox download error (${res.status}): ${errText}`);
-  }
-  const buffer = await res.arrayBuffer();
+  const buffer = await downloadBinaryFromDropbox(filePath, token);
   const decoder = new TextDecoder('utf-8', { fatal: false });
   let text = decoder.decode(buffer);
 
@@ -191,6 +186,109 @@ async function downloadTextFromDropbox(filePath: string, token: string): Promise
   }
 
   return text;
+}
+
+/** Download raw binary from Dropbox /download API */
+async function downloadBinaryFromDropbox(filePath: string, token: string): Promise<ArrayBuffer> {
+  const res = await fetch('https://content.dropboxapi.com/2/files/download', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Dropbox-API-Arg': JSON.stringify({ path: filePath }),
+    },
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Dropbox download error (${res.status}): ${errText}`);
+  }
+  return res.arrayBuffer();
+}
+
+/** Extract readable text from raw PDF binary by scanning for text stream objects */
+function extractTextFromPdfBinary(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const decoder = new TextDecoder('latin1');
+  const raw = decoder.decode(bytes);
+  const textParts: string[] = [];
+
+  // Extract text between BT (Begin Text) and ET (End Text) markers
+  const btEtRegex = /BT\s([\s\S]*?)ET/g;
+  let match;
+  while ((match = btEtRegex.exec(raw)) !== null) {
+    const block = match[1];
+    // Extract text from Tj and TJ operators
+    const tjRegex = /\(([^)]*)\)\s*Tj/g;
+    let tjMatch;
+    while ((tjMatch = tjRegex.exec(block)) !== null) {
+      textParts.push(tjMatch[1]);
+    }
+    // TJ array operator
+    const tjArrayRegex = /\[(.*?)\]\s*TJ/g;
+    let tjArrMatch;
+    while ((tjArrMatch = tjArrayRegex.exec(block)) !== null) {
+      const innerRegex = /\(([^)]*)\)/g;
+      let innerMatch;
+      while ((innerMatch = innerRegex.exec(tjArrMatch[1])) !== null) {
+        textParts.push(innerMatch[1]);
+      }
+    }
+  }
+
+  // Clean up PDF escape sequences
+  return textParts.join(' ')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '')
+    .replace(/\\t/g, ' ')
+    .replace(/\\\(/g, '(')
+    .replace(/\\\)/g, ')')
+    .replace(/\\\\/g, '\\')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Extract text from Office files (DOCX, PPTX, XLSX) by unzipping and reading XML */
+function extractTextFromOfficeFile(buffer: ArrayBuffer, ext: string): string {
+  try {
+    const data = new Uint8Array(buffer);
+    const unzipped = unzipSync(data);
+
+    const textParts: string[] = [];
+    // Determine which XML files to read based on format
+    const targetFiles: string[] = [];
+    if (ext === 'docx' || ext === 'doc') {
+      targetFiles.push('word/document.xml');
+    } else if (ext === 'pptx') {
+      // Slides are numbered: ppt/slides/slide1.xml, slide2.xml, etc.
+      for (const path of Object.keys(unzipped)) {
+        if (path.startsWith('ppt/slides/slide') && path.endsWith('.xml')) {
+          targetFiles.push(path);
+        }
+      }
+      targetFiles.sort();
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      // Shared strings contain cell text
+      targetFiles.push('xl/sharedStrings.xml');
+      for (const path of Object.keys(unzipped)) {
+        if (path.startsWith('xl/worksheets/sheet') && path.endsWith('.xml')) {
+          targetFiles.push(path);
+        }
+      }
+    }
+
+    for (const target of targetFiles) {
+      if (unzipped[target]) {
+        const xml = strFromU8(unzipped[target]);
+        // Strip XML tags to get plain text
+        const text = xml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (text.length > 0) textParts.push(text);
+      }
+    }
+
+    return textParts.join('\n\n').trim();
+  } catch (err) {
+    console.error(`Failed to extract text from Office file: ${err}`);
+    return '';
+  }
 }
 
 /** Exchange refresh token for a fresh short-lived access token */
@@ -314,8 +412,20 @@ serve(async (req) => {
             let text: string;
 
             if (EXPORT_EXTENSIONS.has(ext)) {
-              // Use Dropbox /export API for PDF and Office docs
-              text = await exportFromDropbox(filePath, dropboxToken);
+              // Try Dropbox /export API first (works for Dropbox Paper / Google Docs)
+              const exportResult = await exportFromDropbox(filePath, dropboxToken);
+              if (exportResult !== null) {
+                text = exportResult;
+              } else {
+                // Fallback: download raw binary and extract text
+                console.log(`Downloading binary for ${filePath} (ext: ${ext})`);
+                const binary = await downloadBinaryFromDropbox(filePath, dropboxToken);
+                if (ext === 'pdf') {
+                  text = extractTextFromPdfBinary(binary);
+                } else {
+                  text = extractTextFromOfficeFile(binary, ext);
+                }
+              }
             } else {
               // Download and decode as text
               text = await downloadTextFromDropbox(filePath, dropboxToken);
