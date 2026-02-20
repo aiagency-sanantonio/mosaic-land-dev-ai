@@ -1,78 +1,42 @@
 
 
-## Fix Bulk Indexing: Better PDF Extraction and Reliability
+## Fix: Batch Indexing Infinite Loop
 
-### Problem Summary
+### Problem
 
-The batch-index function has three critical issues:
-1. PDF text extraction uses raw regex parsing that fails on most PDFs (571 skipped as "insufficient content")
-2. Processing 10 files per batch causes timeouts (the "Failed to send request" error)
-3. DOCX/XLSX files can't be extracted as plain text
+The indexing is stuck in an infinite loop processing the same 3 image files every batch. Two root causes:
 
-### Solution
+1. **Database function only skips "success" files**: The `get_unindexed_dropbox_files` RPC joins on `indexing_status` filtering `status = 'success'` only. Files marked as "skipped" or "failed" are returned again on every call.
 
-**1. Use Dropbox's built-in PDF-to-text export instead of parsing PDFs ourselves**
+2. **No unique constraint on `file_path`**: The `upsert` call uses `onConflict: 'file_path'`, but there is no unique constraint on that column, so the upsert silently fails and no record gets saved.
 
-Dropbox has an `/export` API endpoint that can convert PDFs and Office documents to plain text. This is far more reliable than any Deno-based parser and handles:
-- Scanned PDFs (OCR)
-- Complex PDF layouts
-- DOCX, XLSX, PPTX natively
+### Fix (2 changes)
 
-For files where export isn't available, fall back to the current text extraction.
+**1. Add a unique constraint on `indexing_status.file_path`**
 
-**2. Reduce batch size from 10 to 3 files per call**
+Database migration:
+```sql
+ALTER TABLE indexing_status 
+ADD CONSTRAINT indexing_status_file_path_unique UNIQUE (file_path);
+```
 
-This keeps each invocation well within the 60-second timeout. The frontend loop compensates by calling more frequently. Total time increases only slightly since the bottleneck is embedding generation, not loop overhead.
+This makes the `upsert(..., { onConflict: 'file_path' })` actually work.
 
-**3. Add per-file timeout protection**
+**2. Update the `get_unindexed_dropbox_files` RPC to exclude ALL indexed files**
 
-Wrap each file's processing in a timeout (45 seconds) so one slow file doesn't kill the entire batch.
+Change the LEFT JOIN condition from filtering only `status = 'success'` to including any status. This way, once a file is marked as skipped, failed, or success, it won't be returned again.
 
-**4. Reset the 571 incorrectly skipped files**
-
-Run a database update to reset files that were marked "skipped" due to "Insufficient content" so they get re-processed with the improved extraction.
-
----
+```sql
+CREATE OR REPLACE FUNCTION public.get_unindexed_dropbox_files(...)
+  -- Change: remove "AND ist.status = 'success'" from the JOIN
+  LEFT JOIN indexing_status ist ON df.file_path = ist.file_path
+  WHERE ist.file_path IS NULL
+  ...
+```
 
 ### Technical Details
 
-**File changed:** `supabase/functions/batch-index/index.ts`
+- **File:** No code file changes needed -- the edge function code is already correct
+- **Database:** Two migrations: one for the unique constraint, one to update the RPC
+- After these fixes, the existing function will correctly skip image files once and move on to PDFs, text files, etc.
 
-Key changes:
-- Replace the raw PDF regex parser with Dropbox's `/2/files/export` API for PDFs and Office docs
-- Fall back to `/2/files/download` + text decode for plain text formats (TXT, CSV, EML, etc.)
-- Reduce `BATCH_SIZE` from 10 to 3
-- Add a 45-second timeout wrapper per file using `AbortController` / `Promise.race`
-- Improve error messages (capture actual error details instead of "Unknown error")
-
-**Database fix:** Reset the 571 skipped files so they get re-indexed:
-```sql
-DELETE FROM indexing_status 
-WHERE status = 'skipped' AND error_message = 'Insufficient content (< 50 chars)';
-```
-
-**Dropbox export API usage:**
-```text
-POST https://content.dropboxapi.com/2/files/export
-Header: Dropbox-API-Arg: {"path": "/path/to/file.pdf"}
-Response: plain text content of the PDF
-```
-
-This endpoint supports: PDF, DOCX, XLSX, PPTX, and other Office formats.
-
-**Updated processing flow per file:**
-```text
-1. Check extension
-2. If PDF/DOCX/XLSX/PPTX -> use Dropbox /export API (returns clean text)
-3. If TXT/CSV/EML/HTML/etc -> use Dropbox /download API + text decode  
-4. If image/video/CAD -> mark as skipped
-5. Chunk text -> generate embeddings -> insert into documents table
-6. Update indexing_status
-```
-
-**Estimated time with 3 files per batch:**
-- ~9,000 remaining vectorizable files (after skipping images/video)
-- 3 files per batch, ~20-30 seconds per batch
-- ~3,000 batches = roughly 18-24 hours
-
-This stays within your one-day target.
