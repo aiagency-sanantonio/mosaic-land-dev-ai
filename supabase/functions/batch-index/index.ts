@@ -1,12 +1,11 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
-import { unzipSync, strFromU8 } from "https://esm.sh/fflate@0.8.2";
-import { getDocument } from "https://esm.sh/pdfjs-serverless@0.6.0";
+import { unzipSync, strFromU8, inflateSync } from "https://esm.sh/fflate@0.8.2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
 const BATCH_SIZE = 3;
@@ -205,27 +204,89 @@ async function downloadBinaryFromDropbox(filePath: string, token: string): Promi
   return res.arrayBuffer();
 }
 
-/** Extract readable text from PDF using pdf.js */
-async function extractTextFromPdfBinary(buffer: ArrayBuffer): Promise<string> {
+/** Extract readable text from PDF binary using fflate decompression */
+function extractTextFromPdfBinary(buffer: ArrayBuffer): string {
   try {
-    const data = new Uint8Array(buffer);
-    const pdf = await getDocument({ data, useSystemFonts: true }).promise;
-    let fullText = '';
+    const bytes = new Uint8Array(buffer);
+    const raw = new TextDecoder('latin1').decode(bytes);
+    const textParts: string[] = [];
 
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const pageText = content.items.map((item: any) => item.str).join(' ');
-      fullText += pageText + '\n';
+    // Find all stream/endstream blocks
+    const streamRegex = /stream\r?\n/g;
+    let match;
+    while ((match = streamRegex.exec(raw)) !== null) {
+      const streamStart = match.index + match[0].length;
+      const endIdx = raw.indexOf('endstream', streamStart);
+      if (endIdx === -1) continue;
+
+      // Look back for /FlateDecode in the object header (within 500 chars before "stream")
+      const headerStart = Math.max(0, match.index - 500);
+      const header = raw.substring(headerStart, match.index);
+      const isFlate = header.includes('/FlateDecode');
+
+      let content: string;
+      if (isFlate) {
+        try {
+          const compressed = bytes.slice(streamStart, endIdx);
+          const decompressed = inflateSync(compressed);
+          content = new TextDecoder('latin1').decode(decompressed);
+        } catch {
+          continue; // skip streams that fail to decompress
+        }
+      } else {
+        content = raw.substring(streamStart, endIdx);
+      }
+
+      // Extract text from PDF text operators
+      const extracted = extractTextFromContentStream(content);
+      if (extracted.length > 0) textParts.push(extracted);
     }
 
-    const result = fullText.trim();
-    console.log(`PDF text extraction (pdf.js): found ${result.length} characters from ${pdf.numPages} pages`);
+    const result = textParts.join('\n').replace(/\s+/g, ' ').trim();
+    console.log(`PDF text extraction (fflate): found ${result.length} characters`);
     return result;
   } catch (error) {
-    console.error('pdf.js extraction failed:', error);
+    console.error('PDF fflate extraction failed:', error);
     return '';
   }
+}
+
+/** Extract text from a PDF content stream by parsing Tj/TJ operators and BT/ET blocks */
+function extractTextFromContentStream(content: string): string {
+  const parts: string[] = [];
+
+  // Extract strings from Tj operator: (some text) Tj
+  const tjRegex = /\(([^)]*)\)\s*Tj/g;
+  let m;
+  while ((m = tjRegex.exec(content)) !== null) {
+    const decoded = decodePdfString(m[1]);
+    if (decoded.trim()) parts.push(decoded);
+  }
+
+  // Extract strings from TJ operator (array of strings): [(text1) 50 (text2)] TJ
+  const tjArrayRegex = /\[([^\]]*)\]\s*TJ/gi;
+  while ((m = tjArrayRegex.exec(content)) !== null) {
+    const inner = m[1];
+    const strRegex = /\(([^)]*)\)/g;
+    let s;
+    while ((s = strRegex.exec(inner)) !== null) {
+      const decoded = decodePdfString(s[1]);
+      if (decoded.trim()) parts.push(decoded);
+    }
+  }
+
+  return parts.join(' ');
+}
+
+/** Decode basic PDF string escape sequences */
+function decodePdfString(s: string): string {
+  return s
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\\(/g, '(')
+    .replace(/\\\)/g, ')')
+    .replace(/\\\\/g, '\\');
 }
 
 /** Extract text from Office files (DOCX, PPTX, XLSX) by unzipping and reading XML */
@@ -418,7 +479,7 @@ serve(async (req) => {
                 console.log(`Downloading binary for ${filePath} (ext: ${ext})`);
                 const binary = await downloadBinaryFromDropbox(filePath, dropboxToken);
                 if (ext === 'pdf') {
-                  text = await extractTextFromPdfBinary(binary);
+                  text = extractTextFromPdfBinary(binary);
                 } else {
                   text = extractTextFromOfficeFile(binary, ext);
                 }
