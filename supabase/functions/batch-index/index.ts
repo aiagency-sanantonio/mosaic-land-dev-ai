@@ -16,6 +16,7 @@ const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
 const PER_FILE_TIMEOUT_MS = 45_000;
 const MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024;
+const MAX_OFFICE_SIZE_BYTES = 20 * 1024 * 1024;
 const MAX_TEXT_LENGTH = 100_000;
 
 const EXPORT_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx']);
@@ -26,13 +27,15 @@ const TEXT_EXTENSIONS = new Set([
 
 const SKIP_EXTENSIONS = new Set([
   'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'tif', 'svg', 'ico', 'webp',
+  'heic', 'heif', 'dng', 'raw', 'cr2', 'nef',
   'mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv', 'webm',
-  'mp3', 'wav', 'aac', 'flac', 'ogg', 'wma',
+  'mp3', 'wav', 'aac', 'flac', 'ogg', 'wma', 'dss',
   'zip', 'rar', '7z', 'tar', 'gz', 'bz2',
-  'dwg', 'dxf', 'dgn', 'shp', 'shx', 'dbf',
+  'dwg', 'dxf', 'dgn', 'shp', 'shx', 'dbf', 'kml', 'kmz', 'dat',
   'ttf', 'otf', 'woff', 'woff2', 'eot',
   'exe', 'dll', 'so', 'dylib', 'bin',
   'psd', 'ai', 'indd', 'sketch', 'fig',
+  'msg', 'bak', 'mjs', 'out', 'results',
 ]);
 
 const COST_PATTERN = /\$[\d,]+(?:\.\d{2})?/g;
@@ -331,6 +334,17 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       await supabase.from('indexing_status').upsert({
         file_path: filePath, file_name: fileName, status: 'skipped', chunks_created: 0,
         error_message: `PDF too large (${(file.file_size_bytes / 1024 / 1024).toFixed(1)}MB) - max ${MAX_PDF_SIZE_BYTES / 1024 / 1024}MB`,
+        indexed_at: new Date().toISOString(),
+      }, { onConflict: 'file_path' });
+      skipped++;
+      activity.push({ file: fileName || filePath, status: 'skipped' });
+      continue;
+    }
+
+    if (EXPORT_EXTENSIONS.has(ext) && ext !== 'pdf' && file.file_size_bytes && file.file_size_bytes > MAX_OFFICE_SIZE_BYTES) {
+      await supabase.from('indexing_status').upsert({
+        file_path: filePath, file_name: fileName, status: 'skipped', chunks_created: 0,
+        error_message: `Office file too large (${(file.file_size_bytes / 1024 / 1024).toFixed(1)}MB) - max ${MAX_OFFICE_SIZE_BYTES / 1024 / 1024}MB`,
         indexed_at: new Date().toISOString(),
       }, { onConflict: 'file_path' });
       skipped++;
