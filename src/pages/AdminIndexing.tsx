@@ -251,9 +251,22 @@ export default function AdminIndexing() {
             </div>
           </div>
           {totalFiles > 0 && (
-            <p className="text-xs text-muted-foreground text-center mt-4">
-              {Math.round(progressPercent)}% complete — {stats.batchesCompleted} batches done
-            </p>
+            <div className="text-xs text-muted-foreground text-center mt-4 space-y-1">
+              <p>{Math.round(progressPercent)}% complete — {stats.batchesCompleted} batches done</p>
+              {isRunning && totalDone > 0 && job?.started_at && (() => {
+                const elapsedMs = Date.now() - new Date(job.started_at).getTime();
+                const elapsedMin = elapsedMs / 60000;
+                const rate = totalDone / elapsedMin;
+                const etaMin = rate > 0 ? stats.remaining / rate : 0;
+                const etaHours = Math.floor(etaMin / 60);
+                const etaRemMin = Math.round(etaMin % 60);
+                return (
+                  <p className="font-medium">
+                    ~{rate.toFixed(0)} files/min • ETA: {etaHours > 0 ? `${etaHours}h ${etaRemMin}m` : `${etaRemMin}m`}
+                  </p>
+                );
+              })()}
+            </div>
           )}
         </CardContent>
       </Card>
