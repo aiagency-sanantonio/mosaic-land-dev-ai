@@ -15,6 +15,7 @@ const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
 const PER_FILE_TIMEOUT_MS = 45_000;
+const MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024; // 5MB - larger PDFs exceed CPU limits
 
 // Extensions that can use Dropbox /export API (returns plain text)
 const EXPORT_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx']);
@@ -401,7 +402,21 @@ serve(async (req) => {
         continue;
       }
 
-      try {
+      // Skip oversized PDFs that would exceed CPU limits
+      if (ext === 'pdf' && file.file_size_bytes && file.file_size_bytes > MAX_PDF_SIZE_BYTES) {
+        await supabase.from('indexing_status').upsert({
+          file_path: filePath,
+          file_name: fileName,
+          status: 'skipped',
+          chunks_created: 0,
+          error_message: `PDF too large (${(file.file_size_bytes / 1024 / 1024).toFixed(1)}MB) - max ${MAX_PDF_SIZE_BYTES / 1024 / 1024}MB`,
+          indexed_at: new Date().toISOString(),
+        }, { onConflict: 'file_path' });
+        skipped++;
+        activity.push({ file: fileName || filePath, status: 'skipped' });
+        continue;
+      }
+
         // Process with per-file timeout
         await withTimeout(
           (async () => {
