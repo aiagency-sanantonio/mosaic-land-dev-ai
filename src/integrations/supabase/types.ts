@@ -116,6 +116,39 @@ export type Database = {
         }
         Relationships: []
       }
+      indexing_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          id: string
+          last_error: string | null
+          started_at: string
+          stats: Json
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          started_at?: string
+          stats?: Json
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          started_at?: string
+          stats?: Json
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       indexing_status: {
         Row: {
           chunks_created: number | null

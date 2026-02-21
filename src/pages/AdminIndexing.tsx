@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Square, RefreshCw, CheckCircle2, XCircle, SkipForward } from 'lucide-react';
+import { ArrowLeft, Play, Square, RefreshCw, CheckCircle2, XCircle, SkipForward, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -10,12 +10,6 @@ import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
-interface ActivityEntry {
-  file: string;
-  status: string;
-  timestamp: string;
-}
-
 interface IndexingStats {
   totalProcessed: number;
   totalSkipped: number;
@@ -24,101 +18,135 @@ interface IndexingStats {
   batchesCompleted: number;
 }
 
+interface IndexingJob {
+  id: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  stats: IndexingStats;
+  last_error: string | null;
+}
+
+interface ActivityEntry {
+  file: string;
+  status: string;
+  timestamp: string;
+}
+
 export default function AdminIndexing() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
-  const [isRunning, setIsRunning] = useState(false);
-  const [stats, setStats] = useState<IndexingStats>({
-    totalProcessed: 0, totalSkipped: 0, totalFailed: 0, remaining: 0, batchesCompleted: 0,
-  });
+  const [job, setJob] = useState<IndexingJob | null>(null);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
-  const [lastError, setLastError] = useState<string | null>(null);
-  const stopRef = useRef(false);
+  const [loadingJob, setLoadingJob] = useState(true);
 
   useEffect(() => {
     if (!loading && !user) navigate('/auth');
   }, [user, loading, navigate]);
 
-  const runBatchLoop = useCallback(async () => {
-    setIsRunning(true);
-    stopRef.current = false;
-    setLastError(null);
+  // Fetch the latest job
+  const fetchLatestJob = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('indexing_jobs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-    let cumulative = { ...stats };
-
-    while (!stopRef.current) {
-      try {
-        const { data, error } = await supabase.functions.invoke('batch-index');
-
-        if (error) {
-          // Check for token-related errors
-          const errMsg = error.message || 'Unknown error';
-          if (errMsg.includes('401') || errMsg.includes('expired') || errMsg.includes('invalid_access_token') || errMsg.includes('token refresh failed')) {
-            setLastError('Dropbox token refresh failed. Check DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, and DROPBOX_APP_SECRET in backend secrets.');
-            toast.error('Dropbox token refresh failed — check secrets and resume.');
-            break;
-          }
-          throw error;
-        }
-
-        if (!data) throw new Error('No data returned');
-
-        cumulative = {
-          totalProcessed: cumulative.totalProcessed + (data.processed || 0),
-          totalSkipped: cumulative.totalSkipped + (data.skipped || 0),
-          totalFailed: cumulative.totalFailed + (data.failed || 0),
-          remaining: data.remaining ?? 0,
-          batchesCompleted: cumulative.batchesCompleted + 1,
-        };
-        setStats({ ...cumulative });
-
-        // Add activity entries
-        if (data.activity?.length) {
-          const newEntries: ActivityEntry[] = data.activity.map((a: { file: string; status: string }) => ({
-            file: a.file,
-            status: a.status,
-            timestamp: new Date().toLocaleTimeString(),
-          }));
-          setActivity(prev => [...newEntries, ...prev].slice(0, 200));
-        }
-
-        // Show errors from this batch
-        if (data.errors?.length) {
-          for (const e of data.errors) {
-            console.warn(`Failed: ${e.file} — ${e.error}`);
-          }
-        }
-
-        // Done!
-        if (data.remaining === 0 || (data.processed === 0 && data.skipped === 0 && data.failed === 0)) {
-          toast.success('Indexing complete!');
-          break;
-        }
-
-        // Small delay between batches
-        await new Promise(r => setTimeout(r, 1000));
-
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Unknown error';
-        console.error('Batch error:', msg);
-        setLastError(msg);
-        toast.error(`Indexing error: ${msg}`);
-        break;
-      }
+    if (error) {
+      console.error('Error fetching job:', error);
+      return;
     }
 
-    setIsRunning(false);
-  }, [stats]);
+    if (data && data.length > 0) {
+      const raw = data[0];
+      setJob({
+        id: raw.id,
+        status: raw.status,
+        started_at: raw.started_at,
+        completed_at: raw.completed_at,
+        stats: raw.stats as unknown as IndexingStats,
+        last_error: raw.last_error,
+      });
+    } else {
+      setJob(null);
+    }
+    setLoadingJob(false);
+  }, []);
 
-  const handleStop = () => {
-    stopRef.current = true;
+  // Fetch recent activity from indexing_status
+  const fetchActivity = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('indexing_status')
+      .select('file_name, file_path, status, indexed_at')
+      .order('indexed_at', { ascending: false })
+      .limit(50);
+
+    if (error) return;
+    if (data) {
+      setActivity(data.map(r => ({
+        file: r.file_name || r.file_path,
+        status: r.status === 'success' ? 'success' : r.status === 'skipped' ? 'skipped' : 'failed',
+        timestamp: r.indexed_at ? new Date(r.indexed_at).toLocaleTimeString() : '',
+      })));
+    }
+  }, []);
+
+  // Initial load
+  useEffect(() => {
+    if (user) {
+      fetchLatestJob();
+      fetchActivity();
+    }
+  }, [user, fetchLatestJob, fetchActivity]);
+
+  // Poll while running
+  useEffect(() => {
+    if (!job || job.status !== 'running') return;
+    const interval = setInterval(() => {
+      fetchLatestJob();
+      fetchActivity();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [job?.status, fetchLatestJob, fetchActivity]);
+
+  const handleStart = async () => {
+    const { error } = await supabase.from('indexing_jobs').insert({
+      status: 'running',
+    });
+    if (error) {
+      toast.error('Failed to start indexing job');
+      console.error(error);
+      return;
+    }
+    toast.success('Indexing job started — it will continue in the background');
+    fetchLatestJob();
   };
 
+  const handleStop = async () => {
+    if (!job) return;
+    const { error } = await supabase
+      .from('indexing_jobs')
+      .update({ status: 'stopped', completed_at: new Date().toISOString() })
+      .eq('id', job.id);
+    if (error) {
+      toast.error('Failed to stop indexing job');
+      return;
+    }
+    toast.info('Indexing stopped');
+    fetchLatestJob();
+  };
+
+  const stats = job?.stats || { totalProcessed: 0, totalSkipped: 0, totalFailed: 0, remaining: 0, batchesCompleted: 0 };
   const totalDone = stats.totalProcessed + stats.totalSkipped + stats.totalFailed;
   const totalFiles = totalDone + stats.remaining;
   const progressPercent = totalFiles > 0 ? (totalDone / totalFiles) * 100 : 0;
 
-  if (loading) return null;
+  const isRunning = job?.status === 'running';
+  const isCompleted = job?.status === 'completed';
+  const isFailed = job?.status === 'failed';
+  const isStopped = job?.status === 'stopped';
+
+  if (loading || loadingJob) return null;
 
   return (
     <div className="min-h-screen bg-background p-6 max-w-4xl mx-auto">
@@ -132,14 +160,43 @@ export default function AdminIndexing() {
         </div>
       </div>
 
+      {/* Status Banner */}
+      {job && !isRunning && (
+        <Card className={`mb-6 border-l-4 ${isCompleted ? 'border-l-primary' : isFailed ? 'border-l-destructive' : 'border-l-muted-foreground'}`}>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              {isCompleted && <CheckCircle2 className="h-5 w-5 text-primary" />}
+              {isFailed && <XCircle className="h-5 w-5 text-destructive" />}
+              {isStopped && <AlertTriangle className="h-5 w-5 text-muted-foreground" />}
+              <div>
+                <p className="font-medium text-foreground">
+                  {isCompleted && 'Indexing complete!'}
+                  {isFailed && 'Indexing failed'}
+                  {isStopped && 'Indexing stopped'}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {stats.totalProcessed} processed, {stats.totalSkipped} skipped, {stats.totalFailed} failed
+                  {job.completed_at && ` — ${new Date(job.completed_at).toLocaleString()}`}
+                </p>
+              </div>
+            </div>
+            {job.last_error && (
+              <div className="mt-3 p-3 bg-destructive/10 border border-destructive/20 rounded-lg text-sm text-destructive">
+                {job.last_error}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Controls */}
       <Card className="mb-6">
         <CardContent className="pt-6">
           <div className="flex items-center gap-4 flex-wrap">
             {!isRunning ? (
-              <Button onClick={runBatchLoop} className="gap-2">
+              <Button onClick={handleStart} className="gap-2">
                 <Play className="h-4 w-4" />
-                {stats.batchesCompleted > 0 ? 'Resume Indexing' : 'Start Indexing'}
+                {isStopped || isCompleted || isFailed ? 'Resume Indexing' : 'Start Indexing'}
               </Button>
             ) : (
               <Button onClick={handleStop} variant="destructive" className="gap-2">
@@ -150,14 +207,14 @@ export default function AdminIndexing() {
             {isRunning && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <RefreshCw className="h-4 w-4 animate-spin" />
-                Processing batch {stats.batchesCompleted + 1}...
+                Processing in background — batch {stats.batchesCompleted + 1}...
               </div>
             )}
           </div>
-          {lastError && (
-            <div className="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg text-sm text-destructive">
-              {lastError}
-            </div>
+          {isRunning && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              You can close this page — indexing will continue on the server.
+            </p>
           )}
         </CardContent>
       </Card>

@@ -15,18 +15,15 @@ const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
 const PER_FILE_TIMEOUT_MS = 45_000;
-const MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024; // 5MB - larger PDFs exceed CPU limits
-const MAX_TEXT_LENGTH = 100_000; // 100K chars max - prevents CPU exhaustion during embedding
+const MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024;
+const MAX_TEXT_LENGTH = 100_000;
 
-// Extensions that can use Dropbox /export API (returns plain text)
 const EXPORT_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx']);
 
-// Extensions we download and decode as text
 const TEXT_EXTENSIONS = new Set([
   'txt', 'log', 'md', 'csv', 'html', 'htm', 'xml', 'json', 'rtf', 'eml',
 ]);
 
-// Extensions to skip entirely
 const SKIP_EXTENSIONS = new Set([
   'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'tif', 'svg', 'ico', 'webp',
   'mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv', 'webm',
@@ -38,7 +35,6 @@ const SKIP_EXTENSIONS = new Set([
   'psd', 'ai', 'indd', 'sketch', 'fig',
 ]);
 
-// Metadata extraction patterns
 const COST_PATTERN = /\$[\d,]+(?:\.\d{2})?/g;
 const DATE_PATTERN = /\b(?:0?[1-9]|1[0-2])[-\/](?:0?[1-9]|[12]\d|3[01])[-\/](?:19|20)?\d{2}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b/gi;
 const PROJECT_PATTERN = /(?:project|lot|tract|phase|unit|parcel)[\s:#-]*([A-Za-z0-9-]+)/gi;
@@ -76,7 +72,6 @@ function extractMetadata(text: string): Record<string, unknown> {
 
 function splitText(text: string): string[] {
   const separators = ['\n\n', '\n', '. ', ' ', ''];
-
   function splitRecursive(text: string, sepIdx: number): string[] {
     if (text.length <= CHUNK_SIZE) return [text];
     const sep = separators[sepIdx];
@@ -100,7 +95,6 @@ function splitText(text: string): string[] {
     if (current.trim().length > 0) result.push(current.trim());
     return result;
   }
-
   const raw = splitRecursive(text, 0);
   const chunks: string[] = [];
   for (let i = 0; i < raw.length; i++) {
@@ -146,7 +140,6 @@ async function generateEmbeddingsBatch(texts: string[], apiKey: string): Promise
   return results;
 }
 
-/** Use Dropbox /export API for PDF and Office docs — returns plain text, or null if non-exportable */
 async function exportFromDropbox(filePath: string, token: string): Promise<string | null> {
   const res = await fetch('https://content.dropboxapi.com/2/files/export', {
     method: 'POST',
@@ -157,7 +150,6 @@ async function exportFromDropbox(filePath: string, token: string): Promise<strin
   });
   if (!res.ok) {
     const errText = await res.text();
-    // Non-exportable files (regular uploads) or missing scope — signal fallback
     if (errText.includes('non_exportable') || errText.includes('missing_scope')) {
       console.log(`Export not available for ${filePath}, falling back to download`);
       return null;
@@ -167,13 +159,10 @@ async function exportFromDropbox(filePath: string, token: string): Promise<strin
   return res.text();
 }
 
-/** Use Dropbox /download API for plain-text formats */
 async function downloadTextFromDropbox(filePath: string, token: string): Promise<string> {
   const buffer = await downloadBinaryFromDropbox(filePath, token);
   const decoder = new TextDecoder('utf-8', { fatal: false });
   let text = decoder.decode(buffer);
-
-  // Special handling for EML: extract headers + body
   if (filePath.toLowerCase().endsWith('.eml')) {
     const parts = text.split('\n\n');
     const headers = parts[0] || '';
@@ -188,11 +177,9 @@ async function downloadTextFromDropbox(filePath: string, token: string): Promise
     result += '\n' + body;
     return result;
   }
-
   return text;
 }
 
-/** Download raw binary from Dropbox /download API */
 async function downloadBinaryFromDropbox(filePath: string, token: string): Promise<ArrayBuffer> {
   const res = await fetch('https://content.dropboxapi.com/2/files/download', {
     method: 'POST',
@@ -208,15 +195,12 @@ async function downloadBinaryFromDropbox(filePath: string, token: string): Promi
   return res.arrayBuffer();
 }
 
-/** Extract text from PDF using pdf-parse library */
 async function extractTextFromPdf(buffer: ArrayBuffer): Promise<string> {
   try {
     const buf = Buffer.from(buffer);
     const data = await pdfParse(buf);
     const text = (data.text || '').trim();
     console.log(`pdf-parse extracted ${text.length} chars from ${data.numpages} pages`);
-
-    // Check if it's a scanned/image-only PDF (very little actual text)
     const letterCount = (text.match(/[a-zA-Z]/g) || []).length;
     if (text.length < 50 || letterCount < 20) {
       console.log(`PDF appears to be scanned/image-only (${letterCount} letters). Skipping.`);
@@ -229,19 +213,15 @@ async function extractTextFromPdf(buffer: ArrayBuffer): Promise<string> {
   }
 }
 
-/** Extract text from Office files (DOCX, PPTX, XLSX) by unzipping and reading XML */
 function extractTextFromOfficeFile(buffer: ArrayBuffer, ext: string): string {
   try {
     const data = new Uint8Array(buffer);
     const unzipped = unzipSync(data);
-
     const textParts: string[] = [];
-    // Determine which XML files to read based on format
     const targetFiles: string[] = [];
     if (ext === 'docx' || ext === 'doc') {
       targetFiles.push('word/document.xml');
     } else if (ext === 'pptx') {
-      // Slides are numbered: ppt/slides/slide1.xml, slide2.xml, etc.
       for (const path of Object.keys(unzipped)) {
         if (path.startsWith('ppt/slides/slide') && path.endsWith('.xml')) {
           targetFiles.push(path);
@@ -249,7 +229,6 @@ function extractTextFromOfficeFile(buffer: ArrayBuffer, ext: string): string {
       }
       targetFiles.sort();
     } else if (ext === 'xlsx' || ext === 'xls') {
-      // Shared strings contain cell text
       targetFiles.push('xl/sharedStrings.xml');
       for (const path of Object.keys(unzipped)) {
         if (path.startsWith('xl/worksheets/sheet') && path.endsWith('.xml')) {
@@ -257,16 +236,13 @@ function extractTextFromOfficeFile(buffer: ArrayBuffer, ext: string): string {
         }
       }
     }
-
     for (const target of targetFiles) {
       if (unzipped[target]) {
         const xml = strFromU8(unzipped[target]);
-        // Strip XML tags to get plain text
         const text = xml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         if (text.length > 0) textParts.push(text);
       }
     }
-
     return textParts.join('\n\n').trim();
   } catch (err) {
     console.error(`Failed to extract text from Office file: ${err}`);
@@ -274,16 +250,13 @@ function extractTextFromOfficeFile(buffer: ArrayBuffer, ext: string): string {
   }
 }
 
-/** Exchange refresh token for a fresh short-lived access token */
 async function getDropboxAccessToken(): Promise<string> {
   const refreshToken = Deno.env.get('DROPBOX_REFRESH_TOKEN');
   const appKey = Deno.env.get('DROPBOX_APP_KEY');
   const appSecret = Deno.env.get('DROPBOX_APP_SECRET');
-
   if (!refreshToken || !appKey || !appSecret) {
     throw new Error('Dropbox OAuth not configured: need DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, DROPBOX_APP_SECRET');
   }
-
   const res = await fetch('https://api.dropboxapi.com/oauth2/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -294,17 +267,14 @@ async function getDropboxAccessToken(): Promise<string> {
       client_secret: appSecret,
     }),
   });
-
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Dropbox token refresh failed (${res.status}): ${errText}`);
   }
-
   const data = await res.json();
   return data.access_token;
 }
 
-/** Wrap a promise with a timeout */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -314,234 +284,277 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
+/** Core batch processing logic — shared between browser and cron paths */
+async function processBatch(supabase: ReturnType<typeof createClient>, openaiApiKey: string, dropboxToken: string) {
+  const { data: unindexedFiles, error: rpcError } = await supabase.rpc('get_unindexed_dropbox_files', {
+    p_limit: BATCH_SIZE,
+  });
+
+  if (rpcError) throw rpcError;
+
+  if (!unindexedFiles || unindexedFiles.length === 0) {
+    return { processed: 0, skipped: 0, failed: 0, remaining: 0, errors: [], activity: [], message: 'All files have been indexed!' };
+  }
+
+  let processed = 0;
+  let skipped = 0;
+  let failed = 0;
+  const errors: { file: string; error: string }[] = [];
+  const activity: { file: string; status: string }[] = [];
+
+  for (const file of unindexedFiles) {
+    const ext = (file.file_extension || '').toLowerCase().replace('.', '');
+    const filePath = file.file_path;
+    const fileName = file.file_name;
+
+    if (SKIP_EXTENSIONS.has(ext) || (!EXPORT_EXTENSIONS.has(ext) && !TEXT_EXTENSIONS.has(ext) && ext !== '')) {
+      await supabase.from('indexing_status').upsert({
+        file_path: filePath, file_name: fileName, status: 'skipped', chunks_created: 0,
+        error_message: `Non-vectorizable format: .${ext}`, indexed_at: new Date().toISOString(),
+      }, { onConflict: 'file_path' });
+      skipped++;
+      activity.push({ file: fileName || filePath, status: 'skipped' });
+      continue;
+    }
+
+    if (ext === 'doc') {
+      await supabase.from('indexing_status').upsert({
+        file_path: filePath, file_name: fileName, status: 'skipped', chunks_created: 0,
+        error_message: 'Legacy .doc format not supported - convert to .docx for indexing', indexed_at: new Date().toISOString(),
+      }, { onConflict: 'file_path' });
+      skipped++;
+      activity.push({ file: fileName || filePath, status: 'skipped' });
+      continue;
+    }
+
+    if (ext === 'pdf' && file.file_size_bytes && file.file_size_bytes > MAX_PDF_SIZE_BYTES) {
+      await supabase.from('indexing_status').upsert({
+        file_path: filePath, file_name: fileName, status: 'skipped', chunks_created: 0,
+        error_message: `PDF too large (${(file.file_size_bytes / 1024 / 1024).toFixed(1)}MB) - max ${MAX_PDF_SIZE_BYTES / 1024 / 1024}MB`,
+        indexed_at: new Date().toISOString(),
+      }, { onConflict: 'file_path' });
+      skipped++;
+      activity.push({ file: fileName || filePath, status: 'skipped' });
+      continue;
+    }
+
+    try {
+      await withTimeout(
+        (async () => {
+          let text: string;
+          if (EXPORT_EXTENSIONS.has(ext)) {
+            const exportResult = await exportFromDropbox(filePath, dropboxToken);
+            if (exportResult !== null) {
+              text = exportResult;
+            } else {
+              console.log(`Downloading binary for ${filePath} (ext: ${ext})`);
+              const binary = await downloadBinaryFromDropbox(filePath, dropboxToken);
+              if (ext === 'pdf') {
+                text = await extractTextFromPdf(binary);
+              } else {
+                text = extractTextFromOfficeFile(binary, ext);
+              }
+            }
+          } else {
+            text = await downloadTextFromDropbox(filePath, dropboxToken);
+          }
+
+          if (text.trim().length < 50) {
+            await supabase.from('indexing_status').upsert({
+              file_path: filePath, file_name: fileName, status: 'skipped', chunks_created: 0,
+              error_message: ext === 'pdf' ? 'Scanned/image-only PDF - no extractable text' : 'Insufficient extractable text (< 50 chars)',
+              indexed_at: new Date().toISOString(),
+            }, { onConflict: 'file_path' });
+            skipped++;
+            activity.push({ file: fileName || filePath, status: 'skipped' });
+            return;
+          }
+
+          if (text.length > MAX_TEXT_LENGTH) {
+            console.log(`Truncating ${fileName} from ${text.length} to ${MAX_TEXT_LENGTH} chars`);
+            text = text.slice(0, MAX_TEXT_LENGTH);
+          }
+
+          const extractedMetadata = extractMetadata(text);
+          await supabase.from('documents').delete().eq('file_path', filePath);
+          const chunks = splitText(text);
+          const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
+          const documents = chunks.map((chunk, i) => ({
+            content: chunk,
+            embedding: JSON.stringify(embeddings[i]),
+            file_path: filePath,
+            file_name: fileName,
+            metadata: { ...extractedMetadata, chunk_index: i, total_chunks: chunks.length, file_extension: ext },
+          }));
+
+          const { error: insertError } = await supabase.from('documents').insert(documents);
+          if (insertError) throw insertError;
+
+          await supabase.from('indexing_status').upsert({
+            file_path: filePath, file_name: fileName, status: 'success', chunks_created: documents.length,
+            error_message: null, metadata: extractedMetadata, indexed_at: new Date().toISOString(),
+          }, { onConflict: 'file_path' });
+
+          processed++;
+          activity.push({ file: fileName || filePath, status: 'success' });
+        })(),
+        PER_FILE_TIMEOUT_MS,
+        fileName || filePath
+      );
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Unknown error';
+      console.error(`Error processing ${filePath}:`, errMsg);
+      await supabase.from('indexing_status').upsert({
+        file_path: filePath, file_name: fileName, status: 'failed', chunks_created: 0,
+        error_message: errMsg, indexed_at: new Date().toISOString(),
+      }, { onConflict: 'file_path' });
+      failed++;
+      errors.push({ file: fileName || filePath, error: errMsg });
+      activity.push({ file: fileName || filePath, status: 'failed' });
+    }
+  }
+
+  // Get remaining count
+  const { count: remainingCount } = await supabase
+    .from('dropbox_files')
+    .select('id', { count: 'exact', head: true });
+  const { count: indexedCount } = await supabase
+    .from('indexing_status')
+    .select('id', { count: 'exact', head: true });
+  const remaining = Math.max(0, (remainingCount || 0) - (indexedCount || 0));
+
+  return { processed, skipped, failed, remaining, errors, activity };
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const openaiApiKey = Deno.env.get('OPENAI_API_KEY')!;
-    // Get a fresh Dropbox access token via refresh token
-    const dropboxToken = await getDropboxAccessToken();
 
-    // Verify user
-    const authClient = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-    const token = authHeader.replace('Bearer ', '');
-    const { data: claimsData, error: claimsError } = await authClient.auth.getClaims(token);
-    if (claimsError || !claimsData?.claims) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
+    // Parse request body
+    let body: Record<string, unknown> = {};
+    try { body = await req.json(); } catch { /* empty body OK */ }
+
+    const isCron = body.cron === true;
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Fetch unindexed files
-    const { data: unindexedFiles, error: rpcError } = await supabase.rpc('get_unindexed_dropbox_files', {
-      p_limit: BATCH_SIZE,
-    });
+    if (isCron) {
+      // ===== CRON PATH: server-side background processing =====
+      console.log('Cron invocation — checking for running job');
 
-    if (rpcError) throw rpcError;
+      // Find the latest running job
+      const { data: jobs, error: jobError } = await supabase
+        .from('indexing_jobs')
+        .select('*')
+        .eq('status', 'running')
+        .order('created_at', { ascending: false })
+        .limit(1);
 
-    if (!unindexedFiles || unindexedFiles.length === 0) {
-      return new Response(JSON.stringify({
-        processed: 0, skipped: 0, failed: 0, remaining: 0,
-        errors: [], message: 'All files have been indexed!',
-      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+      if (jobError) throw jobError;
 
-    let processed = 0;
-    let skipped = 0;
-    let failed = 0;
-    const errors: { file: string; error: string }[] = [];
-    const activity: { file: string; status: string }[] = [];
-
-    for (const file of unindexedFiles) {
-      const ext = (file.file_extension || '').toLowerCase().replace('.', '');
-      const filePath = file.file_path;
-      const fileName = file.file_name;
-
-      // Skip non-vectorizable files
-      if (SKIP_EXTENSIONS.has(ext) || (!EXPORT_EXTENSIONS.has(ext) && !TEXT_EXTENSIONS.has(ext) && ext !== '')) {
-        await supabase.from('indexing_status').upsert({
-          file_path: filePath,
-          file_name: fileName,
-          status: 'skipped',
-          chunks_created: 0,
-          error_message: `Non-vectorizable format: .${ext}`,
-          indexed_at: new Date().toISOString(),
-        }, { onConflict: 'file_path' });
-        skipped++;
-        activity.push({ file: fileName || filePath, status: 'skipped' });
-        continue;
+      if (!jobs || jobs.length === 0) {
+        console.log('No running job found, skipping');
+        return new Response(JSON.stringify({ message: 'No running job' }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
       }
 
-      // Legacy .doc format cannot be parsed — skip with clear message
-      if (ext === 'doc') {
-        await supabase.from('indexing_status').upsert({
-          file_path: filePath,
-          file_name: fileName,
-          status: 'skipped',
-          chunks_created: 0,
-          error_message: 'Legacy .doc format not supported - convert to .docx for indexing',
-          indexed_at: new Date().toISOString(),
-        }, { onConflict: 'file_path' });
-        skipped++;
-        activity.push({ file: fileName || filePath, status: 'skipped' });
-        continue;
-      }
-
-      // Skip oversized PDFs that would exceed CPU limits
-      if (ext === 'pdf' && file.file_size_bytes && file.file_size_bytes > MAX_PDF_SIZE_BYTES) {
-        await supabase.from('indexing_status').upsert({
-          file_path: filePath,
-          file_name: fileName,
-          status: 'skipped',
-          chunks_created: 0,
-          error_message: `PDF too large (${(file.file_size_bytes / 1024 / 1024).toFixed(1)}MB) - max ${MAX_PDF_SIZE_BYTES / 1024 / 1024}MB`,
-          indexed_at: new Date().toISOString(),
-        }, { onConflict: 'file_path' });
-        skipped++;
-        activity.push({ file: fileName || filePath, status: 'skipped' });
-        continue;
-      }
+      const job = jobs[0];
+      const jobId = job.id;
 
       try {
-        // Process with per-file timeout
-        await withTimeout(
-          (async () => {
-            let text: string;
+        const dropboxToken = await getDropboxAccessToken();
+        const result = await processBatch(supabase, openaiApiKey, dropboxToken);
 
-            if (EXPORT_EXTENSIONS.has(ext)) {
-              // Try Dropbox /export API first (works for Dropbox Paper / Google Docs)
-              const exportResult = await exportFromDropbox(filePath, dropboxToken);
-              if (exportResult !== null) {
-                text = exportResult;
-              } else {
-                // Fallback: download raw binary and extract text
-                console.log(`Downloading binary for ${filePath} (ext: ${ext})`);
-                const binary = await downloadBinaryFromDropbox(filePath, dropboxToken);
-                if (ext === 'pdf') {
-                  text = await extractTextFromPdf(binary);
-                } else {
-                  text = extractTextFromOfficeFile(binary, ext);
-                }
-              }
-            } else {
-              // Download and decode as text
-              text = await downloadTextFromDropbox(filePath, dropboxToken);
-            }
+        // Update job stats
+        const currentStats = (job.stats as Record<string, number>) || {};
+        const newStats = {
+          totalProcessed: (currentStats.totalProcessed || 0) + result.processed,
+          totalSkipped: (currentStats.totalSkipped || 0) + result.skipped,
+          totalFailed: (currentStats.totalFailed || 0) + result.failed,
+          remaining: result.remaining,
+          batchesCompleted: (currentStats.batchesCompleted || 0) + 1,
+        };
 
-            // Skip if too little content
-            if (text.trim().length < 50) {
-              await supabase.from('indexing_status').upsert({
-                file_path: filePath,
-                file_name: fileName,
-                status: 'skipped',
-                chunks_created: 0,
-                error_message: ext === 'pdf' ? 'Scanned/image-only PDF - no extractable text' : 'Insufficient extractable text (< 50 chars)',
-                indexed_at: new Date().toISOString(),
-              }, { onConflict: 'file_path' });
-              skipped++;
-              activity.push({ file: fileName || filePath, status: 'skipped' });
-              return;
-            }
+        // Check if done
+        const isDone = result.remaining === 0 ||
+          (result.processed === 0 && result.skipped === 0 && result.failed === 0);
 
-            // Truncate extremely large text to prevent CPU exhaustion during embedding
-            if (text.length > MAX_TEXT_LENGTH) {
-              console.log(`Truncating ${fileName} from ${text.length} to ${MAX_TEXT_LENGTH} chars`);
-              text = text.slice(0, MAX_TEXT_LENGTH);
-            }
+        const updatePayload: Record<string, unknown> = {
+          stats: newStats,
+          last_error: result.errors.length > 0 ? result.errors[0].error : null,
+        };
 
-            const extractedMetadata = extractMetadata(text);
+        if (isDone) {
+          updatePayload.status = 'completed';
+          updatePayload.completed_at = new Date().toISOString();
+        }
 
-            // Delete existing chunks for this file
-            await supabase.from('documents').delete().eq('file_path', filePath);
+        await supabase.from('indexing_jobs').update(updatePayload).eq('id', jobId);
 
-            // Chunk and embed
-            const chunks = splitText(text);
-            const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
-
-            const documents = chunks.map((chunk, i) => ({
-              content: chunk,
-              embedding: JSON.stringify(embeddings[i]),
-              file_path: filePath,
-              file_name: fileName,
-              metadata: {
-                ...extractedMetadata,
-                chunk_index: i,
-                total_chunks: chunks.length,
-                file_extension: ext,
-              },
-            }));
-
-            const { error: insertError } = await supabase.from('documents').insert(documents);
-            if (insertError) throw insertError;
-
-            await supabase.from('indexing_status').upsert({
-              file_path: filePath,
-              file_name: fileName,
-              status: 'success',
-              chunks_created: documents.length,
-              error_message: null,
-              metadata: extractedMetadata,
-              indexed_at: new Date().toISOString(),
-            }, { onConflict: 'file_path' });
-
-            processed++;
-            activity.push({ file: fileName || filePath, status: 'success' });
-          })(),
-          PER_FILE_TIMEOUT_MS,
-          fileName || filePath
-        );
+        return new Response(JSON.stringify({ jobId, ...result, done: isDone }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
 
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Unknown error';
-        console.error(`Error processing ${filePath}:`, errMsg);
+        console.error('Cron batch error:', errMsg);
 
-        await supabase.from('indexing_status').upsert({
-          file_path: filePath,
-          file_name: fileName,
-          status: 'failed',
-          chunks_created: 0,
-          error_message: errMsg,
-          indexed_at: new Date().toISOString(),
-        }, { onConflict: 'file_path' });
+        // Check if it's a token error — mark job as failed
+        const isTokenError = errMsg.includes('token refresh failed') || errMsg.includes('401') || errMsg.includes('expired');
 
-        failed++;
-        errors.push({ file: fileName || filePath, error: errMsg });
-        activity.push({ file: fileName || filePath, status: 'failed' });
+        await supabase.from('indexing_jobs').update({
+          status: isTokenError ? 'failed' : 'running', // keep running for transient errors
+          last_error: errMsg,
+        }).eq('id', jobId);
+
+        if (isTokenError) {
+          await supabase.from('indexing_jobs').update({
+            status: 'failed',
+            last_error: errMsg,
+            completed_at: new Date().toISOString(),
+          }).eq('id', jobId);
+        }
+
+        return new Response(JSON.stringify({ error: errMsg }), {
+          status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
       }
+
+    } else {
+      // ===== BROWSER PATH: original behavior (auth required) =====
+      const authHeader = req.headers.get('Authorization');
+      if (!authHeader?.startsWith('Bearer ')) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const authClient = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } },
+      });
+      const token = authHeader.replace('Bearer ', '');
+      const { data: claimsData, error: claimsError } = await authClient.auth.getClaims(token);
+      if (claimsError || !claimsData?.claims) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const dropboxToken = await getDropboxAccessToken();
+      const result = await processBatch(supabase, openaiApiKey, dropboxToken);
+
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
-
-    // Get remaining count
-    const { count: remainingCount } = await supabase
-      .from('dropbox_files')
-      .select('id', { count: 'exact', head: true });
-
-    const { count: indexedCount } = await supabase
-      .from('indexing_status')
-      .select('id', { count: 'exact', head: true });
-
-    const remaining = (remainingCount || 0) - (indexedCount || 0);
-
-    return new Response(JSON.stringify({
-      processed, skipped, failed,
-      remaining: Math.max(0, remaining),
-      errors, activity,
-    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {
     console.error('Batch index error:', error);
