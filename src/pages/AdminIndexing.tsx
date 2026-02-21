@@ -10,21 +10,20 @@ import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
-interface IndexingStats {
-  totalProcessed: number;
-  totalSkipped: number;
-  totalFailed: number;
-  remaining: number;
-  batchesCompleted: number;
-}
-
 interface IndexingJob {
   id: string;
   status: string;
   started_at: string;
   completed_at: string | null;
-  stats: IndexingStats;
   last_error: string | null;
+}
+
+interface RealStats {
+  success: number;
+  skipped: number;
+  failed: number;
+  totalDropbox: number;
+  remaining: number;
 }
 
 interface ActivityEntry {
@@ -37,6 +36,7 @@ export default function AdminIndexing() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
   const [job, setJob] = useState<IndexingJob | null>(null);
+  const [realStats, setRealStats] = useState<RealStats>({ success: 0, skipped: 0, failed: 0, totalDropbox: 0, remaining: 0 });
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [loadingJob, setLoadingJob] = useState(true);
 
@@ -44,11 +44,11 @@ export default function AdminIndexing() {
     if (!loading && !user) navigate('/auth');
   }, [user, loading, navigate]);
 
-  // Fetch the latest job
+  // Fetch the latest job (status/banner only, no stats)
   const fetchLatestJob = useCallback(async () => {
     const { data, error } = await supabase
       .from('indexing_jobs')
-      .select('*')
+      .select('id, status, started_at, completed_at, last_error')
       .order('created_at', { ascending: false })
       .limit(1);
 
@@ -58,19 +58,40 @@ export default function AdminIndexing() {
     }
 
     if (data && data.length > 0) {
-      const raw = data[0];
-      setJob({
-        id: raw.id,
-        status: raw.status,
-        started_at: raw.started_at,
-        completed_at: raw.completed_at,
-        stats: raw.stats as unknown as IndexingStats,
-        last_error: raw.last_error,
-      });
+      setJob(data[0]);
     } else {
       setJob(null);
     }
     setLoadingJob(false);
+  }, []);
+
+  // Fetch real stats from indexing_status + dropbox_files
+  const fetchRealStats = useCallback(async () => {
+    const [statusRes, totalRes] = await Promise.all([
+      supabase.from('indexing_status').select('status'),
+      supabase.from('dropbox_files').select('*', { count: 'exact', head: true }),
+    ]);
+
+    if (statusRes.error || totalRes.error) {
+      console.error('Error fetching real stats:', statusRes.error, totalRes.error);
+      return;
+    }
+
+    const counts = { success: 0, skipped: 0, failed: 0 };
+    for (const row of statusRes.data ?? []) {
+      if (row.status === 'success') counts.success++;
+      else if (row.status === 'skipped') counts.skipped++;
+      else if (row.status === 'failed') counts.failed++;
+    }
+
+    const totalDropbox = totalRes.count ?? 0;
+    const indexed = counts.success + counts.skipped + counts.failed;
+
+    setRealStats({
+      ...counts,
+      totalDropbox,
+      remaining: Math.max(0, totalDropbox - indexed),
+    });
   }, []);
 
   // Fetch recent activity from indexing_status
@@ -95,19 +116,21 @@ export default function AdminIndexing() {
   useEffect(() => {
     if (user) {
       fetchLatestJob();
+      fetchRealStats();
       fetchActivity();
     }
-  }, [user, fetchLatestJob, fetchActivity]);
+  }, [user, fetchLatestJob, fetchRealStats, fetchActivity]);
 
   // Poll while running
   useEffect(() => {
     if (!job || job.status !== 'running') return;
     const interval = setInterval(() => {
       fetchLatestJob();
+      fetchRealStats();
       fetchActivity();
     }, 5000);
     return () => clearInterval(interval);
-  }, [job?.status, fetchLatestJob, fetchActivity]);
+  }, [job?.status, fetchLatestJob, fetchRealStats, fetchActivity]);
 
   const handleStart = async () => {
     const { error } = await supabase.from('indexing_jobs').insert({
@@ -136,9 +159,8 @@ export default function AdminIndexing() {
     fetchLatestJob();
   };
 
-  const stats = job?.stats || { totalProcessed: 0, totalSkipped: 0, totalFailed: 0, remaining: 0, batchesCompleted: 0 };
-  const totalDone = stats.totalProcessed + stats.totalSkipped + stats.totalFailed;
-  const totalFiles = totalDone + stats.remaining;
+  const totalDone = realStats.success + realStats.skipped + realStats.failed;
+  const totalFiles = totalDone + realStats.remaining;
   const progressPercent = totalFiles > 0 ? (totalDone / totalFiles) * 100 : 0;
 
   const isRunning = job?.status === 'running';
@@ -175,7 +197,7 @@ export default function AdminIndexing() {
                   {isStopped && 'Indexing stopped'}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  {stats.totalProcessed} processed, {stats.totalSkipped} skipped, {stats.totalFailed} failed
+                  {realStats.success} processed, {realStats.skipped} skipped, {realStats.failed} failed
                   {job.completed_at && ` — ${new Date(job.completed_at).toLocaleString()}`}
                 </p>
               </div>
@@ -207,7 +229,7 @@ export default function AdminIndexing() {
             {isRunning && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <RefreshCw className="h-4 w-4 animate-spin" />
-                Processing in background — batch {stats.batchesCompleted + 1}...
+                Processing in background...
               </div>
             )}
           </div>
@@ -228,36 +250,36 @@ export default function AdminIndexing() {
           <Progress value={Math.max(progressPercent, totalDone > 0 ? 1 : 0)} className="mb-4" />
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div className="text-center">
-              <div className="text-2xl font-bold text-primary">{stats.totalProcessed}</div>
+              <div className="text-2xl font-bold text-primary">{realStats.success.toLocaleString()}</div>
               <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                 <CheckCircle2 className="h-3 w-3" /> Processed
               </div>
             </div>
             <div className="text-center">
-              <div className="text-2xl font-bold text-muted-foreground">{stats.totalSkipped}</div>
+              <div className="text-2xl font-bold text-muted-foreground">{realStats.skipped.toLocaleString()}</div>
               <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                 <SkipForward className="h-3 w-3" /> Skipped
               </div>
             </div>
             <div className="text-center">
-              <div className="text-2xl font-bold text-destructive">{stats.totalFailed}</div>
+              <div className="text-2xl font-bold text-destructive">{realStats.failed}</div>
               <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                 <XCircle className="h-3 w-3" /> Failed
               </div>
             </div>
             <div className="text-center">
-              <div className="text-2xl font-bold text-foreground">{stats.remaining.toLocaleString()}</div>
+              <div className="text-2xl font-bold text-foreground">{realStats.remaining.toLocaleString()}</div>
               <div className="text-xs text-muted-foreground">Remaining</div>
             </div>
           </div>
           {totalFiles > 0 && (
             <div className="text-xs text-muted-foreground text-center mt-4 space-y-1">
-              <p>{progressPercent < 1 ? progressPercent.toFixed(1) : Math.round(progressPercent)}% complete — {stats.batchesCompleted} batches done</p>
+              <p>{progressPercent < 1 ? progressPercent.toFixed(1) : Math.round(progressPercent)}% complete</p>
               {isRunning && totalDone > 0 && job?.started_at && (() => {
                 const elapsedMs = Date.now() - new Date(job.started_at).getTime();
                 const elapsedMin = elapsedMs / 60000;
                 const rate = totalDone / elapsedMin;
-                const etaMin = rate > 0 ? stats.remaining / rate : 0;
+                const etaMin = rate > 0 ? realStats.remaining / rate : 0;
                 const etaHours = Math.floor(etaMin / 60);
                 const etaRemMin = Math.round(etaMin % 60);
                 return (
