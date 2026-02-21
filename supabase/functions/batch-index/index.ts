@@ -417,6 +417,7 @@ serve(async (req) => {
         continue;
       }
 
+      try {
         // Process with per-file timeout
         await withTimeout(
           (async () => {
