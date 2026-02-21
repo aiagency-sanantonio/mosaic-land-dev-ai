@@ -67,31 +67,25 @@ export default function AdminIndexing() {
 
   // Fetch real stats from indexing_status + dropbox_files
   const fetchRealStats = useCallback(async () => {
-    const [statusRes, totalRes] = await Promise.all([
-      supabase.from('indexing_status').select('status'),
+    const [successRes, skippedRes, failedRes, totalRes] = await Promise.all([
+      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success'),
+      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped'),
+      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'failed'),
       supabase.from('dropbox_files').select('*', { count: 'exact', head: true }),
     ]);
 
-    if (statusRes.error || totalRes.error) {
-      console.error('Error fetching real stats:', statusRes.error, totalRes.error);
+    if (successRes.error || skippedRes.error || failedRes.error || totalRes.error) {
+      console.error('Error fetching real stats:', successRes.error, skippedRes.error, failedRes.error, totalRes.error);
       return;
     }
 
-    const counts = { success: 0, skipped: 0, failed: 0 };
-    for (const row of statusRes.data ?? []) {
-      if (row.status === 'success') counts.success++;
-      else if (row.status === 'skipped') counts.skipped++;
-      else if (row.status === 'failed') counts.failed++;
-    }
-
+    const success = successRes.count ?? 0;
+    const skipped = skippedRes.count ?? 0;
+    const failed = failedRes.count ?? 0;
     const totalDropbox = totalRes.count ?? 0;
-    const indexed = counts.success + counts.skipped + counts.failed;
+    const remaining = Math.max(0, totalDropbox - success - skipped - failed);
 
-    setRealStats({
-      ...counts,
-      totalDropbox,
-      remaining: Math.max(0, totalDropbox - indexed),
-    });
+    setRealStats({ success, skipped, failed, totalDropbox, remaining });
   }, []);
 
   // Fetch recent activity from indexing_status
