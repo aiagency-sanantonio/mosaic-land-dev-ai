@@ -1,7 +1,8 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
-import { unzipSync, strFromU8, inflateSync } from "https://esm.sh/fflate@0.8.2";
+import { unzipSync, strFromU8 } from "https://esm.sh/fflate@0.8.2";
+import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/build/pdf.mjs";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -15,7 +16,7 @@ const EMBEDDING_BATCH_SIZE = 5;
 const PER_FILE_TIMEOUT_MS = 45_000;
 
 // Extensions that can use Dropbox /export API (returns plain text)
-const EXPORT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xlsx', 'xls', 'pptx']);
+const EXPORT_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx']);
 
 // Extensions we download and decode as text
 const TEXT_EXTENSIONS = new Set([
@@ -204,87 +205,27 @@ async function downloadBinaryFromDropbox(filePath: string, token: string): Promi
   return res.arrayBuffer();
 }
 
-/** Extract text from a single content stream (BT/ET + Tj/TJ operators) */
-function extractTextFromStream(content: string): string[] {
-  const textParts: string[] = [];
-  const btEtRegex = /BT\s([\s\S]*?)ET/g;
-  let match;
-  while ((match = btEtRegex.exec(content)) !== null) {
-    const block = match[1];
-    const tjRegex = /\(([^)]*)\)\s*Tj/g;
-    let tjMatch;
-    while ((tjMatch = tjRegex.exec(block)) !== null) {
-      textParts.push(tjMatch[1]);
+/** Extract readable text from PDF using pdf.js */
+async function extractTextFromPdfBinary(buffer: ArrayBuffer): Promise<string> {
+  try {
+    const data = new Uint8Array(buffer);
+    const pdf = await pdfjsLib.getDocument({ data }).promise;
+    let fullText = '';
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items.map((item: any) => item.str).join(' ');
+      fullText += pageText + '\n';
     }
-    const tjArrayRegex = /\[(.*?)\]\s*TJ/g;
-    let tjArrMatch;
-    while ((tjArrMatch = tjArrayRegex.exec(block)) !== null) {
-      const innerRegex = /\(([^)]*)\)/g;
-      let innerMatch;
-      while ((innerMatch = innerRegex.exec(tjArrMatch[1])) !== null) {
-        textParts.push(innerMatch[1]);
-      }
-    }
+
+    const result = fullText.trim();
+    console.log(`PDF text extraction (pdf.js): found ${result.length} characters from ${pdf.numPages} pages`);
+    return result;
+  } catch (error) {
+    console.error('pdf.js extraction failed:', error);
+    return '';
   }
-  return textParts;
-}
-
-/** Extract readable text from raw PDF binary, handling FlateDecode compressed streams */
-function extractTextFromPdfBinary(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const decoder = new TextDecoder('latin1');
-  const raw = decoder.decode(bytes);
-  const textParts: string[] = [];
-
-  // Find all stream objects and check for FlateDecode compression
-  // Pattern: look for obj definitions containing /FlateDecode followed by stream data
-  const streamRegex = /(?:\/FlateDecode[^]*?)stream\r?\n([\s\S]*?)\r?\nendstream|stream\r?\n([\s\S]*?)\r?\nendstream/g;
-
-  // More targeted: find each stream with its preceding object dictionary
-  // Split by "endobj" to process each object separately
-  const objRegex = /(\d+\s+\d+\s+obj[\s\S]*?endobj)/g;
-  let objMatch;
-
-  while ((objMatch = objRegex.exec(raw)) !== null) {
-    const objBlock = objMatch[1];
-    const hasFlateDecode = objBlock.includes('/FlateDecode');
-    const streamMatch = /stream\r?\n([\s\S]*?)\r?\nendstream/.exec(objBlock);
-
-    if (!streamMatch) continue;
-
-    const streamData = streamMatch[1];
-
-    if (hasFlateDecode) {
-      // Decompress the stream using fflate
-      try {
-        const compressedBytes = new Uint8Array(streamData.length);
-        for (let i = 0; i < streamData.length; i++) {
-          compressedBytes[i] = streamData.charCodeAt(i);
-        }
-        const decompressed = inflateSync(compressedBytes);
-        const decompressedStr = new TextDecoder('latin1').decode(decompressed);
-        textParts.push(...extractTextFromStream(decompressedStr));
-      } catch (e) {
-        // Decompression failed — skip this stream silently
-      }
-    } else {
-      // Uncompressed stream — extract directly
-      textParts.push(...extractTextFromStream(streamData));
-    }
-  }
-
-  const result = textParts.join(' ')
-    .replace(/\\n/g, '\n')
-    .replace(/\\r/g, '')
-    .replace(/\\t/g, ' ')
-    .replace(/\\\(/g, '(')
-    .replace(/\\\)/g, ')')
-    .replace(/\\\\/g, '\\')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  console.log(`PDF text extraction: found ${result.length} characters`);
-  return result;
 }
 
 /** Extract text from Office files (DOCX, PPTX, XLSX) by unzipping and reading XML */
@@ -446,6 +387,21 @@ serve(async (req) => {
         continue;
       }
 
+      // Legacy .doc format cannot be parsed — skip with clear message
+      if (ext === 'doc') {
+        await supabase.from('indexing_status').upsert({
+          file_path: filePath,
+          file_name: fileName,
+          status: 'skipped',
+          chunks_created: 0,
+          error_message: 'Legacy .doc format not supported - convert to .docx for indexing',
+          indexed_at: new Date().toISOString(),
+        }, { onConflict: 'file_path' });
+        skipped++;
+        activity.push({ file: fileName || filePath, status: 'skipped' });
+        continue;
+      }
+
       try {
         // Process with per-file timeout
         await withTimeout(
@@ -462,7 +418,7 @@ serve(async (req) => {
                 console.log(`Downloading binary for ${filePath} (ext: ${ext})`);
                 const binary = await downloadBinaryFromDropbox(filePath, dropboxToken);
                 if (ext === 'pdf') {
-                  text = extractTextFromPdfBinary(binary);
+                  text = await extractTextFromPdfBinary(binary);
                 } else {
                   text = extractTextFromOfficeFile(binary, ext);
                 }
