@@ -10,7 +10,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const BATCH_SIZE = 3;
+const BATCH_SIZE = 10;
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
@@ -498,6 +498,24 @@ serve(async (req) => {
         }
 
         await supabase.from('indexing_jobs').update(updatePayload).eq('id', jobId);
+
+        // Self-chain: if there's more work and job is still running, trigger next batch
+        if (!isDone) {
+          const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+          const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+          const fnUrl = `${supabaseUrl}/functions/v1/batch-index`;
+          // Fire-and-forget with a small delay to avoid overwhelming
+          setTimeout(() => {
+            fetch(fnUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${supabaseAnonKey}`,
+              },
+              body: JSON.stringify({ cron: true }),
+            }).catch(err => console.error('Self-chain fetch failed:', err));
+          }, 500);
+        }
 
         return new Response(JSON.stringify({ jobId, ...result, done: isDone }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
