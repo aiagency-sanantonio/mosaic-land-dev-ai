@@ -1,41 +1,57 @@
 
+# Background Indexing with Persistent Status
 
-## Fix: Remove pdfjs-serverless (Causes Boot Crash), Use fflate-based PDF Extraction
+## Problem
+Currently, the indexing loop runs entirely in your browser. If you close the tab or leave, it stops. There's no way to know the outcome when you return.
 
-### Problem
-The `pdfjs-serverless@0.6.0` import causes a **BOOT_ERROR** — the edge function cannot start at all. Every request returns 503 "Function failed to start." This blocks ALL indexing, not just PDFs.
+## Solution
+Move the batch loop to the server using a scheduled database job (pg_cron). The UI will poll for status and show whether indexing is running, completed, or failed.
 
-### Solution
-Replace `pdfjs-serverless` with a lightweight PDF text extractor built on `fflate` (already imported for Office files). The approach:
+## How It Works
 
-1. Parse PDF binary to find FlateDecode streams (the most common compression in modern PDFs)
-2. Decompress each stream using `inflateSync` from fflate
-3. Extract text operators (BT/ET blocks, Tj/TJ operators) from the decompressed content
-4. Also extract any uncompressed text directly from the PDF
+1. **New `indexing_jobs` table** -- tracks each indexing run with fields like `status` (running / completed / failed / stopped), `started_at`, `stats` (JSON with processed/skipped/failed counts), and `last_error`.
 
-This is simpler than pdfjs-dist but handles the vast majority of real-world PDFs that contain actual text (not scanned images).
+2. **pg_cron job** -- a recurring schedule (every 30 seconds) that calls the `batch-index` function. The function checks if there's a job in "running" state; if so, it processes one batch of 3 files and updates the job row. If no running job exists, the cron invocation does nothing.
 
-### Technical Details
+3. **Start/Stop from the UI** -- clicking "Start Indexing" creates a new job row with status "running". Clicking "Stop" sets it to "stopped". The cron job picks up on this automatically.
 
-**File: `supabase/functions/batch-index/index.ts`**
+4. **UI polls for status** -- the admin page polls the `indexing_jobs` table every 5 seconds to show real-time progress, even after you navigate away and come back.
 
-1. **Remove the pdfjs-serverless import** (line 5) — this is the boot crash cause
-2. **Add `inflateSync` to the fflate import** (line 4): change to `import { unzipSync, strFromU8, inflateSync } from "https://esm.sh/fflate@0.8.2"`
-3. **Replace `extractTextFromPdfBinary`** with a new implementation that:
-   - Finds all stream/endstream blocks in the PDF binary
-   - Checks for `/FlateDecode` filter and decompresses with `inflateSync`
-   - Extracts text from Tj (show string) and TJ (show array) operators
-   - Also extracts any plain text between BT/ET (begin text / end text) markers
-   - Handles both compressed and uncompressed content streams
-4. **Fix CORS headers** (line 9): Add missing `x-supabase-client-platform` and related headers that the Supabase JS client sends
+## Technical Details
 
-### What This Fixes
-- The function will boot again (no heavy library dependency)
-- All file types (DOCX, XLSX, PPTX, TXT, etc.) will resume processing immediately
-- PDFs with embedded text fonts will be extracted via stream decompression
-- Image-only PDFs will still correctly be skipped (no text to extract)
-- CORS issues from missing headers will be resolved
+### 1. Database migration
+Create an `indexing_jobs` table:
+```
+- id (uuid, PK)
+- status (text): running | completed | failed | stopped
+- started_at, completed_at (timestamptz)
+- stats (jsonb): { totalProcessed, totalSkipped, totalFailed, remaining, batchesCompleted }
+- last_error (text, nullable)
+- created_at, updated_at (timestamptz)
+```
+RLS: authenticated users can SELECT; service role can manage.
 
-### Risk
-The fflate-based extractor won't handle every exotic PDF encoding (CIDFont, ToUnicode maps, etc.), but it will extract text from the majority of standard business PDFs. This is a practical tradeoff vs. a library that crashes the runtime entirely.
+### 2. Enable pg_cron + pg_net and create schedule
+A cron job every 30 seconds calls `batch-index` with a body flag `{ "cron": true }` so the function knows it's a server-side invocation.
 
+### 3. Update `batch-index` edge function
+- Accept a `cron: true` flag in the request body.
+- When `cron` is true: check for a running job in `indexing_jobs`. If none, return early. If found, process one batch of 3 files, update the job's `stats` and `last_error`. If remaining hits 0, set status to "completed". If an unrecoverable error occurs, set status to "failed".
+- The existing browser-based loop path continues to work as before for backwards compatibility.
+
+### 4. Update `AdminIndexing.tsx`
+- On mount, query `indexing_jobs` for the latest job to restore state (running/completed/failed).
+- Poll every 5 seconds while a job is running.
+- "Start Indexing" inserts a new job row (status: running) instead of looping in the browser.
+- "Stop" updates the job status to "stopped".
+- Show a banner for completed/failed status with the final stats.
+- Activity log populated from `indexing_status` table (most recent entries) rather than in-memory state.
+
+### 5. Config update
+Add `verify_jwt = false` for batch-index if not already present (it is).
+
+## User Experience
+- Click "Start Indexing" -- job begins on the server.
+- Close the browser, go have lunch.
+- Come back, open the page -- see "Indexing in progress: 1,234 processed, 89 skipped, 2 failed, 3,400 remaining" or "Indexing complete!" or "Indexing failed: [error message]".
+- Click "Stop" at any time to pause. Click "Resume" to create a new job that picks up where it left off.
