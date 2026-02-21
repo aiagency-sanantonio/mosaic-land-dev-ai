@@ -1,7 +1,7 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
-import { unzipSync, strFromU8 } from "https://esm.sh/fflate@0.8.2";
+import { unzipSync, strFromU8, inflateSync } from "https://esm.sh/fflate@0.8.2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -204,25 +204,18 @@ async function downloadBinaryFromDropbox(filePath: string, token: string): Promi
   return res.arrayBuffer();
 }
 
-/** Extract readable text from raw PDF binary by scanning for text stream objects */
-function extractTextFromPdfBinary(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const decoder = new TextDecoder('latin1');
-  const raw = decoder.decode(bytes);
+/** Extract text from a single content stream (BT/ET + Tj/TJ operators) */
+function extractTextFromStream(content: string): string[] {
   const textParts: string[] = [];
-
-  // Extract text between BT (Begin Text) and ET (End Text) markers
   const btEtRegex = /BT\s([\s\S]*?)ET/g;
   let match;
-  while ((match = btEtRegex.exec(raw)) !== null) {
+  while ((match = btEtRegex.exec(content)) !== null) {
     const block = match[1];
-    // Extract text from Tj and TJ operators
     const tjRegex = /\(([^)]*)\)\s*Tj/g;
     let tjMatch;
     while ((tjMatch = tjRegex.exec(block)) !== null) {
       textParts.push(tjMatch[1]);
     }
-    // TJ array operator
     const tjArrayRegex = /\[(.*?)\]\s*TJ/g;
     let tjArrMatch;
     while ((tjArrMatch = tjArrayRegex.exec(block)) !== null) {
@@ -233,9 +226,54 @@ function extractTextFromPdfBinary(buffer: ArrayBuffer): string {
       }
     }
   }
+  return textParts;
+}
 
-  // Clean up PDF escape sequences
-  return textParts.join(' ')
+/** Extract readable text from raw PDF binary, handling FlateDecode compressed streams */
+function extractTextFromPdfBinary(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const decoder = new TextDecoder('latin1');
+  const raw = decoder.decode(bytes);
+  const textParts: string[] = [];
+
+  // Find all stream objects and check for FlateDecode compression
+  // Pattern: look for obj definitions containing /FlateDecode followed by stream data
+  const streamRegex = /(?:\/FlateDecode[^]*?)stream\r?\n([\s\S]*?)\r?\nendstream|stream\r?\n([\s\S]*?)\r?\nendstream/g;
+
+  // More targeted: find each stream with its preceding object dictionary
+  // Split by "endobj" to process each object separately
+  const objRegex = /(\d+\s+\d+\s+obj[\s\S]*?endobj)/g;
+  let objMatch;
+
+  while ((objMatch = objRegex.exec(raw)) !== null) {
+    const objBlock = objMatch[1];
+    const hasFlateDecode = objBlock.includes('/FlateDecode');
+    const streamMatch = /stream\r?\n([\s\S]*?)\r?\nendstream/.exec(objBlock);
+
+    if (!streamMatch) continue;
+
+    const streamData = streamMatch[1];
+
+    if (hasFlateDecode) {
+      // Decompress the stream using fflate
+      try {
+        const compressedBytes = new Uint8Array(streamData.length);
+        for (let i = 0; i < streamData.length; i++) {
+          compressedBytes[i] = streamData.charCodeAt(i);
+        }
+        const decompressed = inflateSync(compressedBytes);
+        const decompressedStr = new TextDecoder('latin1').decode(decompressed);
+        textParts.push(...extractTextFromStream(decompressedStr));
+      } catch (e) {
+        // Decompression failed — skip this stream silently
+      }
+    } else {
+      // Uncompressed stream — extract directly
+      textParts.push(...extractTextFromStream(streamData));
+    }
+  }
+
+  const result = textParts.join(' ')
     .replace(/\\n/g, '\n')
     .replace(/\\r/g, '')
     .replace(/\\t/g, ' ')
@@ -244,6 +282,9 @@ function extractTextFromPdfBinary(buffer: ArrayBuffer): string {
     .replace(/\\\\/g, '\\')
     .replace(/\s+/g, ' ')
     .trim();
+
+  console.log(`PDF text extraction: found ${result.length} characters`);
+  return result;
 }
 
 /** Extract text from Office files (DOCX, PPTX, XLSX) by unzipping and reading XML */
