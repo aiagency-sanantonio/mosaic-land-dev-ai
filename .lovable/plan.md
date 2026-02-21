@@ -1,58 +1,58 @@
 
 
-# Fix Indexing: Memory Crash Loop, Case-Sensitive Extensions, and Missing Skip Formats
+# Fix Indexing: Token Expiry Race Condition and Unicode File Paths
 
 ## Problems Found
 
-### 1. Crash loop causing the hang (CRITICAL)
-The file `Exhibit A- Haeckerville Amenity Examples.pptx` is **128MB**. Every cron tick downloads it, exceeds the edge function memory limit, and crashes before the error handler can mark it as failed. It stays unindexed and gets retried forever.
+### 1. Token expiry marks job as "failed" (root cause of the hang)
+The Dropbox access token (short-lived, ~4 hours) expired mid-run. The error handler at line 543 detects any error containing "401" and marks the entire job as "failed". Additionally, a race condition in the self-chaining mechanism causes a concurrent batch to overwrite `last_error` to null, hiding the actual error message.
 
-### 2. Case-sensitive extension matching
-Extensions like `JPG`, `HEIC`, `MOV`, `PNG`, `PDF` (uppercase) don't match the lowercase sets (`SKIP_EXTENSIONS`, `TEXT_EXTENSIONS`, `EXPORT_EXTENSIONS`). This means ~3,300+ image/video files are being attempted instead of instantly skipped.
+### 2. Unicode characters in file paths break Dropbox API calls (4 failures)
+Files with em-dash characters (e.g., `Cibolo–Mosaic`) in their paths cause `Failed to construct 'Request': 'headers' of 'RequestInit' is not a valid ByteString`. The `Dropbox-API-Arg` header only accepts ASCII. The Dropbox API requires non-ASCII characters to be JSON-escaped (e.g., `\u2013`).
 
-### 3. Missing skip extensions
-Formats like `dss`, `msg`, `out`, `results`, `bak`, `mjs`, `kml`, `dgn`, `tif`, `MOV`, `webp`, `gif` are not in `SKIP_EXTENSIONS`, so they fall through to processing and waste time.
+### 3. "Unknown error" failures (20 files)
+These are PDFs where the error message was not properly captured -- the `err.message` was empty or the error was a non-Error object. These files should be retried after the other fixes.
 
 ## Solution
 
-### Edge function changes (`supabase/functions/batch-index/index.ts`)
+### Fix 1: Proper token refresh handling in `batch-index/index.ts`
+- Refresh the Dropbox token proactively if it has been running for extended periods
+- When a 401 error occurs at the job level, **do not** mark the job as permanently failed. Instead, keep it as "running" so the next cron tick can retry with a fresh token
+- Only mark as "failed" if the token refresh itself fails (meaning credentials are invalid, not just expired)
 
-1. **Add a file size limit for all binary files (not just PDF)**
-   - Add a `MAX_OFFICE_SIZE_BYTES` constant of 20MB
-   - Skip any PPTX/DOCX/XLSX file over 20MB with a descriptive message
-   - This prevents the 128MB .pptx from ever being downloaded
+### Fix 2: Encode the `Dropbox-API-Arg` header for non-ASCII paths
+- In both `exportFromDropbox` and `downloadBinaryFromDropbox`, use `JSON.stringify()` with a replacer that escapes non-ASCII characters, or use a utility to ensure the header value is valid ASCII
+- The Dropbox API supports JSON-escaped unicode in the `Dropbox-API-Arg` header (this is documented behavior)
 
-2. **Make extension matching case-insensitive**
-   - The `ext` variable is already lowercased on line 306: `.toLowerCase().replace('.', '')`
-   - But the `EXPORT_EXTENSIONS` and `SKIP_EXTENSIONS` sets only contain lowercase values
-   - The issue is that the `file_extension` column in the database stores the original case (e.g., `JPG`, `HEIC`)
-   - Verify the `.toLowerCase()` is applied correctly -- it is, so this should work. The real issue is that some uppercase extensions like `HEIC`, `MOV`, `DNG` are missing from the skip list entirely.
+### Fix 3: Race condition in self-chain updates
+- Re-check the job status before updating stats. If the job was already marked as "failed" or "stopped" by another chain, skip the update
+- This prevents a successful batch from overwriting the error message set by a failed batch
 
-3. **Expand `SKIP_EXTENSIONS` to include all missing formats**
-   - Add: `heic`, `heif`, `dng`, `raw`, `cr2`, `nef`, `mov`, `tif`, `dss`, `msg`, `bak`, `mjs`, `out`, `results`, `kml`, `kmz`, `dgn`, `shx`, `dbf`, `dat`, `gif`, `webp`, `csv` (wait -- csv is text, keep it)
-   - Actually `msg` (Outlook) and some others could theoretically be parsed, but for now skip them to avoid crashes
-
-4. **Mark the stuck .pptx as skipped via a database update**
-   - Insert a record into `indexing_status` for the stuck file so it won't be retried
-
-### No UI changes needed
-The progress bar and ETA display from the previous fix will continue working.
+### Fix 4: Reset failed files for retry
+- Update the 20 "Unknown error" files in `indexing_status` to delete their records so they get retried
+- The 4 ByteString files will be retried automatically once Fix 2 is deployed
 
 ## Technical Details
 
 **File: `supabase/functions/batch-index/index.ts`**
 
-- Add `const MAX_OFFICE_SIZE_BYTES = 20 * 1024 * 1024;` near line 18
-- Add a size check for Office files (similar to the PDF check at line 330) right after the PDF size check
-- Expand `SKIP_EXTENSIONS` set to include: `heic`, `heif`, `dng`, `raw`, `cr2`, `nef`, `mov`, `tif`, `dss`, `msg`, `bak`, `mjs`, `out`, `results`, `kml`, `dgn`, `shx`, `dat`, `gif`, `webp`, `csv` (actually keep csv since it's text-extractable)
-- Add missing entries: `heic`, `heif`, `dng`, `mov`, `tif`, `dss`, `msg`, `bak`, `mjs`, `kml`, `dat`, `gif`, `webp`
+**Dropbox-API-Arg encoding (Fix 2):**
+- Create a helper function `safeDropboxArg(obj)` that converts `JSON.stringify(obj)` to ASCII by replacing any character above U+007F with its `\uXXXX` escape sequence
+- Use this helper in both `exportFromDropbox` (line 151) and `downloadBinaryFromDropbox` (line 190) for the `Dropbox-API-Arg` header value
 
-**Database: mark the stuck file**
-- Run a SQL insert to add `indexing_status` record for the 128MB .pptx so the cron stops retrying it immediately
+**Token error handling (Fix 1):**
+- Change line 543-556: Only mark job as "failed" if the error is from `getDropboxAccessToken()` itself (token refresh failure), not from per-file 401 errors
+- For transient 401 errors, keep the job "running" and let the self-chain retry with a fresh token
+
+**Race condition (Fix 3):**
+- Before updating job stats (line 514), re-fetch the job status
+- If the job is no longer "running" (was stopped or failed by another chain), skip the stats update
+
+**Database: reset failed files for retry:**
+- Delete `indexing_status` records where `error_message = 'Unknown error'` (20 records) so they are picked up again on the next run
 
 ## Expected Impact
-- The crash loop stops immediately (stuck file gets marked)
-- ~5,000+ image/video/binary files get instantly skipped instead of attempted
-- Remaining ~14,000 PDFs and text files process normally
-- With the self-chaining at 10 files/batch, should complete in roughly 4-5 hours
-
+- The 4 em-dash files will process successfully
+- The 20 "Unknown error" files get a fresh retry
+- Token expiry no longer kills the entire indexing job -- it self-heals on the next batch
+- No more silent `last_error: null` when a job fails
