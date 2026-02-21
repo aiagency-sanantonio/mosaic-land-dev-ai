@@ -1,42 +1,41 @@
 
 
-## Fix: PDF Text Extraction Failing Due to Compressed Streams
+## Fix: Replace Fragile PDF Parser with pdf.js, Handle .doc Files
 
 ### Problem
-The `extractTextFromPdfBinary` function scans raw PDF bytes for BT/ET text markers, but nearly all modern PDFs compress their content streams using FlateDecode. The regex finds nothing in compressed data, so the extracted text is under 50 characters and files are marked as "skipped."
-
-This is why Office files (PPTX) work fine -- the `fflate` library handles their ZIP decompression -- but PDFs fail silently.
+57 PDFs with real text content (contracts, bid procedures, agreements) are being skipped because the regex-based PDF text extractor returns 0 characters. The regex approach fails on real-world PDFs where compressed binary data contains byte sequences that confuse the parser. Additionally, 1 old-format `.doc` file fails because it's not a ZIP archive.
 
 ### Solution
 
-Replace the naive PDF text extraction with a two-stage approach:
+**1. Replace custom PDF extraction with Mozilla's pdf.js library**
 
-1. **Decompress FlateDecode streams first**: Parse the PDF binary to find stream objects marked with `/FlateDecode`, extract the compressed data between `stream` and `endstream` markers, and inflate them using `fflate` (already imported).
+The current approach tries to manually parse PDF binary with regex -- this is inherently unreliable. Mozilla's `pdf.js` (pdfjs-dist) is the industry-standard JavaScript PDF renderer/parser that handles all PDF complexities: compression, font encodings, CMap tables, cross-reference streams, etc.
 
-2. **Then apply BT/ET text extraction** on the decompressed content, which will now contain readable text operators.
+We'll import it as an ESM module in the edge function and use its `getDocument` + `getTextContent` APIs to reliably extract text from every page.
 
-3. **Additional fallback**: Also scan for raw (uncompressed) streams as before, so both compressed and uncompressed PDFs are handled.
+**2. Mark old `.doc` files as "skipped" with a clear reason**
 
-4. **Raise the skip threshold awareness**: Log the extracted text length so we can debug further if needed.
+The old binary `.doc` format (pre-2007) cannot be parsed in a Deno environment without a specialized native library. These will be marked as "skipped - legacy .doc format" instead of silently failing. Only `.docx` (ZIP-based) is supported.
 
 ### Technical Details
 
 **File: `supabase/functions/batch-index/index.ts`**
 
-- Rewrite `extractTextFromPdfBinary(buffer)` to:
-  1. Find all stream objects in the PDF raw bytes
-  2. Check if each stream uses `/FlateDecode` filter
-  3. If so, use `fflate.inflateSync()` to decompress the stream data
-  4. Apply the existing BT/ET + Tj/TJ regex extraction on decompressed content
-  5. Also try extracting text from uncompressed streams as a fallback
-  6. Log the character count of extracted text for debugging
+1. **Import pdf.js**: Add `import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/build/pdf.mjs"` -- this is a self-contained build that works in Deno without a worker.
 
-- Add a log line after text extraction showing how many characters were found, so future debugging is easier.
+2. **Replace `extractTextFromPdfBinary`**: New implementation using pdf.js:
+   - Load the PDF from an ArrayBuffer using `pdfjsLib.getDocument({ data })` 
+   - Iterate over each page with `pdf.getPage(i)`
+   - Extract text content with `page.getTextContent()`
+   - Concatenate all text items, joining with spaces/newlines
+   - This handles FlateDecode, CMap, font encoding, and all other PDF internals automatically
 
-- No other files need to change. The `fflate` library (`inflateSync`) is already imported.
+3. **Remove dead code**: Remove the old `extractTextFromStream` helper and the `inflateSync` import (no longer needed for PDF parsing; `fflate` is still used for Office files via `unzipSync`/`strFromU8`).
+
+4. **Handle `.doc` in the processing loop**: Before attempting `extractTextFromOfficeFile` on a `.doc` file, check the extension. If it's `.doc` (not `.docx`), mark it as skipped with message "Legacy .doc format not supported - convert to .docx for indexing."
 
 ### What This Fixes
-- PDFs with FlateDecode-compressed content streams (the vast majority of PDFs) will now have their text extracted successfully
-- Image-only scanned PDFs will still be correctly skipped (no text in streams even after decompression)
-- The PPTX/DOCX path remains unchanged and working
-
+- All 57 PDFs with actual text content will now be properly extracted using a battle-tested library
+- Image-only PDFs (engineering drawings, scanned docs without OCR) will still correctly result in minimal text and be skipped
+- The 1 `.doc` file gets a clear skip reason instead of a silent failure
+- No impact on DOCX/PPTX/XLSX processing (still uses fflate unzip)
