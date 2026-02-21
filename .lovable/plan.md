@@ -1,58 +1,99 @@
 
 
-# Fix Indexing: Token Expiry Race Condition and Unicode File Paths
+# Fix: Inflated Progress Stats and Review Failed/Skipped Files
 
-## Problems Found
+## The Problem
 
-### 1. Token expiry marks job as "failed" (root cause of the hang)
-The Dropbox access token (short-lived, ~4 hours) expired mid-run. The error handler at line 543 detects any error containing "401" and marks the entire job as "failed". Additionally, a race condition in the self-chaining mechanism causes a concurrent batch to overwrite `last_error` to null, hiding the actual error message.
+The admin dashboard shows **inflated processed/skipped counts** because the job-level stats (`indexing_jobs.stats`) accumulate across multiple job runs independently, while files are only processed once (tracked via `indexing_status`). The stopped job shows 13,828 processed and 25,320 skipped, but the real numbers are much lower.
 
-### 2. Unicode characters in file paths break Dropbox API calls (4 failures)
-Files with em-dash characters (e.g., `Cibolo–Mosaic`) in their paths cause `Failed to construct 'Request': 'headers' of 'RequestInit' is not a valid ByteString`. The `Dropbox-API-Arg` header only accepts ASCII. The Dropbox API requires non-ASCII characters to be JSON-escaped (e.g., `\u2013`).
+### Actual Database Truth (`indexing_status` table)
 
-### 3. "Unknown error" failures (20 files)
-These are PDFs where the error message was not properly captured -- the `err.message` was empty or the error was a non-Error object. These files should be retried after the other fixes.
+| Status | Count | Notes |
+|--------|-------|-------|
+| Success | 8,394 | Produced 260,514 document chunks |
+| Skipped | 13,761 | Legitimate reasons (see below) |
+| Failed | 82 | Mostly retryable (see below) |
+| Remaining | 5,011 | Still unindexed |
+| **Total** | **27,256** | Total Dropbox inventory |
 
-## Solution
+### Why the dashboard shows wrong numbers
 
-### Fix 1: Proper token refresh handling in `batch-index/index.ts`
-- Refresh the Dropbox token proactively if it has been running for extended periods
-- When a 401 error occurs at the job level, **do not** mark the job as permanently failed. Instead, keep it as "running" so the next cron tick can retry with a fresh token
-- Only mark as "failed" if the token refresh itself fails (meaning credentials are invalid, not just expired)
+The progress card reads from `indexing_jobs.stats`, which is a running counter per job. When jobs are stopped and restarted, the new job starts counting from zero but processes different files than the old job counted. The old stopped job shows `totalProcessed: 13,828` -- nearly double the real `8,394`.
 
-### Fix 2: Encode the `Dropbox-API-Arg` header for non-ASCII paths
-- In both `exportFromDropbox` and `downloadBinaryFromDropbox`, use `JSON.stringify()` with a replacer that escapes non-ASCII characters, or use a utility to ensure the header value is valid ASCII
-- The Dropbox API supports JSON-escaped unicode in the `Dropbox-API-Arg` header (this is documented behavior)
+## Skipped Files Breakdown (all legitimate)
 
-### Fix 3: Race condition in self-chain updates
-- Re-check the job status before updating stats. If the job was already marked as "failed" or "stopped" by another chain, skip the update
-- This prevents a successful batch from overwriting the error message set by a failed batch
+| Reason | Count |
+|--------|-------|
+| Scanned/image-only PDFs (no text) | 6,913 |
+| PDFs over 5MB size limit | 1,941 |
+| Images (.jpg, .jpeg, .png, .tif, .heic, .dng) | 3,168 |
+| CAD/GIS files (.dwg, .dgn, .shx, .kmz) | 471 |
+| Videos (.mov, .mp4) | 80 |
+| Old Office (.doc) | 205 |
+| Archives (.zip) | 125 |
+| Email/system (.msg, .bak, .mjs, .ttf) | 258 |
+| Insufficient text (under 50 chars) | 307 |
+| Other formats | ~293 |
 
-### Fix 4: Reset failed files for retry
-- Update the 20 "Unknown error" files in `indexing_status` to delete their records so they get retried
-- The 4 ByteString files will be retried automatically once Fix 2 is deployed
+All skips are legitimate -- these are either non-text files or scanned PDFs without extractable text.
+
+## Failed Files Breakdown (82 total)
+
+| Error | Count | Retryable? |
+|-------|-------|------------|
+| Unknown error (timeout/crash) | 65 | Yes |
+| Dropbox rate limit (429) | 9 | Yes |
+| OpenAI connection reset | 3 | Yes |
+| OpenAI API 403 | 2 | Investigate |
+| Dropbox token expired (401) | 1 | Yes |
+| Other | 2 | Yes |
+
+**All but the 2 OpenAI 403 errors are transient and retryable.**
+
+## Fix: Use Real Database Counts in the Dashboard
+
+The fix is to make the AdminIndexing page read actual counts from the `indexing_status` table instead of relying on the inflated `indexing_jobs.stats` JSON.
+
+### Changes
+
+**1. `src/pages/AdminIndexing.tsx`**
+- Add a new `fetchRealStats()` function that queries `indexing_status` grouped by status
+- Display these real counts in the Progress card instead of `job.stats`
+- Keep the job status/banner as-is (running/stopped/failed)
+- Calculate "remaining" as total dropbox_files minus total indexed
+
+**2. Reset the 82 failed files for retry**
+- Delete the 82 failed `indexing_status` records so they get picked up by the currently running job
+- The transient errors (rate limits, timeouts) will likely succeed on retry
+
+**3. Note: A job is currently running**
+- Job `88ece950` started at 20:20 UTC and has processed 25 files so far with 5,008 remaining
+- It is actively working through the backlog right now
 
 ## Technical Details
 
-**File: `supabase/functions/batch-index/index.ts`**
+**`src/pages/AdminIndexing.tsx` changes:**
 
-**Dropbox-API-Arg encoding (Fix 2):**
-- Create a helper function `safeDropboxArg(obj)` that converts `JSON.stringify(obj)` to ASCII by replacing any character above U+007F with its `\uXXXX` escape sequence
-- Use this helper in both `exportFromDropbox` (line 151) and `downloadBinaryFromDropbox` (line 190) for the `Dropbox-API-Arg` header value
+```typescript
+// Add a new state for real stats from indexing_status
+const [realStats, setRealStats] = useState({ success: 0, skipped: 0, failed: 0, total: 0 });
 
-**Token error handling (Fix 1):**
-- Change line 543-556: Only mark job as "failed" if the error is from `getDropboxAccessToken()` itself (token refresh failure), not from per-file 401 errors
-- For transient 401 errors, keep the job "running" and let the self-chain retry with a fresh token
+// Fetch real counts from database
+const fetchRealStats = useCallback(async () => {
+  const { data: statusCounts } = await supabase
+    .from('indexing_status')
+    .select('status');
+  // Count by status...
+  
+  const { count: totalFiles } = await supabase
+    .from('dropbox_files')
+    .select('*', { count: 'exact', head: true });
+  // Calculate remaining = totalFiles - (success + skipped + failed)
+}, []);
+```
 
-**Race condition (Fix 3):**
-- Before updating job stats (line 514), re-fetch the job status
-- If the job is no longer "running" (was stopped or failed by another chain), skip the stats update
+- Replace the Progress card's stats with `realStats` values
+- Keep the job-level ETA/rate calculation since that's per-session and valid
 
-**Database: reset failed files for retry:**
-- Delete `indexing_status` records where `error_message = 'Unknown error'` (20 records) so they are picked up again on the next run
-
-## Expected Impact
-- The 4 em-dash files will process successfully
-- The 20 "Unknown error" files get a fresh retry
-- Token expiry no longer kills the entire indexing job -- it self-heals on the next batch
-- No more silent `last_error: null` when a job fails
+**Database cleanup:**
+- Delete all 82 failed records from `indexing_status` to allow retry
