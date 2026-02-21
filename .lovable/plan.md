@@ -1,57 +1,33 @@
 
-# Background Indexing with Persistent Status
+# Speed Up Background Indexing
 
 ## Problem
-Currently, the indexing loop runs entirely in your browser. If you close the tab or leave, it stops. There's no way to know the outcome when you return.
+At 3 files per minute, indexing 26,700 remaining files will take over 6 days.
 
 ## Solution
-Move the batch loop to the server using a scheduled database job (pg_cron). The UI will poll for status and show whether indexing is running, completed, or failed.
+Two changes to dramatically increase throughput:
 
-## How It Works
+### 1. Increase batch size from 3 to 10
+Most files are quick (text files finish in under a second, skipped files are instant). Only PDFs and Office docs take significant time. A batch of 10 is safe within the edge function timeout since the per-file timeout (45s) only applies to slow files, and most files complete in 1-2 seconds.
 
-1. **New `indexing_jobs` table** -- tracks each indexing run with fields like `status` (running / completed / failed / stopped), `started_at`, `stats` (JSON with processed/skipped/failed counts), and `last_error`.
+**Result:** 10 files/minute instead of 3 -- roughly 3x faster on its own.
 
-2. **pg_cron job** -- a recurring schedule (every 30 seconds) that calls the `batch-index` function. The function checks if there's a job in "running" state; if so, it processes one batch of 3 files and updates the job row. If no running job exists, the cron invocation does nothing.
+### 2. Self-chaining for continuous processing
+After the function finishes a batch, if there are still files remaining and the job is still "running," it immediately fires another call to itself using `pg_net.http_post`. This creates a continuous processing chain without waiting for the next cron tick. The cron job (every 1 minute) acts as a safety net to restart the chain if it ever breaks.
 
-3. **Start/Stop from the UI** -- clicking "Start Indexing" creates a new job row with status "running". Clicking "Stop" sets it to "stopped". The cron job picks up on this automatically.
+**Result:** Instead of waiting 60 seconds between batches, the next batch starts within 1-2 seconds of the previous one finishing. With 10 files per batch and near-continuous execution, throughput jumps to roughly 100+ files per minute.
 
-4. **UI polls for status** -- the admin page polls the `indexing_jobs` table every 5 seconds to show real-time progress, even after you navigate away and come back.
+**Estimated time:** Under 6 hours for the remaining 26,700 files (vs 6 days currently).
 
 ## Technical Details
 
-### 1. Database migration
-Create an `indexing_jobs` table:
-```
-- id (uuid, PK)
-- status (text): running | completed | failed | stopped
-- started_at, completed_at (timestamptz)
-- stats (jsonb): { totalProcessed, totalSkipped, totalFailed, remaining, batchesCompleted }
-- last_error (text, nullable)
-- created_at, updated_at (timestamptz)
-```
-RLS: authenticated users can SELECT; service role can manage.
+### Edge function changes (`supabase/functions/batch-index/index.ts`)
+- Change `BATCH_SIZE` from 3 to 10
+- After processing a batch in the cron path, if `remaining > 0` and the job is still running, use `fetch()` to call itself with `{"cron": true}` (fire-and-forget using the same function URL and anon key from env vars)
+- Add a small delay (500ms) before the self-call to avoid overwhelming the system
 
-### 2. Enable pg_cron + pg_net and create schedule
-A cron job every 30 seconds calls `batch-index` with a body flag `{ "cron": true }` so the function knows it's a server-side invocation.
+### No database or cron schedule changes needed
+The existing cron job and `indexing_jobs` table work as-is. The cron just becomes a fallback to restart the chain if it ever stalls.
 
-### 3. Update `batch-index` edge function
-- Accept a `cron: true` flag in the request body.
-- When `cron` is true: check for a running job in `indexing_jobs`. If none, return early. If found, process one batch of 3 files, update the job's `stats` and `last_error`. If remaining hits 0, set status to "completed". If an unrecoverable error occurs, set status to "failed".
-- The existing browser-based loop path continues to work as before for backwards compatibility.
-
-### 4. Update `AdminIndexing.tsx`
-- On mount, query `indexing_jobs` for the latest job to restore state (running/completed/failed).
-- Poll every 5 seconds while a job is running.
-- "Start Indexing" inserts a new job row (status: running) instead of looping in the browser.
-- "Stop" updates the job status to "stopped".
-- Show a banner for completed/failed status with the final stats.
-- Activity log populated from `indexing_status` table (most recent entries) rather than in-memory state.
-
-### 5. Config update
-Add `verify_jwt = false` for batch-index if not already present (it is).
-
-## User Experience
-- Click "Start Indexing" -- job begins on the server.
-- Close the browser, go have lunch.
-- Come back, open the page -- see "Indexing in progress: 1,234 processed, 89 skipped, 2 failed, 3,400 remaining" or "Indexing complete!" or "Indexing failed: [error message]".
-- Click "Stop" at any time to pause. Click "Resume" to create a new job that picks up where it left off.
+### UI change (`src/pages/AdminIndexing.tsx`)
+- Add an estimated time remaining display based on processing rate (files processed / elapsed time)
