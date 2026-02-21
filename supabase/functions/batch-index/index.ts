@@ -16,6 +16,7 @@ const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
 const PER_FILE_TIMEOUT_MS = 45_000;
 const MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024; // 5MB - larger PDFs exceed CPU limits
+const MAX_TEXT_LENGTH = 100_000; // 100K chars max - prevents CPU exhaustion during embedding
 
 // Extensions that can use Dropbox /export API (returns plain text)
 const EXPORT_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx']);
@@ -456,6 +457,12 @@ serve(async (req) => {
               skipped++;
               activity.push({ file: fileName || filePath, status: 'skipped' });
               return;
+            }
+
+            // Truncate extremely large text to prevent CPU exhaustion during embedding
+            if (text.length > MAX_TEXT_LENGTH) {
+              console.log(`Truncating ${fileName} from ${text.length} to ${MAX_TEXT_LENGTH} chars`);
+              text = text.slice(0, MAX_TEXT_LENGTH);
             }
 
             const extractedMetadata = extractMetadata(text);
