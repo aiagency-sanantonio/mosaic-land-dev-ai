@@ -1,34 +1,42 @@
 
 
-## Fix: Handle "non_exportable" Dropbox Files
+## Fix: PDF Text Extraction Failing Due to Compressed Streams
 
 ### Problem
+The `extractTextFromPdfBinary` function scans raw PDF bytes for BT/ET text markers, but nearly all modern PDFs compress their content streams using FlateDecode. The regex finds nothing in compressed data, so the extracted text is under 50 characters and files are marked as "skipped."
 
-The Dropbox `/export` API only works for files created through Dropbox Paper or Google Docs. Regular uploaded PDFs, DOCX, and PPTX files return a `409 non_exportable` error. This is causing all PDF/Office files to fail indexing.
+This is why Office files (PPTX) work fine -- the `fflate` library handles their ZIP decompression -- but PDFs fail silently.
 
 ### Solution
 
-Update the `batch-index` edge function to add a **fallback strategy**:
+Replace the naive PDF text extraction with a two-stage approach:
 
-1. **Try `/export` first** (works for Dropbox Paper / Google Docs files)
-2. **If "non_exportable", fall back to `/download`** and download the raw file
-3. **For PDFs**: Download the binary and attempt to extract any embedded text. PDFs that are purely image-based (scanned documents with no text layer) will be skipped with a clear message.
-4. **For Office files (DOCX, PPTX, XLSX)**: These are ZIP-based formats. Download and attempt basic XML text extraction from their internal structure (e.g., extracting text from `word/document.xml` in DOCX files).
+1. **Decompress FlateDecode streams first**: Parse the PDF binary to find stream objects marked with `/FlateDecode`, extract the compressed data between `stream` and `endstream` markers, and inflate them using `fflate` (already imported).
+
+2. **Then apply BT/ET text extraction** on the decompressed content, which will now contain readable text operators.
+
+3. **Additional fallback**: Also scan for raw (uncompressed) streams as before, so both compressed and uncompressed PDFs are handled.
+
+4. **Raise the skip threshold awareness**: Log the extracted text length so we can debug further if needed.
 
 ### Technical Details
 
-**Changes to `supabase/functions/batch-index/index.ts`:**
+**File: `supabase/functions/batch-index/index.ts`**
 
-1. **New helper: `extractTextFromPdfBinary(buffer)`** -- Scans raw PDF bytes for text stream objects and extracts readable text. Falls back to skipping if no text is found.
+- Rewrite `extractTextFromPdfBinary(buffer)` to:
+  1. Find all stream objects in the PDF raw bytes
+  2. Check if each stream uses `/FlateDecode` filter
+  3. If so, use `fflate.inflateSync()` to decompress the stream data
+  4. Apply the existing BT/ET + Tj/TJ regex extraction on decompressed content
+  5. Also try extracting text from uncompressed streams as a fallback
+  6. Log the character count of extracted text for debugging
 
-2. **New helper: `extractTextFromOfficeFile(buffer, ext)`** -- Unzips DOCX/PPTX/XLSX files and extracts text content from their XML entries.
+- Add a log line after text extraction showing how many characters were found, so future debugging is easier.
 
-3. **Update `exportFromDropbox()`** -- Instead of throwing on "non_exportable", return `null` to signal fallback is needed.
+- No other files need to change. The `fflate` library (`inflateSync`) is already imported.
 
-4. **Update the main processing loop** -- When export returns null, download the file via `/download` and use the appropriate binary text extractor based on file extension. If extraction yields less than 50 characters of text, mark the file as "skipped" with a message like "No extractable text (image-only PDF or unsupported format)".
-
-This approach ensures:
-- Files that work with `/export` continue to use it (best quality)
-- Regular uploaded files get processed via binary extraction (good enough for most documents)
-- Image-only PDFs and truly unreadable files are cleanly skipped instead of marked as errors
+### What This Fixes
+- PDFs with FlateDecode-compressed content streams (the vast majority of PDFs) will now have their text extracted successfully
+- Image-only scanned PDFs will still be correctly skipped (no text in streams even after decompression)
+- The PPTX/DOCX path remains unchanged and working
 
