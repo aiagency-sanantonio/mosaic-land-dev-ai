@@ -225,7 +225,7 @@ export default function AdminIndexing() {
           <CardTitle className="text-lg">Progress</CardTitle>
         </CardHeader>
         <CardContent>
-          <Progress value={progressPercent} className="mb-4" />
+          <Progress value={Math.max(progressPercent, totalDone > 0 ? 1 : 0)} className="mb-4" />
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div className="text-center">
               <div className="text-2xl font-bold text-primary">{stats.totalProcessed}</div>
@@ -252,7 +252,7 @@ export default function AdminIndexing() {
           </div>
           {totalFiles > 0 && (
             <div className="text-xs text-muted-foreground text-center mt-4 space-y-1">
-              <p>{Math.round(progressPercent)}% complete — {stats.batchesCompleted} batches done</p>
+              <p>{progressPercent < 1 ? progressPercent.toFixed(1) : Math.round(progressPercent)}% complete — {stats.batchesCompleted} batches done</p>
               {isRunning && totalDone > 0 && job?.started_at && (() => {
                 const elapsedMs = Date.now() - new Date(job.started_at).getTime();
                 const elapsedMin = elapsedMs / 60000;
