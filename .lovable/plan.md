@@ -1,41 +1,31 @@
 
 
-## Fix: Replace Fragile PDF Parser with pdf.js, Handle .doc Files
+## Fix: PDF Extraction Broken -- Replace pdfjs-dist with pdfjs-serverless
 
 ### Problem
-57 PDFs with real text content (contracts, bid procedures, agreements) are being skipped because the regex-based PDF text extractor returns 0 characters. The regex approach fails on real-world PDFs where compressed binary data contains byte sequences that confuse the parser. Additionally, 1 old-format `.doc` file fails because it's not a ZIP archive.
+Every single PDF is being skipped because `pdfjs-dist` requires a web worker (`GlobalWorkerOptions.workerSrc`) that doesn't exist in the Deno edge function environment. The error `No "GlobalWorkerOptions.workerSrc" specified` fires on every PDF, the extraction returns empty text, and files get marked as "skipped."
+
+DOCX, XLSX, and PPTX files are all indexing fine -- only PDFs are broken.
 
 ### Solution
-
-**1. Replace custom PDF extraction with Mozilla's pdf.js library**
-
-The current approach tries to manually parse PDF binary with regex -- this is inherently unreliable. Mozilla's `pdf.js` (pdfjs-dist) is the industry-standard JavaScript PDF renderer/parser that handles all PDF complexities: compression, font encodings, CMap tables, cross-reference streams, etc.
-
-We'll import it as an ESM module in the edge function and use its `getDocument` + `getTextContent` APIs to reliably extract text from every page.
-
-**2. Mark old `.doc` files as "skipped" with a clear reason**
-
-The old binary `.doc` format (pre-2007) cannot be parsed in a Deno environment without a specialized native library. These will be marked as "skipped - legacy .doc format" instead of silently failing. Only `.docx` (ZIP-based) is supported.
+Replace the `pdfjs-dist` import with `pdfjs-serverless`, a redistribution of PDF.js specifically built for serverless/Deno environments. It inlines the worker code so no `workerSrc` configuration is needed.
 
 ### Technical Details
 
 **File: `supabase/functions/batch-index/index.ts`**
 
-1. **Import pdf.js**: Add `import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/build/pdf.mjs"` -- this is a self-contained build that works in Deno without a worker.
+1. **Change the import** (line 5):
+   - Remove: `import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/build/pdf.mjs"`
+   - Add: `import { getDocument } from "https://esm.sh/pdfjs-serverless@0.4.1"`
 
-2. **Replace `extractTextFromPdfBinary`**: New implementation using pdf.js:
-   - Load the PDF from an ArrayBuffer using `pdfjsLib.getDocument({ data })` 
-   - Iterate over each page with `pdf.getPage(i)`
-   - Extract text content with `page.getTextContent()`
-   - Concatenate all text items, joining with spaces/newlines
-   - This handles FlateDecode, CMap, font encoding, and all other PDF internals automatically
+2. **Update `extractTextFromPdfBinary`** to use the new API:
+   - Replace `pdfjsLib.getDocument({ data })` with `getDocument({ data, useSystemFonts: true })`
+   - The rest of the page iteration / `getTextContent()` logic stays the same
 
-3. **Remove dead code**: Remove the old `extractTextFromStream` helper and the `inflateSync` import (no longer needed for PDF parsing; `fflate` is still used for Office files via `unzipSync`/`strFromU8`).
-
-4. **Handle `.doc` in the processing loop**: Before attempting `extractTextFromOfficeFile` on a `.doc` file, check the extension. If it's `.doc` (not `.docx`), mark it as skipped with message "Legacy .doc format not supported - convert to .docx for indexing."
+3. **Clear previously skipped PDF entries** from `indexing_status` so they get retried with the working parser.
 
 ### What This Fixes
-- All 57 PDFs with actual text content will now be properly extracted using a battle-tested library
-- Image-only PDFs (engineering drawings, scanned docs without OCR) will still correctly result in minimal text and be skipped
-- The 1 `.doc` file gets a clear skip reason instead of a silent failure
-- No impact on DOCX/PPTX/XLSX processing (still uses fflate unzip)
+- All PDFs with extractable text will now be properly indexed
+- Scanned/image-only PDFs will still correctly result in minimal text and be skipped (which is fine per your request)
+- No changes to DOCX/PPTX/XLSX processing
+
