@@ -1,33 +1,25 @@
 
-# Speed Up Background Indexing
+
+# Fix Progress Bar Percentage Display
 
 ## Problem
-At 3 files per minute, indexing 26,700 remaining files will take over 6 days.
+With ~26,700 total files, early progress is invisible. After processing 40 files, `Math.round(0.15%)` displays as `0%`, making it look broken. The progress bar itself is also too thin to show movement at such small percentages.
 
 ## Solution
-Two changes to dramatically increase throughput:
 
-### 1. Increase batch size from 3 to 10
-Most files are quick (text files finish in under a second, skipped files are instant). Only PDFs and Office docs take significant time. A batch of 10 is safe within the edge function timeout since the per-file timeout (45s) only applies to slow files, and most files complete in 1-2 seconds.
+### 1. Show decimal precision for small percentages (`AdminIndexing.tsx`)
+- When progress is under 1%, display one decimal place (e.g., "0.2% complete")
+- When progress is 1% or above, continue showing integer values
+- This gives immediate visual feedback that things are moving
 
-**Result:** 10 files/minute instead of 3 -- roughly 3x faster on its own.
+### 2. Ensure progress bar shows minimum visible fill
+- When progress is above 0 but below 1%, clamp the visual value to at least 1% so the bar shows a small sliver of color
+- This makes the Progress component visually respond from the very first batch
 
-### 2. Self-chaining for continuous processing
-After the function finishes a batch, if there are still files remaining and the job is still "running," it immediately fires another call to itself using `pg_net.http_post`. This creates a continuous processing chain without waiting for the next cron tick. The cron job (every 1 minute) acts as a safety net to restart the chain if it ever breaks.
+### Changes
+**File: `src/pages/AdminIndexing.tsx`**
+- Line ~220: Update the `Progress` value to use `Math.max(progressPercent, totalDone > 0 ? 1 : 0)` so there's always a visible indicator once processing starts
+- Line ~255: Change `Math.round(progressPercent)` to show one decimal place when under 1%: `progressPercent < 1 ? progressPercent.toFixed(1) : Math.round(progressPercent)`
 
-**Result:** Instead of waiting 60 seconds between batches, the next batch starts within 1-2 seconds of the previous one finishing. With 10 files per batch and near-continuous execution, throughput jumps to roughly 100+ files per minute.
+No backend or edge function changes needed.
 
-**Estimated time:** Under 6 hours for the remaining 26,700 files (vs 6 days currently).
-
-## Technical Details
-
-### Edge function changes (`supabase/functions/batch-index/index.ts`)
-- Change `BATCH_SIZE` from 3 to 10
-- After processing a batch in the cron path, if `remaining > 0` and the job is still running, use `fetch()` to call itself with `{"cron": true}` (fire-and-forget using the same function URL and anon key from env vars)
-- Add a small delay (500ms) before the self-call to avoid overwhelming the system
-
-### No database or cron schedule changes needed
-The existing cron job and `indexing_jobs` table work as-is. The cron just becomes a fallback to restart the chain if it ever stalls.
-
-### UI change (`src/pages/AdminIndexing.tsx`)
-- Add an estimated time remaining display based on processing rate (files processed / elapsed time)
