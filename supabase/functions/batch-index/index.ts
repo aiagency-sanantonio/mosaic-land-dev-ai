@@ -143,12 +143,20 @@ async function generateEmbeddingsBatch(texts: string[], apiKey: string): Promise
   return results;
 }
 
+/** Escape non-ASCII chars so the header is a valid ASCII ByteString */
+function safeDropboxArg(obj: Record<string, unknown>): string {
+  const json = JSON.stringify(obj);
+  return json.replace(/[\u0080-\uFFFF]/g, (ch) =>
+    '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0')
+  );
+}
+
 async function exportFromDropbox(filePath: string, token: string): Promise<string | null> {
   const res = await fetch('https://content.dropboxapi.com/2/files/export', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
-      'Dropbox-API-Arg': JSON.stringify({ path: filePath }),
+      'Dropbox-API-Arg': safeDropboxArg({ path: filePath }),
     },
   });
   if (!res.ok) {
@@ -188,7 +196,7 @@ async function downloadBinaryFromDropbox(filePath: string, token: string): Promi
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
-      'Dropbox-API-Arg': JSON.stringify({ path: filePath }),
+      'Dropbox-API-Arg': safeDropboxArg({ path: filePath }),
     },
   });
   if (!res.ok) {
@@ -487,8 +495,22 @@ serve(async (req) => {
         const dropboxToken = await getDropboxAccessToken();
         const result = await processBatch(supabase, openaiApiKey, dropboxToken);
 
+        // Re-fetch job to guard against race condition (another chain may have failed/stopped it)
+        const { data: freshJob } = await supabase
+          .from('indexing_jobs')
+          .select('status, stats')
+          .eq('id', jobId)
+          .single();
+
+        if (freshJob && freshJob.status !== 'running') {
+          console.warn(`Job ${jobId} is no longer running (status: ${freshJob.status}), skipping stats update`);
+          return new Response(JSON.stringify({ jobId, skipped: true, reason: 'job no longer running' }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
         // Update job stats
-        const currentStats = (job.stats as Record<string, number>) || {};
+        const currentStats = ((freshJob?.stats ?? job.stats) as Record<string, number>) || {};
         const newStats = {
           totalProcessed: (currentStats.totalProcessed || 0) + result.processed,
           totalSkipped: (currentStats.totalSkipped || 0) + result.skipped,
@@ -511,7 +533,7 @@ serve(async (req) => {
           updatePayload.completed_at = new Date().toISOString();
         }
 
-        await supabase.from('indexing_jobs').update(updatePayload).eq('id', jobId);
+        await supabase.from('indexing_jobs').update(updatePayload).eq('id', jobId).eq('status', 'running');
 
         // Self-chain: if there's more work and job is still running, trigger next batch
         if (!isDone) {
@@ -539,20 +561,21 @@ serve(async (req) => {
         const errMsg = err instanceof Error ? err.message : 'Unknown error';
         console.error('Cron batch error:', errMsg);
 
-        // Check if it's a token error — mark job as failed
-        const isTokenError = errMsg.includes('token refresh failed') || errMsg.includes('401') || errMsg.includes('expired');
+        // Only mark as permanently failed if token refresh credentials are invalid
+        const isCredentialError = errMsg.includes('Dropbox token refresh failed') || errMsg.includes('OAuth not configured');
 
-        await supabase.from('indexing_jobs').update({
-          status: isTokenError ? 'failed' : 'running', // keep running for transient errors
-          last_error: errMsg,
-        }).eq('id', jobId);
-
-        if (isTokenError) {
+        if (isCredentialError) {
           await supabase.from('indexing_jobs').update({
             status: 'failed',
             last_error: errMsg,
             completed_at: new Date().toISOString(),
           }).eq('id', jobId);
+        } else {
+          // Transient error (401, timeout, etc.) — keep running, log the error, let next tick retry
+          await supabase.from('indexing_jobs').update({
+            last_error: errMsg,
+          }).eq('id', jobId).eq('status', 'running');
+          console.warn(`Transient error, keeping job ${jobId} running for retry: ${errMsg}`);
         }
 
         return new Response(JSON.stringify({ error: errMsg }), {
