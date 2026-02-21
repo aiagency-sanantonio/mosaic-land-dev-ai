@@ -2,7 +2,7 @@ import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 import { unzipSync, strFromU8 } from "https://esm.sh/fflate@0.8.2";
-import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/build/pdf.mjs";
+import { getDocument } from "https://esm.sh/pdfjs-serverless@0.6.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -209,7 +209,7 @@ async function downloadBinaryFromDropbox(filePath: string, token: string): Promi
 async function extractTextFromPdfBinary(buffer: ArrayBuffer): Promise<string> {
   try {
     const data = new Uint8Array(buffer);
-    const pdf = await pdfjsLib.getDocument({ data }).promise;
+    const pdf = await getDocument({ data, useSystemFonts: true }).promise;
     let fullText = '';
 
     for (let i = 1; i <= pdf.numPages; i++) {
