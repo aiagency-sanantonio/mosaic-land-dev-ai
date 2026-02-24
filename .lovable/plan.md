@@ -1,47 +1,66 @@
 
-# Fix: Progress Bar Shows Wrong Numbers (1000-Row Limit)
 
-## Root Cause
+# Render Markdown in Chat Messages
 
-The `fetchRealStats()` function in `AdminIndexing.tsx` queries the `indexing_status` table with `.select('status')`, which returns at most **1000 rows** (the default Supabase limit). With 22,216+ rows in that table, the dashboard only counts the first 1000, showing ~564 processed and ~538 skipped instead of the actual 8,425 and 13,781.
+## Problem
+The AI assistant returns rich markdown (headers, bold text, numbered lists, blockquotes, tables, code blocks), but the `ChatMessage` component renders everything as a plain `<p>` tag with `whitespace-pre-wrap`. All that structure is lost.
 
-## Fix
+## Solution
+Install `react-markdown` (with `remark-gfm` for tables/strikethrough support) and update the `ChatMessage` component to render assistant messages as parsed markdown with proper styling.
 
-Replace the client-side row-by-row counting with a **server-side count** approach. Instead of fetching all rows and counting in JavaScript, use three separate HEAD requests with `count: 'exact'` and a status filter -- one for each status. This returns just the count without transferring any row data.
+## Changes
+
+### 1. Install dependencies
+- `react-markdown` -- renders markdown as React components
+- `remark-gfm` -- adds GitHub Flavored Markdown (tables, task lists, strikethrough)
+
+### 2. Update `src/components/chat/ChatMessage.tsx`
+- Import `ReactMarkdown` and `remarkGfm`
+- For **user** messages: keep the current plain text rendering (users don't write markdown)
+- For **assistant** messages: render through `ReactMarkdown` with custom component styling
+- Style the markdown elements to match the existing design system:
+  - **Headings** (`##`, `###`): Use the Playfair Display font, proper sizing, and earthy color accents
+  - **Bold text** (`**text**`): Rendered with `font-semibold` 
+  - **Numbered/bulleted lists**: Proper indentation and spacing with styled markers
+  - **Blockquotes** (`>`): Left border accent in the sage/terracotta palette, subtle background
+  - **Tables**: Clean bordered table with alternating row shading
+  - **Code blocks**: Monospace font with a subtle background
+  - **Horizontal rules** (`---`): Styled divider between sections
+  - **Links**: Terracotta-colored with underline on hover
+  - **Source references** (bold file names): Naturally highlighted through bold rendering
+
+### 3. Update `src/index.css`
+- Add a `.prose-chat` utility class scoping the markdown typography styles inside chat bubbles so they don't conflict with the rest of the app
 
 ## Technical Details
 
-**File: `src/pages/AdminIndexing.tsx` -- `fetchRealStats` function (lines 69-93)**
+```text
+ChatMessage component flow:
 
-Replace the current approach:
-```typescript
-// BEFORE (broken -- limited to 1000 rows)
-const [statusRes, totalRes] = await Promise.all([
-  supabase.from('indexing_status').select('status'),
-  supabase.from('dropbox_files').select('*', { count: 'exact', head: true }),
-]);
-// ... manually count statuses from statusRes.data
+  role === 'user'
+    --> plain <p> tag (unchanged)
+
+  role === 'assistant'
+    --> <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          with custom components map:
+            h2 -> styled heading with border-bottom
+            h3 -> styled subheading  
+            p  -> paragraph with spacing
+            ul/ol -> styled lists
+            li -> list items with proper markers
+            blockquote -> accent-bordered callout box
+            table/thead/tbody/tr/th/td -> styled table
+            strong -> semibold text
+            a -> colored link
+            hr -> styled divider
+            code -> inline or block code styling
 ```
 
-With exact count queries:
-```typescript
-// AFTER (correct -- uses server-side counting)
-const [successRes, skippedRes, failedRes, totalRes] = await Promise.all([
-  supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success'),
-  supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped'),
-  supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'failed'),
-  supabase.from('dropbox_files').select('*', { count: 'exact', head: true }),
-]);
+### Files modified:
+- `src/components/chat/ChatMessage.tsx` -- add markdown rendering for assistant messages
+- `src/index.css` -- add `.prose-chat` styles for markdown inside chat bubbles
 
-const success = successRes.count ?? 0;
-const skipped = skippedRes.count ?? 0;
-const failed = failedRes.count ?? 0;
-const totalDropbox = totalRes.count ?? 0;
-const remaining = Math.max(0, totalDropbox - success - skipped - failed);
+### Files unchanged:
+- `src/pages/Chat.tsx` -- no changes needed
+- No backend changes
 
-setRealStats({ success, skipped, failed, totalDropbox, remaining });
-```
-
-This uses `head: true` so no row data is transferred -- only the count is returned in the response header. No row limit applies.
-
-No other files need changes.
