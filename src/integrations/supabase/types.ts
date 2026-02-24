@@ -292,6 +292,26 @@ export type Database = {
           similarity: number
         }[]
       }
+      match_documents_filtered_v2: {
+        Args: {
+          filter_date_from?: string
+          filter_date_to?: string
+          filter_doc_type?: string
+          filter_file_type?: string
+          filter_project?: string
+          match_count?: number
+          match_threshold?: number
+          query_embedding_text?: string
+        }
+        Returns: {
+          content: string
+          file_name: string
+          file_path: string
+          id: string
+          metadata: Json
+          similarity: number
+        }[]
+      }
       match_documents_text: {
         Args: {
           match_count?: number

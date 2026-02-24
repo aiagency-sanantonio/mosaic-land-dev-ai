@@ -31,7 +31,6 @@ async function generateEmbedding(text: string, openaiApiKey: string): Promise<nu
 }
 
 serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -40,91 +39,66 @@ serve(async (req) => {
     // Validate authorization
     const authHeader = req.headers.get('Authorization');
     const expectedSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
-    
+
     if (!authHeader || !expectedSecret) {
-      console.error('Missing authorization header or secret');
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ error: 'Unauthorized' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     const token = authHeader.replace('Bearer ', '');
     if (token !== expectedSecret) {
-      console.error('Invalid authorization token');
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ error: 'Unauthorized' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // Parse request body with new filter options
-    const { 
-      query, 
-      match_count = 15, 
+    const {
+      query,
+      match_count = 15,
       match_threshold = 0.15,
       filter_project = null,
+      filter_doc_type = null,
       filter_file_type = null,
       filter_date_from = null,
       filter_date_to = null,
-      use_filters = false
     } = await req.json();
 
-    if (!query) {
+    const hasFilters = !!(filter_project || filter_doc_type || filter_file_type || filter_date_from || filter_date_to);
+    const hasQuery = !!(query && query.trim());
+
+    if (!hasQuery && !hasFilters) {
       return new Response(
-        JSON.stringify({ error: 'Missing required field: query' }),
+        JSON.stringify({ error: 'Provide a query, filters, or both' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log(`Searching for: "${query.substring(0, 100)}..." (match_count: ${match_count}, threshold: ${match_threshold})`);
-    if (use_filters) {
-      console.log(`Filters: project=${filter_project}, file_type=${filter_file_type}, date_from=${filter_date_from}, date_to=${filter_date_to}`);
-    }
+    console.log(`Search: query="${(query || '').substring(0, 80)}", filters: project=${filter_project}, doc_type=${filter_doc_type}, file_type=${filter_file_type}, date=${filter_date_from}-${filter_date_to}`);
 
-    // Initialize Supabase client with service role
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const openaiApiKey = Deno.env.get('OPENAI_API_KEY')!;
-
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Generate embedding for the query
-    console.log('Generating query embedding...');
-    const queryEmbedding = await generateEmbedding(query, openaiApiKey);
-
-    // Format embedding as JSON array string for text-based RPC
-    const embeddingText = JSON.stringify(queryEmbedding);
-    
-    let documents;
-    let searchError;
-
-    if (use_filters && (filter_project || filter_file_type || filter_date_from || filter_date_to)) {
-      // Use filtered search function
-      console.log('Using filtered search...');
-      const result = await supabase.rpc('match_documents_with_filters', {
-        query_embedding_text: embeddingText,
-        match_threshold: match_threshold,
-        match_count: match_count,
-        filter_project: filter_project,
-        filter_file_type: filter_file_type,
-        filter_date_from: filter_date_from,
-        filter_date_to: filter_date_to,
-      });
-      documents = result.data;
-      searchError = result.error;
-    } else {
-      // Use standard text-based function
-      console.log('Using standard search...');
-      const result = await supabase.rpc('match_documents_text', {
-        query_embedding_text: embeddingText,
-        match_threshold: match_threshold,
-        match_count: match_count,
-      });
-      documents = result.data;
-      searchError = result.error;
+    // Generate embedding only if there's a query
+    let embeddingText: string | null = null;
+    if (hasQuery) {
+      console.log('Generating query embedding...');
+      const queryEmbedding = await generateEmbedding(query, openaiApiKey);
+      embeddingText = JSON.stringify(queryEmbedding);
     }
-    
+
+    // Always use the v2 function
+    const { data: documents, error: searchError } = await supabase.rpc('match_documents_filtered_v2', {
+      query_embedding_text: embeddingText,
+      match_threshold,
+      match_count,
+      filter_project,
+      filter_doc_type,
+      filter_file_type,
+      filter_date_from,
+      filter_date_to,
+    });
+
     if (searchError) {
       console.error('Search error:', searchError);
       throw searchError;
@@ -132,31 +106,13 @@ serve(async (req) => {
 
     console.log(`Found ${documents?.length || 0} matching documents`);
 
-    // Log metadata summary for debugging
-    if (documents && documents.length > 0) {
-      const uniqueProjects = new Set<string>();
-      const allCosts: number[] = [];
-      
-      documents.forEach((doc: { metadata?: { project_name?: string; costs?: number[] } }) => {
-        if (doc.metadata?.project_name) {
-          uniqueProjects.add(doc.metadata.project_name);
-        }
-        if (doc.metadata?.costs) {
-          allCosts.push(...doc.metadata.costs);
-        }
-      });
-      
-      console.log(`Unique projects in results: ${Array.from(uniqueProjects).join(', ') || 'none'}`);
-      console.log(`Total cost figures found: ${allCosts.length}`);
-    }
-
     return new Response(
       JSON.stringify({
         success: true,
         documents: documents || [],
-        query: query,
+        query: query || null,
         match_count: documents?.length || 0,
-        filters_applied: use_filters && (filter_project || filter_file_type || filter_date_from || filter_date_to),
+        filters_applied: hasFilters,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
@@ -164,9 +120,7 @@ serve(async (req) => {
   } catch (error) {
     console.error('Error searching documents:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(
-      JSON.stringify({ error: message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({ error: message }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 });
