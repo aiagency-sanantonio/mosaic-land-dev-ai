@@ -33,14 +33,11 @@ serve(async (req) => {
 
     // Run all three queries in parallel
     const [projectsResult, docTypesResult, fileTypesResult] = await Promise.all([
-      // Projects from folder path
-      supabase.rpc('get_filter_projects' as any).throwOnError().catch(() =>
-        // Fallback: raw query via a simple approach
-        supabase.from('documents')
-          .select('file_path')
-          .like('file_path', '/1-Projects/%')
-          .limit(1000)
-      ),
+      // Projects from folder path - direct query
+      supabase.from('documents')
+        .select('file_path')
+        .like('file_path', '/1-Projects/%')
+        .limit(1000),
       // Doc types from metadata  
       supabase.from('documents')
         .select('metadata')
