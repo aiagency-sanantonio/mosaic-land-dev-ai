@@ -1,38 +1,45 @@
 
 
-# Fix: `list-filter-options` edge function crash
+# Fix: Past Messages Sent as `[object Object]` to N8N
 
 ## Problem
 
-The error `supabase.rpc(...).throwOnError(...).catch is not a function` occurs because `throwOnError()` on the Supabase JS client returns a `PromiseLike` that doesn't have a `.catch()` method. The code tries to call a non-existent RPC `get_filter_projects` with a `.throwOnError().catch()` fallback pattern that doesn't work.
+The `useChatThreads.tsx` hook sends the raw `messages` array to the `chat-webhook` edge function. Each message is a full database row object (`{id, thread_id, role, content, created_at}`). When N8N tries to render `{{ $json.body.messages }}` in a template, JavaScript coerces each object to `[object Object]`.
+
+## Root Cause
+
+In `useChatThreads.tsx` line ~137:
+```typescript
+body: {
+  threadId,
+  userId: user.id,
+  message: content,
+  messages: [...messages, userMessage],  // full DB row objects
+}
+```
+
+N8N expression `{{ $json.body.messages }}` calls `.toString()` on the array, producing `[object Object],[object Object],[object Object]`.
 
 ## Fix
 
-Replace the broken RPC-with-fallback pattern on line 43-48 with a simple direct query. Since `get_filter_projects` doesn't exist as an RPC function anyway, just use the fallback query directly -- query the `documents` table for file paths starting with `/1-Projects/`.
+Transform the messages into a simple chat-history format before sending. Two options:
 
-### File: `supabase/functions/list-filter-options/index.ts`
-
-Replace the `Promise.all` block (lines 41-56) to remove the broken `supabase.rpc('get_filter_projects')` call and use the three direct queries instead:
-
+**Option A (recommended):** Send messages as an array of `{role, content}` pairs -- clean, structured, and easy for N8N to iterate or stringify:
 ```typescript
-const [projectsResult, docTypesResult, fileTypesResult] = await Promise.all([
-  // Projects from folder path - direct query
-  supabase.from('documents')
-    .select('file_path')
-    .like('file_path', '/1-Projects/%')
-    .limit(1000),
-  // Doc types from metadata
-  supabase.from('documents')
-    .select('metadata')
-    .not('metadata->doc_type', 'is', null)
-    .limit(1000),
-  // File extensions
-  supabase.from('documents')
-    .select('file_name')
-    .not('file_name', 'is', null)
-    .limit(1000),
-]);
+messages: [...messages, userMessage].map(m => ({ role: m.role, content: m.content })),
 ```
 
-This removes the non-existent RPC call and the incompatible `.throwOnError().catch()` chain entirely.
+This way N8N can use `{{ $json.body.messages }}` and get proper JSON, or iterate with expressions like `{{ $json.body.messages[0].content }}`.
+
+**Option B:** Additionally send a pre-formatted string field for direct use in N8N prompts:
+```typescript
+messages: [...messages, userMessage].map(m => ({ role: m.role, content: m.content })),
+chatHistory: [...messages, userMessage].map(m => `${m.role}: ${m.content}`).join('\n'),
+```
+
+I recommend **Option A** -- it keeps the payload clean and lets N8N format as needed. The N8N template would change from `{{ $json.body.messages }}` to `{{ JSON.stringify($json.body.messages) }}` or iterate over items.
+
+## File Changed
+
+- `src/hooks/useChatThreads.tsx` -- map messages to `{role, content}` before sending to webhook
 
