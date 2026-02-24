@@ -168,7 +168,8 @@ export function useChatThreads() {
             threadId,
             userId: user.id,
             message: content,
-            messages: [...messages, userMessage],
+            messages: [...messages, userMessage].map(m => ({ role: m.role, content: m.content })),
+            chatHistory: [...messages, userMessage].map(m => `${m.role}: ${m.content}`).join('\n'),
           },
         });
 
