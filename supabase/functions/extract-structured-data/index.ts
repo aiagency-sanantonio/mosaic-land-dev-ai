@@ -251,10 +251,19 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
-    // Auth
+    // Auth: accept N8N_WEBHOOK_SECRET or valid Supabase JWT
     const authHeader = req.headers.get('Authorization');
     const expectedSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
-    if (!authHeader || !expectedSecret || authHeader.replace('Bearer ', '') !== expectedSecret) {
+    let authorized = false;
+
+    if (authHeader && expectedSecret && authHeader.replace('Bearer ', '') === expectedSecret) {
+      authorized = true;
+    } else if (authHeader) {
+      const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''));
+      if (user) authorized = true;
+    }
+
+    if (!authorized) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
