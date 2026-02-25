@@ -1,43 +1,26 @@
 
 
-## Fix Stalled Structured Data Extraction
+## Better Visual Feedback for OCR Processing
 
 ### Problem
-The extraction self-chaining loop keeps dying because processing 50 files sequentially (each requiring an OpenAI API call taking 2-5 seconds) exceeds the edge function's execution time limit. Once the chain breaks, processing stops entirely -- there's no cron job to restart it like batch-index has.
+The OCR section currently only shows a tiny spinner icon and "Processing..." text, making it hard to tell at a glance that something is actively running.
 
-### Solution
+### Changes (all in `src/pages/AdminIndexing.tsx`)
 
-**1. Reduce batch size in the edge function to 10 files** (from 50)
+1. **Pulsing card border when running** -- Add an animated green/primary border glow to the OCR card while processing, so it visually "breathes" and stands out on the page.
 
-10 files at ~3-5 seconds each = 30-50 seconds, which fits within the edge function timeout. This keeps the self-chain alive.
+2. **Animated progress bar** -- Add a proper `Progress` bar showing how many files have been processed out of the initial eligible count (tracking the decrease in eligible files).
 
-**2. Add auto-polling to the Admin UI**
+3. **Live elapsed time counter** -- Show a ticking clock (e.g., "Running for 2m 34s") that updates every second, giving immediate proof that the UI is alive and tracking.
 
-When the user clicks "Run Extraction", start a polling interval (every 15 seconds) that:
-- Refreshes the extraction progress counts from the database
-- If progress stalls (no change after 3 polls), auto-retriggers the edge function to restart the chain
-- Stops polling when all files are done or the user navigates away
+4. **Prominent status banner inside the card** -- Replace the small "Processing..." text with a colored banner (green background) showing the running state with the spinner, elapsed time, rate, and ETA all in one visible row.
 
-**3. Update the UI button to show live progress while running**
+5. **File count delta** -- Show "X files processed so far this session" based on the difference between the initial eligible count and the current eligible count.
 
-- Show a "running" state with a spinner while the extraction is actively processing
-- Auto-refresh the progress bar during extraction
-- Display the current rate (files/minute) based on progress changes
+### Technical Details
 
-### Technical Changes
-
-**Edge function (`supabase/functions/extract-structured-data/index.ts`):**
-- Change default batch_size from 50 to 10
-- Reduce self-chain delay from 500ms to 200ms for faster cycling
-
-**Admin UI (`src/pages/AdminIndexing.tsx`):**
-- Add a `useEffect` polling interval when extraction is active
-- Track `extractionRunning` state that persists across polls
-- Auto-retrigger the function if progress stalls (same count for 3 consecutive polls)
-- Add a "Stop" button for extraction
-- Show estimated time remaining for extraction based on observed rate
-
-### File Changes
-1. `supabase/functions/extract-structured-data/index.ts` -- reduce batch_size default
-2. `src/pages/AdminIndexing.tsx` -- add polling/auto-restart logic for extraction
-
+- Add an `ocrElapsedSeconds` state updated by a 1-second `setInterval` while `ocrRunning` is true.
+- Track `ocrInitialEligible` (captured when OCR starts) to calculate session progress and show a meaningful progress bar percentage.
+- Apply conditional classes to the OCR `Card`: `border-primary/50 shadow-primary/20 shadow-md animate-pulse-subtle` when running.
+- Add a `Progress` component showing `((ocrInitialEligible - ocrEligible) / ocrInitialEligible) * 100`.
+- Format elapsed time as `Xm Ys` using simple math on the seconds counter.
