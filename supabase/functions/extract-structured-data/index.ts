@@ -270,7 +270,7 @@ serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const force = body.force === true;
-    const batchSize = body.batch_size || 50;
+    const batchSize = body.batch_size || 10;
     const projectFilter = body.project_filter || null;
 
     // If force, reset the structured_extracted flag for matching files
@@ -406,7 +406,7 @@ serve(async (req) => {
           },
           body: JSON.stringify({ force: false, batch_size: batchSize, project_filter: projectFilter }),
         }).catch(err => console.error('Self-chain error:', err));
-      }, 500);
+      }, 200);
     }
 
     // Get total for progress reporting

@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Square, RefreshCw, CheckCircle2, XCircle, SkipForward, AlertTriangle, Database } from 'lucide-react';
+import { ArrowLeft, Play, Square, RefreshCw, CheckCircle2, XCircle, SkipForward, AlertTriangle, Database, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -45,8 +45,14 @@ export default function AdminIndexing() {
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [loadingJob, setLoadingJob] = useState(true);
   const [extracting, setExtracting] = useState(false);
+  const [extractionRunning, setExtractionRunning] = useState(false);
   const [extractResult, setExtractResult] = useState<{ processed: number; failed: number; remaining: number; totals: { metrics: number; permits: number; dd_items: number } } | null>(null);
   const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress>({ done: 0, total: 0 });
+  const [extractionRate, setExtractionRate] = useState<number | null>(null);
+  const stallCountRef = useRef(0);
+  const lastExtractedRef = useRef(0);
+  const extractionStartTimeRef = useRef<number | null>(null);
+  const extractionStartCountRef = useRef(0);
 
   useEffect(() => {
     if (!loading && !user) navigate('/auth');
@@ -167,34 +173,100 @@ export default function AdminIndexing() {
     fetchLatestJob();
   };
 
-  const handleExtract = async () => {
-    setExtracting(true);
-    setExtractResult(null);
+  const triggerExtraction = useCallback(async () => {
     try {
       const { data, error } = await supabase.functions.invoke('extract-structured-data', {
-        body: { force: false, batch_size: 50 },
+        body: { force: false, batch_size: 10 },
       });
       if (error) {
-        toast.error('Failed to start extraction: ' + error.message);
+        console.error('Extraction trigger error:', error.message);
         return;
       }
-      setExtractResult(data);
-      if (data.extraction_progress) {
+      if (data?.extraction_progress) {
         setExtractionProgress(data.extraction_progress);
       }
-      if (data.remaining > 0) {
-        toast.success(`Extracted batch: ${data.processed} files. ${data.remaining} remaining (auto-continuing)...`);
-      } else {
-        toast.success(`Extraction complete! ${data.totals.metrics} metrics, ${data.totals.permits} permits, ${data.totals.dd_items} DD items`);
-      }
+      setExtractResult(data);
     } catch (err) {
-      toast.error('Extraction failed');
+      console.error('Extraction trigger failed:', err);
+    }
+  }, []);
+
+  const handleExtract = async () => {
+    setExtracting(true);
+    setExtractionRunning(true);
+    setExtractResult(null);
+    stallCountRef.current = 0;
+    extractionStartTimeRef.current = Date.now();
+    extractionStartCountRef.current = extractionProgress.done;
+    try {
+      await triggerExtraction();
+      toast.success('Extraction started — polling for progress...');
+    } catch (err) {
+      toast.error('Extraction failed to start');
       console.error(err);
+      setExtractionRunning(false);
     } finally {
       setExtracting(false);
-      fetchExtractionProgress();
     }
   };
+
+  const handleStopExtraction = () => {
+    setExtractionRunning(false);
+    stallCountRef.current = 0;
+    setExtractionRate(null);
+    toast.info('Extraction polling stopped');
+  };
+
+  // Polling effect for extraction progress
+  useEffect(() => {
+    if (!extractionRunning) return;
+
+    const interval = setInterval(async () => {
+      await fetchExtractionProgress();
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [extractionRunning, fetchExtractionProgress]);
+
+  // Stall detection & rate calculation
+  useEffect(() => {
+    if (!extractionRunning) return;
+
+    const currentDone = extractionProgress.done;
+    const total = extractionProgress.total;
+
+    // Calculate rate
+    if (extractionStartTimeRef.current && currentDone > extractionStartCountRef.current) {
+      const elapsedMin = (Date.now() - extractionStartTimeRef.current) / 60000;
+      const processed = currentDone - extractionStartCountRef.current;
+      if (elapsedMin > 0) {
+        setExtractionRate(Math.round(processed / elapsedMin));
+      }
+    }
+
+    // Check if done
+    if (total > 0 && currentDone >= total) {
+      setExtractionRunning(false);
+      stallCountRef.current = 0;
+      toast.success('Extraction complete!');
+      return;
+    }
+
+    // Stall detection
+    if (currentDone === lastExtractedRef.current && currentDone < total) {
+      stallCountRef.current += 1;
+      if (stallCountRef.current >= 3) {
+        console.log('Extraction stalled — auto-retriggering...');
+        stallCountRef.current = 0;
+        triggerExtraction();
+        toast.info('Extraction stalled — auto-restarting...');
+      }
+    } else {
+      stallCountRef.current = 0;
+    }
+
+    lastExtractedRef.current = currentDone;
+  }, [extractionProgress, extractionRunning, triggerExtraction]);
 
   const totalDone = realStats.success + realStats.skipped + realStats.failed;
   const totalFiles = totalDone + realStats.remaining;
@@ -291,10 +363,19 @@ export default function AdminIndexing() {
                 Extract metrics, permits & DD items from already-indexed documents
               </p>
             </div>
-            <Button onClick={handleExtract} disabled={extracting} variant="secondary" className="gap-2">
-              {extracting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
-              {extracting ? 'Extracting...' : 'Run Extraction'}
-            </Button>
+            <div className="flex gap-2">
+              {!extractionRunning ? (
+                <Button onClick={handleExtract} disabled={extracting} variant="secondary" className="gap-2">
+                  {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+                  {extracting ? 'Starting...' : 'Run Extraction'}
+                </Button>
+              ) : (
+                <Button onClick={handleStopExtraction} variant="destructive" size="sm" className="gap-2">
+                  <Square className="h-4 w-4" />
+                  Stop
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Extraction Progress */}
@@ -305,15 +386,34 @@ export default function AdminIndexing() {
                 <span>{extractPercent < 1 && extractPercent > 0 ? extractPercent.toFixed(1) : Math.round(extractPercent)}%</span>
               </div>
               <Progress value={Math.max(extractPercent, extractionProgress.done > 0 ? 1 : 0)} className="h-2" />
+              {extractionRunning && (
+                <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
+                  <span className="flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Processing...
+                  </span>
+                  {extractionRate && extractionRate > 0 && (
+                    <>
+                      <span>~{extractionRate} files/min</span>
+                      {(() => {
+                        const remaining = extractionProgress.total - extractionProgress.done;
+                        const etaMin = remaining / extractionRate;
+                        const etaHours = Math.floor(etaMin / 60);
+                        const etaRemMin = Math.round(etaMin % 60);
+                        return <span>ETA: {etaHours > 0 ? `${etaHours}h ${etaRemMin}m` : `${etaRemMin}m`}</span>;
+                      })()}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
-          {extractResult && (
+          {extractResult && !extractionRunning && (
             <div className="mt-4 p-3 bg-muted/50 rounded-lg text-sm space-y-1">
               <p><span className="font-medium">Processed:</span> {extractResult.processed} files | <span className="font-medium">Failed:</span> {extractResult.failed}</p>
               <p><span className="font-medium">Extracted:</span> {extractResult.totals.metrics} metrics, {extractResult.totals.permits} permits, {extractResult.totals.dd_items} DD items</p>
               {extractResult.remaining > 0 && (
-                <p className="text-muted-foreground">{extractResult.remaining.toLocaleString()} files remaining — auto-continuing in background</p>
+                <p className="text-muted-foreground">{extractResult.remaining.toLocaleString()} files remaining</p>
               )}
             </div>
           )}
