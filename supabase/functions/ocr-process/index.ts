@@ -248,22 +248,31 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
-    // Auth: Supabase JWT or N8N secret
+    // Auth: cron path skips auth (protected by verify_jwt=false + service role),
+    // otherwise check N8N secret or Supabase JWT
     const authHeader = req.headers.get('Authorization');
     const expectedSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
-    let authorized = false;
-    if (authHeader && expectedSecret && authHeader.replace('Bearer ', '') === expectedSecret) {
-      authorized = true;
-    } else if (authHeader) {
-      const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''));
-      if (user) authorized = true;
-    }
-    if (!authorized) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+    // Parse body early so we can check for cron flag
+    const body = await req.json().catch(() => ({}));
+    const isCron = body.cron === true;
+
+    if (!isCron) {
+      let authorized = false;
+      if (authHeader && expectedSecret && authHeader.replace('Bearer ', '') === expectedSecret) {
+        authorized = true;
+      } else if (authHeader) {
+        const { data: { user } } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''));
+        if (user) authorized = true;
+      }
+      if (!authorized) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+    } else {
+      console.log('Cron invocation — skipping auth');
     }
 
-    const body = await req.json().catch(() => ({}));
     const batchSize = body.batch_size || BATCH_SIZE;
     const testMode = body.test_mode === true;
     const testLimit = body.test_limit || 50;
@@ -336,6 +345,8 @@ serve(async (req) => {
             const base64 = btoa(b64);
             ocrText = await ocrImage(base64, mimeType, mistralApiKey);
 
+            // Rate-limit delay before Pixtral vision call
+            await new Promise(r => setTimeout(r, 2000));
             // Get image description via Pixtral vision model
             console.log(`Describing image: ${file.file_name}`);
             const description = await describeImage(base64, mimeType, mistralApiKey);
