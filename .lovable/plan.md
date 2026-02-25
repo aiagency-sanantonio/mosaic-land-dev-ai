@@ -1,22 +1,61 @@
 
 
-## Switch Structured Extraction from Lovable AI to OpenAI
+## Build `extract-structured-data` Edge Function
 
-A simple swap in `supabase/functions/process-document/index.ts` to use the OpenAI API directly (which you're already paying for) instead of the Lovable AI gateway.
+A new lightweight edge function that reads existing document content from the `documents` table and runs the LLM structured extraction to populate `project_data`, `permits_tracking`, and `dd_checklists` -- without re-chunking or re-embedding.
 
-### Changes (single file)
+### How It Works
 
-**File: `supabase/functions/process-document/index.ts`**
+1. Query `indexing_status` for all files with `status = 'success'`
+2. For each file, grab the first chunk from `documents` (chunk_index 0) to get representative content
+3. Run the same `gpt-4o-mini` extraction logic already in `process-document`
+4. Store results in the three structured tables
+5. Self-chain (like `batch-index` does) to process in batches without timing out
 
-1. Change the function signature from `lovableApiKey` to `openaiApiKey` parameter (line 143)
-2. Switch the API endpoint from `https://ai.gateway.lovable.dev/v1/chat/completions` to `https://api.openai.com/v1/chat/completions` (line 174)
-3. Change the model from `google/gemini-2.5-flash` to `gpt-4o-mini` (line 181)
-4. Update the caller: use `openaiApiKey` instead of `lovableApiKey` when calling the function (lines 419-425)
-5. Remove the `lovableApiKey` variable since it's no longer needed (line 374)
+### Technical Details
 
-No new secrets needed -- `OPENAI_API_KEY` is already configured and used for embeddings in the same function.
+**New file: `supabase/functions/extract-structured-data/index.ts`**
 
-### Cost Note
+- Processes files in batches of 10 (same pattern as `batch-index`)
+- For each file, concatenates its document chunks (up to 6000 chars) to feed to the LLM
+- Reuses the exact same OpenAI tool-calling prompt and `storeStructuredData` logic from `process-document`
+- Skips files that already have entries in `project_data`, `permits_tracking`, or `dd_checklists` (unless `force: true` is passed)
+- Self-chains to process the next batch automatically
+- Tracks progress via a simple stats object returned in the response
+- Auth: uses `N8N_WEBHOOK_SECRET` like all other functions
 
-`gpt-4o-mini` is very cheap (~$0.15 per 1M input tokens). Processing 9,500 files at ~6,000 chars each would cost roughly $0.50-$1.00 total.
+**Config: `supabase/config.toml`**
+
+- Add `[functions.extract-structured-data]` with `verify_jwt = false`
+
+### Request Format
+
+```json
+POST /extract-structured-data
+Authorization: Bearer <N8N_WEBHOOK_SECRET>
+
+{
+  "force": false,        // re-extract even if structured data exists
+  "batch_size": 10,      // files per batch
+  "project_filter": null // optional: only process files matching this project path
+}
+```
+
+### Response
+
+```json
+{
+  "processed": 10,
+  "skipped": 2,
+  "failed": 1,
+  "remaining": 487,
+  "totals": { "metrics": 15, "permits": 3, "dd_items": 8 },
+  "errors": [{ "file": "path/to/file", "error": "..." }]
+}
+```
+
+### Cost Estimate
+
+- ~9,500 files x ~6,000 chars each at gpt-4o-mini rates = roughly $0.50-$1.00 total
+- No embedding costs since we skip that entirely
 
