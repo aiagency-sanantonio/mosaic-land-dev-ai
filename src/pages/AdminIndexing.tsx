@@ -26,6 +26,11 @@ interface RealStats {
   remaining: number;
 }
 
+interface ExtractionProgress {
+  done: number;
+  total: number;
+}
+
 interface ActivityEntry {
   file: string;
   status: string;
@@ -40,13 +45,13 @@ export default function AdminIndexing() {
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [loadingJob, setLoadingJob] = useState(true);
   const [extracting, setExtracting] = useState(false);
-  const [extractResult, setExtractResult] = useState<{ processed: number; skipped: number; failed: number; remaining: number; totals: { metrics: number; permits: number; dd_items: number } } | null>(null);
+  const [extractResult, setExtractResult] = useState<{ processed: number; failed: number; remaining: number; totals: { metrics: number; permits: number; dd_items: number } } | null>(null);
+  const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress>({ done: 0, total: 0 });
 
   useEffect(() => {
     if (!loading && !user) navigate('/auth');
   }, [user, loading, navigate]);
 
-  // Fetch the latest job (status/banner only, no stats)
   const fetchLatestJob = useCallback(async () => {
     const { data, error } = await supabase
       .from('indexing_jobs')
@@ -67,7 +72,6 @@ export default function AdminIndexing() {
     setLoadingJob(false);
   }, []);
 
-  // Fetch real stats from indexing_status + dropbox_files
   const fetchRealStats = useCallback(async () => {
     const [successRes, skippedRes, failedRes, totalRes] = await Promise.all([
       supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success'),
@@ -90,7 +94,16 @@ export default function AdminIndexing() {
     setRealStats({ success, skipped, failed, totalDropbox, remaining });
   }, []);
 
-  // Fetch recent activity from indexing_status
+  const fetchExtractionProgress = useCallback(async () => {
+    const totalRes = await supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success');
+    // structured_extracted column added via migration, not yet in generated types
+    const doneRes = await (supabase.from('indexing_status') as any).select('*', { count: 'exact', head: true }).eq('status', 'success').eq('structured_extracted', true);
+    setExtractionProgress({
+      done: doneRes.count ?? 0,
+      total: totalRes.count ?? 0,
+    });
+  }, []);
+
   const fetchActivity = useCallback(async () => {
     const { data, error } = await supabase
       .from('indexing_status')
@@ -108,16 +121,15 @@ export default function AdminIndexing() {
     }
   }, []);
 
-  // Initial load
   useEffect(() => {
     if (user) {
       fetchLatestJob();
       fetchRealStats();
       fetchActivity();
+      fetchExtractionProgress();
     }
-  }, [user, fetchLatestJob, fetchRealStats, fetchActivity]);
+  }, [user, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress]);
 
-  // Poll while running
   useEffect(() => {
     if (!job || job.status !== 'running') return;
     const interval = setInterval(() => {
@@ -160,13 +172,16 @@ export default function AdminIndexing() {
     setExtractResult(null);
     try {
       const { data, error } = await supabase.functions.invoke('extract-structured-data', {
-        body: { force: false, batch_size: 10 },
+        body: { force: false, batch_size: 50 },
       });
       if (error) {
         toast.error('Failed to start extraction: ' + error.message);
         return;
       }
       setExtractResult(data);
+      if (data.extraction_progress) {
+        setExtractionProgress(data.extraction_progress);
+      }
       if (data.remaining > 0) {
         toast.success(`Extracted batch: ${data.processed} files. ${data.remaining} remaining (auto-continuing)...`);
       } else {
@@ -177,12 +192,14 @@ export default function AdminIndexing() {
       console.error(err);
     } finally {
       setExtracting(false);
+      fetchExtractionProgress();
     }
   };
 
   const totalDone = realStats.success + realStats.skipped + realStats.failed;
   const totalFiles = totalDone + realStats.remaining;
   const progressPercent = totalFiles > 0 ? (totalDone / totalFiles) * 100 : 0;
+  const extractPercent = extractionProgress.total > 0 ? (extractionProgress.done / extractionProgress.total) * 100 : 0;
 
   const isRunning = job?.status === 'running';
   const isCompleted = job?.status === 'completed';
@@ -279,12 +296,24 @@ export default function AdminIndexing() {
               {extracting ? 'Extracting...' : 'Run Extraction'}
             </Button>
           </div>
+
+          {/* Extraction Progress */}
+          {extractionProgress.total > 0 && (
+            <div className="mt-4 space-y-2">
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>{extractionProgress.done.toLocaleString()} / {extractionProgress.total.toLocaleString()} files extracted</span>
+                <span>{extractPercent < 1 && extractPercent > 0 ? extractPercent.toFixed(1) : Math.round(extractPercent)}%</span>
+              </div>
+              <Progress value={Math.max(extractPercent, extractionProgress.done > 0 ? 1 : 0)} className="h-2" />
+            </div>
+          )}
+
           {extractResult && (
             <div className="mt-4 p-3 bg-muted/50 rounded-lg text-sm space-y-1">
-              <p><span className="font-medium">Processed:</span> {extractResult.processed} files | <span className="font-medium">Skipped:</span> {extractResult.skipped} | <span className="font-medium">Failed:</span> {extractResult.failed}</p>
+              <p><span className="font-medium">Processed:</span> {extractResult.processed} files | <span className="font-medium">Failed:</span> {extractResult.failed}</p>
               <p><span className="font-medium">Extracted:</span> {extractResult.totals.metrics} metrics, {extractResult.totals.permits} permits, {extractResult.totals.dd_items} DD items</p>
               {extractResult.remaining > 0 && (
-                <p className="text-muted-foreground">{extractResult.remaining} files remaining — auto-continuing in background</p>
+                <p className="text-muted-foreground">{extractResult.remaining.toLocaleString()} files remaining — auto-continuing in background</p>
               )}
             </div>
           )}

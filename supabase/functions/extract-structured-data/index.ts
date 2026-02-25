@@ -7,7 +7,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// ─── LLM Structured Extraction (same as process-document) ─────────────────────
+// ─── LLM Structured Extraction ────────────────────────────────────────────────
 
 interface ExtractedStructuredData {
   project_metrics: Array<{
@@ -169,7 +169,7 @@ CRITICAL RULES:
   }
 }
 
-// ─── Store Structured Data (same as process-document) ─────────────────────────
+// ─── Store Structured Data ────────────────────────────────────────────────────
 
 async function storeStructuredData(
   supabase: SupabaseClient,
@@ -270,62 +270,64 @@ serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const force = body.force === true;
-    const batchSize = body.batch_size || 10;
+    const batchSize = body.batch_size || 50;
     const projectFilter = body.project_filter || null;
 
-    // 1. Get all successfully indexed files
+    // If force, reset the structured_extracted flag for matching files
+    if (force) {
+      let resetQuery = supabase
+        .from('indexing_status')
+        .update({ structured_extracted: false } as any)
+        .eq('status', 'success')
+        .eq('structured_extracted', true);
+
+      if (projectFilter) {
+        resetQuery = resetQuery.ilike('file_path', `%${projectFilter}%`);
+      }
+      await resetQuery;
+    }
+
+    // Query files that need extraction: status=success AND structured_extracted=false
     let query = supabase
       .from('indexing_status')
       .select('file_path, file_name')
       .eq('status', 'success')
+      .eq('structured_extracted', false)
       .order('file_path', { ascending: true })
-      .limit(1000);
+      .limit(batchSize);
 
     if (projectFilter) {
       query = query.ilike('file_path', `%${projectFilter}%`);
     }
 
-    const { data: indexedFiles, error: fetchError } = await query;
+    const { data: filesToProcess, error: fetchError } = await query;
     if (fetchError) throw fetchError;
-    if (!indexedFiles || indexedFiles.length === 0) {
-      return new Response(JSON.stringify({ processed: 0, skipped: 0, failed: 0, remaining: 0, totals: { metrics: 0, permits: 0, dd_items: 0 }, errors: [], message: 'No indexed files found' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
 
-    // 2. Filter out files that already have structured data (unless force)
-    let filesToProcess = indexedFiles;
-    if (!force) {
-      const filePaths = indexedFiles.map(f => f.file_path);
-
-      const [pdRes, ptRes, ddRes] = await Promise.all([
-        supabase.from('project_data').select('source_file_path').in('source_file_path', filePaths),
-        supabase.from('permits_tracking').select('source_file_path').in('source_file_path', filePaths),
-        supabase.from('dd_checklists').select('source_file_path').in('source_file_path', filePaths),
+    if (!filesToProcess || filesToProcess.length === 0) {
+      // Get total counts for the response
+      const [totalRes, doneRes] = await Promise.all([
+        supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success'),
+        supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success').eq('structured_extracted', true),
       ]);
-
-      const alreadyProcessed = new Set<string>();
-      for (const row of (pdRes.data || [])) if (row.source_file_path) alreadyProcessed.add(row.source_file_path);
-      for (const row of (ptRes.data || [])) if (row.source_file_path) alreadyProcessed.add(row.source_file_path);
-      for (const row of (ddRes.data || [])) if (row.source_file_path) alreadyProcessed.add(row.source_file_path);
-
-      filesToProcess = indexedFiles.filter(f => !alreadyProcessed.has(f.file_path));
+      return new Response(JSON.stringify({
+        processed: 0, skipped: 0, failed: 0, remaining: 0,
+        totals: { metrics: 0, permits: 0, dd_items: 0 },
+        extraction_progress: { done: doneRes.count ?? 0, total: totalRes.count ?? 0 },
+        errors: [], message: 'All files already processed',
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const totalRemaining = filesToProcess.length;
-    const batch = filesToProcess.slice(0, batchSize);
-    const skipped = indexedFiles.length - filesToProcess.length;
+    console.log(`Extract batch: ${filesToProcess.length} files to process`);
 
-    console.log(`Extract batch: ${batch.length} to process, ${skipped} already done, ${totalRemaining} remaining`);
-
-    // 3. Process each file in the batch
+    // Process each file in the batch
     let processed = 0;
     let failed = 0;
     const totals = { metrics: 0, permits: 0, dd_items: 0 };
     const errors: Array<{ file: string; error: string }> = [];
 
-    for (const file of batch) {
+    for (const file of filesToProcess) {
       try {
-        // Get document chunks for this file, ordered by chunk_index
+        // Get document chunks for this file
         const { data: chunks, error: chunkError } = await supabase
           .from('documents')
           .select('content, metadata')
@@ -335,7 +337,9 @@ serve(async (req) => {
 
         if (chunkError) throw chunkError;
         if (!chunks || chunks.length === 0) {
-          console.warn(`No chunks found for ${file.file_path}, skipping`);
+          console.warn(`No chunks found for ${file.file_path}, marking as extracted`);
+          await supabase.from('indexing_status').update({ structured_extracted: true } as any).eq('file_path', file.file_path);
+          processed++;
           continue;
         }
 
@@ -348,7 +352,9 @@ serve(async (req) => {
         content = content.slice(0, 6000);
 
         if (content.trim().length < 50) {
-          console.warn(`Insufficient content for ${file.file_path}, skipping`);
+          console.warn(`Insufficient content for ${file.file_path}, marking as extracted`);
+          await supabase.from('indexing_status').update({ structured_extracted: true } as any).eq('file_path', file.file_path);
+          processed++;
           continue;
         }
 
@@ -365,18 +371,29 @@ serve(async (req) => {
           console.log(`✓ ${file.file_path}: ${results.metrics}m ${results.permits}p ${results.dd_items}d`);
         }
 
+        // Mark as extracted regardless of whether data was found
+        await supabase.from('indexing_status').update({ structured_extracted: true } as any).eq('file_path', file.file_path);
         processed++;
       } catch (err) {
         failed++;
         const msg = err instanceof Error ? err.message : String(err);
         errors.push({ file: file.file_path, error: msg });
         console.error(`✗ ${file.file_path}: ${msg}`);
+        // Still mark as extracted to avoid infinite loop on consistently failing files
+        await supabase.from('indexing_status').update({ structured_extracted: true } as any).eq('file_path', file.file_path);
       }
     }
 
-    const remaining = totalRemaining - batch.length;
+    // Check how many remain
+    const { count: remainingCount } = await supabase
+      .from('indexing_status')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'success')
+      .eq('structured_extracted', false);
 
-    // 4. Self-chain if more files remain
+    const remaining = remainingCount ?? 0;
+
+    // Self-chain if more files remain
     if (remaining > 0) {
       const selfUrl = `${supabaseUrl}/functions/v1/extract-structured-data`;
       console.log(`Self-chaining: ${remaining} files remaining...`);
@@ -387,13 +404,22 @@ serve(async (req) => {
             'Authorization': `Bearer ${expectedSecret}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ force, batch_size: batchSize, project_filter: projectFilter }),
+          body: JSON.stringify({ force: false, batch_size: batchSize, project_filter: projectFilter }),
         }).catch(err => console.error('Self-chain error:', err));
       }, 500);
     }
 
+    // Get total for progress reporting
+    const { count: totalSuccess } = await supabase
+      .from('indexing_status')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'success');
+
+    const done = (totalSuccess ?? 0) - remaining;
+
     return new Response(JSON.stringify({
-      processed, skipped, failed, remaining, totals, errors,
+      processed, skipped: 0, failed, remaining, totals, errors,
+      extraction_progress: { done, total: totalSuccess ?? 0 },
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {

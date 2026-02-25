@@ -1,0 +1,1 @@
+ALTER TABLE public.indexing_status ADD COLUMN structured_extracted boolean NOT NULL DEFAULT false;

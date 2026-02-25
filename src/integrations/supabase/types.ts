@@ -202,6 +202,7 @@ export type Database = {
           indexed_at: string | null
           metadata: Json | null
           status: string
+          structured_extracted: boolean
           updated_at: string
         }
         Insert: {
@@ -214,6 +215,7 @@ export type Database = {
           indexed_at?: string | null
           metadata?: Json | null
           status?: string
+          structured_extracted?: boolean
           updated_at?: string
         }
         Update: {
@@ -226,6 +228,7 @@ export type Database = {
           indexed_at?: string | null
           metadata?: Json | null
           status?: string
+          structured_extracted?: boolean
           updated_at?: string
         }
         Relationships: []
