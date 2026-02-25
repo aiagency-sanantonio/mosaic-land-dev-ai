@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Square, RefreshCw, CheckCircle2, XCircle, SkipForward, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Play, Square, RefreshCw, CheckCircle2, XCircle, SkipForward, AlertTriangle, Database } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -39,6 +39,8 @@ export default function AdminIndexing() {
   const [realStats, setRealStats] = useState<RealStats>({ success: 0, skipped: 0, failed: 0, totalDropbox: 0, remaining: 0 });
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [loadingJob, setLoadingJob] = useState(true);
+  const [extracting, setExtracting] = useState(false);
+  const [extractResult, setExtractResult] = useState<{ processed: number; skipped: number; failed: number; remaining: number; totals: { metrics: number; permits: number; dd_items: number } } | null>(null);
 
   useEffect(() => {
     if (!loading && !user) navigate('/auth');
@@ -153,6 +155,31 @@ export default function AdminIndexing() {
     fetchLatestJob();
   };
 
+  const handleExtract = async () => {
+    setExtracting(true);
+    setExtractResult(null);
+    try {
+      const { data, error } = await supabase.functions.invoke('extract-structured-data', {
+        body: { force: false, batch_size: 10 },
+      });
+      if (error) {
+        toast.error('Failed to start extraction: ' + error.message);
+        return;
+      }
+      setExtractResult(data);
+      if (data.remaining > 0) {
+        toast.success(`Extracted batch: ${data.processed} files. ${data.remaining} remaining (auto-continuing)...`);
+      } else {
+        toast.success(`Extraction complete! ${data.totals.metrics} metrics, ${data.totals.permits} permits, ${data.totals.dd_items} DD items`);
+      }
+    } catch (err) {
+      toast.error('Extraction failed');
+      console.error(err);
+    } finally {
+      setExtracting(false);
+    }
+  };
+
   const totalDone = realStats.success + realStats.skipped + realStats.failed;
   const totalFiles = totalDone + realStats.remaining;
   const progressPercent = totalFiles > 0 ? (totalDone / totalFiles) * 100 : 0;
@@ -231,6 +258,35 @@ export default function AdminIndexing() {
             <p className="mt-2 text-xs text-muted-foreground">
               You can close this page — indexing will continue on the server.
             </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Structured Data Extraction */}
+      <Card className="mb-6">
+        <CardContent className="pt-6">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <h3 className="font-medium text-foreground flex items-center gap-2">
+                <Database className="h-4 w-4" /> Structured Data Extraction
+              </h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Extract metrics, permits & DD items from already-indexed documents
+              </p>
+            </div>
+            <Button onClick={handleExtract} disabled={extracting} variant="secondary" className="gap-2">
+              {extracting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+              {extracting ? 'Extracting...' : 'Run Extraction'}
+            </Button>
+          </div>
+          {extractResult && (
+            <div className="mt-4 p-3 bg-muted/50 rounded-lg text-sm space-y-1">
+              <p><span className="font-medium">Processed:</span> {extractResult.processed} files | <span className="font-medium">Skipped:</span> {extractResult.skipped} | <span className="font-medium">Failed:</span> {extractResult.failed}</p>
+              <p><span className="font-medium">Extracted:</span> {extractResult.totals.metrics} metrics, {extractResult.totals.permits} permits, {extractResult.totals.dd_items} DD items</p>
+              {extractResult.remaining > 0 && (
+                <p className="text-muted-foreground">{extractResult.remaining} files remaining — auto-continuing in background</p>
+              )}
+            </div>
           )}
         </CardContent>
       </Card>
