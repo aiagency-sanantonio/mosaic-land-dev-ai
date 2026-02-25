@@ -1,26 +1,29 @@
 
 
-## Better Visual Feedback for OCR Processing
+## Add pg_cron Safety Nets for OCR and Structured Extraction
 
 ### Problem
-The OCR section currently only shows a tiny spinner icon and "Processing..." text, making it hard to tell at a glance that something is actively running.
+Both the `ocr-process` and `extract-structured-data` edge functions rely on self-chaining (each batch triggers the next via `setTimeout + fetch`). If a chain breaks due to a timeout, network error, or edge function cold-start failure, processing silently stops and requires a manual restart. The `batch-index` function already has a pg_cron job as a safety net -- we need the same for these two.
 
-### Changes (all in `src/pages/AdminIndexing.tsx`)
+### Changes
 
-1. **Pulsing card border when running** -- Add an animated green/primary border glow to the OCR card while processing, so it visually "breathes" and stands out on the page.
+**1. Create pg_cron job for `ocr-process` (every minute)**
 
-2. **Animated progress bar** -- Add a proper `Progress` bar showing how many files have been processed out of the initial eligible count (tracking the decrease in eligible files).
+A SQL insert (not migration) to schedule a cron job that calls the `ocr-process` function every minute. The function already handles the case where there are no eligible files (returns early), so repeated cron calls when there's nothing to do are harmless.
 
-3. **Live elapsed time counter** -- Show a ticking clock (e.g., "Running for 2m 34s") that updates every second, giving immediate proof that the UI is alive and tracking.
+**2. Create pg_cron job for `extract-structured-data` (every minute)**
 
-4. **Prominent status banner inside the card** -- Replace the small "Processing..." text with a colored banner (green background) showing the running state with the spinner, elapsed time, rate, and ETA all in one visible row.
+Same pattern -- a cron job that POSTs to the extraction function every minute. The function already checks for unprocessed files and returns early if none exist.
 
-5. **File count delta** -- Show "X files processed so far this session" based on the difference between the initial eligible count and the current eligible count.
+**3. Update both edge functions to be idempotent with concurrent calls**
+
+Both functions already query for unprocessed files and process them, so concurrent invocations from cron + self-chain will simply both grab files. Since each file is marked as processed (via `structured_extracted = true` or `status = 'success'`) before the next batch, there's minimal risk of double-processing. No code changes needed -- the existing logic is already safe.
 
 ### Technical Details
 
-- Add an `ocrElapsedSeconds` state updated by a 1-second `setInterval` while `ocrRunning` is true.
-- Track `ocrInitialEligible` (captured when OCR starts) to calculate session progress and show a meaningful progress bar percentage.
-- Apply conditional classes to the OCR `Card`: `border-primary/50 shadow-primary/20 shadow-md animate-pulse-subtle` when running.
-- Add a `Progress` component showing `((ocrInitialEligible - ocrEligible) / ocrInitialEligible) * 100`.
-- Format elapsed time as `Xm Ys` using simple math on the seconds counter.
+Two SQL statements using `cron.schedule` and `net.http_post`, matching the existing `batch-index-cron` pattern. Each will:
+- Run every minute (`*/1 * * * *`)
+- POST to the function URL with the anon key in the Authorization header
+- Pass an empty JSON body (or `{"cron": true}`)
+
+The functions' existing auth allows the anon key bearer token (since `verify_jwt = false` in config.toml), so no auth changes are needed.
