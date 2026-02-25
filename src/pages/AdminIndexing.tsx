@@ -67,6 +67,8 @@ export default function AdminIndexing() {
   const [ocrProgress, setOcrProgress] = useState<OcrProgress>({ processed: 0, failed: 0, remaining: 0 });
   const [ocrEligible, setOcrEligible] = useState<number | null>(null);
   const [ocrRate, setOcrRate] = useState<number | null>(null);
+  const [ocrElapsedSeconds, setOcrElapsedSeconds] = useState(0);
+  const [ocrInitialEligible, setOcrInitialEligible] = useState<number | null>(null);
   const ocrStallCountRef = useRef(0);
   const lastOcrProcessedRef = useRef(0);
   const ocrStartTimeRef = useRef<number | null>(null);
@@ -324,6 +326,8 @@ export default function AdminIndexing() {
   const handleStartOcr = async (testMode = false) => {
     setOcrStarting(true);
     setOcrRunning(true);
+    setOcrElapsedSeconds(0);
+    setOcrInitialEligible(ocrEligible);
     ocrStallCountRef.current = 0;
     ocrStartTimeRef.current = Date.now();
     ocrStartCountRef.current = 0;
@@ -342,8 +346,18 @@ export default function AdminIndexing() {
     setOcrRunning(false);
     ocrStallCountRef.current = 0;
     setOcrRate(null);
+    setOcrInitialEligible(null);
     toast.info('OCR polling stopped');
   };
+
+  // Elapsed time ticker
+  useEffect(() => {
+    if (!ocrRunning) return;
+    const interval = setInterval(() => {
+      setOcrElapsedSeconds(s => s + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [ocrRunning]);
 
   // OCR polling
   useEffect(() => {
@@ -547,7 +561,7 @@ export default function AdminIndexing() {
       </Card>
 
       {/* OCR Processing */}
-      <Card className="mb-6">
+      <Card className={`mb-6 transition-all duration-300 ${ocrRunning ? 'border-primary/50 shadow-md shadow-primary/20 animate-pulse-subtle' : ''}`}>
         <CardContent className="pt-6">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div>
@@ -579,25 +593,50 @@ export default function AdminIndexing() {
             </div>
           </div>
 
+          {/* Active status banner */}
+          {ocrRunning && (
+            <div className="mt-4 p-3 bg-primary/10 border border-primary/30 rounded-lg flex items-center gap-4 flex-wrap text-sm">
+              <span className="flex items-center gap-2 font-medium text-primary">
+                <Loader2 className="h-4 w-4 animate-spin" /> Running
+              </span>
+              <span className="text-muted-foreground">
+                {Math.floor(ocrElapsedSeconds / 60)}m {ocrElapsedSeconds % 60}s elapsed
+              </span>
+              {ocrRate && ocrRate > 0 && (
+                <span className="text-muted-foreground">~{ocrRate} files/min</span>
+              )}
+              {ocrRate && ocrRate > 0 && ocrEligible !== null && ocrEligible > 0 && (() => {
+                const etaMin = ocrEligible / ocrRate;
+                const etaHours = Math.floor(etaMin / 60);
+                const etaRemMin = Math.round(etaMin % 60);
+                return <span className="text-muted-foreground">ETA: {etaHours > 0 ? `${etaHours}h ${etaRemMin}m` : `${etaRemMin}m`}</span>;
+              })()}
+              {ocrInitialEligible && ocrEligible !== null && (
+                <span className="font-medium text-foreground">
+                  {(ocrInitialEligible - ocrEligible).toLocaleString()} processed this session
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Progress bar & eligible count */}
           {ocrEligible !== null && (
             <div className="mt-4 space-y-2">
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>{ocrEligible.toLocaleString()} files eligible for OCR</span>
-                {ocrRunning && ocrRate && ocrRate > 0 && (
-                  <span>
-                    ~{ocrRate} files/min
-                    {ocrEligible > 0 && (() => {
-                      const etaMin = ocrEligible / ocrRate;
-                      const etaHours = Math.floor(etaMin / 60);
-                      const etaRemMin = Math.round(etaMin % 60);
-                      return ` • ETA: ${etaHours > 0 ? `${etaHours}h ${etaRemMin}m` : `${etaRemMin}m`}`;
-                    })()}
-                  </span>
-                )}
-              </div>
-              {ocrRunning && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Processing...
+              {ocrRunning && ocrInitialEligible && ocrInitialEligible > 0 && (() => {
+                const pct = ((ocrInitialEligible - ocrEligible) / ocrInitialEligible) * 100;
+                return (
+                  <>
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>{(ocrInitialEligible - ocrEligible).toLocaleString()} / {ocrInitialEligible.toLocaleString()} files</span>
+                      <span>{pct < 1 && pct > 0 ? pct.toFixed(1) : Math.round(pct)}%</span>
+                    </div>
+                    <Progress value={Math.max(pct, (ocrInitialEligible - ocrEligible) > 0 ? 1 : 0)} className="h-2" />
+                  </>
+                );
+              })()}
+              {!ocrRunning && (
+                <div className="text-xs text-muted-foreground">
+                  {ocrEligible.toLocaleString()} files eligible for OCR
                 </div>
               )}
             </div>
