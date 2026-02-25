@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Eye } from 'lucide-react';
 import { ArrowLeft, Play, Square, RefreshCw, CheckCircle2, XCircle, SkipForward, AlertTriangle, Database, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -31,6 +32,12 @@ interface ExtractionProgress {
   total: number;
 }
 
+interface OcrProgress {
+  processed: number;
+  failed: number;
+  remaining: number;
+}
+
 interface ActivityEntry {
   file: string;
   status: string;
@@ -53,6 +60,17 @@ export default function AdminIndexing() {
   const lastExtractedRef = useRef(0);
   const extractionStartTimeRef = useRef<number | null>(null);
   const extractionStartCountRef = useRef(0);
+
+  // OCR state
+  const [ocrStarting, setOcrStarting] = useState(false);
+  const [ocrRunning, setOcrRunning] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<OcrProgress>({ processed: 0, failed: 0, remaining: 0 });
+  const [ocrEligible, setOcrEligible] = useState<number | null>(null);
+  const [ocrRate, setOcrRate] = useState<number | null>(null);
+  const ocrStallCountRef = useRef(0);
+  const lastOcrProcessedRef = useRef(0);
+  const ocrStartTimeRef = useRef<number | null>(null);
+  const ocrStartCountRef = useRef(0);
 
   useEffect(() => {
     if (!loading && !user) navigate('/auth');
@@ -110,6 +128,21 @@ export default function AdminIndexing() {
     });
   }, []);
 
+  const fetchOcrEligible = useCallback(async () => {
+    // Count OCR-eligible files still in skipped state
+    const ocrErrors = [
+      'Scanned/image-only PDF - no extractable text',
+      ...['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'gif', 'webp'].map(e => `Non-vectorizable format: .${e}`),
+    ];
+    const { count } = await supabase
+      .from('indexing_status')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'skipped')
+      .in('error_message', ocrErrors);
+    setOcrEligible(count ?? 0);
+    setOcrProgress(prev => ({ ...prev, remaining: count ?? 0 }));
+  }, []);
+
   const fetchActivity = useCallback(async () => {
     const { data, error } = await supabase
       .from('indexing_status')
@@ -133,8 +166,9 @@ export default function AdminIndexing() {
       fetchRealStats();
       fetchActivity();
       fetchExtractionProgress();
+      fetchOcrEligible();
     }
-  }, [user, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress]);
+  }, [user, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible]);
 
   useEffect(() => {
     if (!job || job.status !== 'running') return;
@@ -267,6 +301,98 @@ export default function AdminIndexing() {
 
     lastExtractedRef.current = currentDone;
   }, [extractionProgress, extractionRunning, triggerExtraction]);
+
+  // ─── OCR handlers ─────────────────────────────────────────────────────────
+
+  const triggerOcr = useCallback(async (testMode = false) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('ocr-process', {
+        body: testMode ? { test_mode: true, test_limit: 50, batch_size: 5 } : { batch_size: 5 },
+      });
+      if (error) {
+        console.error('OCR trigger error:', error.message);
+        return;
+      }
+      if (data) {
+        setOcrProgress({ processed: data.processed ?? 0, failed: data.failed ?? 0, remaining: data.remaining ?? 0 });
+      }
+    } catch (err) {
+      console.error('OCR trigger failed:', err);
+    }
+  }, []);
+
+  const handleStartOcr = async (testMode = false) => {
+    setOcrStarting(true);
+    setOcrRunning(true);
+    ocrStallCountRef.current = 0;
+    ocrStartTimeRef.current = Date.now();
+    ocrStartCountRef.current = 0;
+    try {
+      await triggerOcr(testMode);
+      toast.success(testMode ? 'OCR test started (50 files)...' : 'OCR processing started...');
+    } catch (err) {
+      toast.error('OCR failed to start');
+      setOcrRunning(false);
+    } finally {
+      setOcrStarting(false);
+    }
+  };
+
+  const handleStopOcr = () => {
+    setOcrRunning(false);
+    ocrStallCountRef.current = 0;
+    setOcrRate(null);
+    toast.info('OCR polling stopped');
+  };
+
+  // OCR polling
+  useEffect(() => {
+    if (!ocrRunning) return;
+    const interval = setInterval(async () => {
+      await fetchOcrEligible();
+      await fetchRealStats();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [ocrRunning, fetchOcrEligible, fetchRealStats]);
+
+  // OCR stall detection & rate
+  useEffect(() => {
+    if (!ocrRunning || ocrEligible === null) return;
+
+    // Calculate rate based on decrease in eligible count
+    if (ocrStartTimeRef.current) {
+      const initialEligible = ocrStartCountRef.current || ocrEligible;
+      if (ocrStartCountRef.current === 0 && ocrEligible > 0) {
+        ocrStartCountRef.current = ocrEligible;
+      }
+      const processed = ocrStartCountRef.current - ocrEligible;
+      if (processed > 0) {
+        const elapsedMin = (Date.now() - ocrStartTimeRef.current) / 60000;
+        if (elapsedMin > 0) setOcrRate(Math.round(processed / elapsedMin));
+      }
+    }
+
+    // Done check
+    if (ocrEligible === 0) {
+      setOcrRunning(false);
+      toast.success('OCR processing complete!');
+      return;
+    }
+
+    // Stall detection
+    if (ocrEligible === lastOcrProcessedRef.current) {
+      ocrStallCountRef.current += 1;
+      if (ocrStallCountRef.current >= 3) {
+        console.log('OCR stalled — auto-retriggering...');
+        ocrStallCountRef.current = 0;
+        triggerOcr();
+        toast.info('OCR stalled — auto-restarting...');
+      }
+    } else {
+      ocrStallCountRef.current = 0;
+    }
+    lastOcrProcessedRef.current = ocrEligible;
+  }, [ocrEligible, ocrRunning, triggerOcr]);
 
   const totalDone = realStats.success + realStats.skipped + realStats.failed;
   const totalFiles = totalDone + realStats.remaining;
@@ -414,6 +540,65 @@ export default function AdminIndexing() {
               <p><span className="font-medium">Extracted:</span> {extractResult.totals.metrics} metrics, {extractResult.totals.permits} permits, {extractResult.totals.dd_items} DD items</p>
               {extractResult.remaining > 0 && (
                 <p className="text-muted-foreground">{extractResult.remaining.toLocaleString()} files remaining</p>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* OCR Processing */}
+      <Card className="mb-6">
+        <CardContent className="pt-6">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <h3 className="font-medium text-foreground flex items-center gap-2">
+                <Eye className="h-4 w-4" /> OCR Processing
+              </h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Extract text from images &amp; scanned PDFs using Mistral OCR
+              </p>
+            </div>
+            <div className="flex gap-2">
+              {!ocrRunning ? (
+                <>
+                  <Button onClick={() => handleStartOcr(true)} disabled={ocrStarting || ocrEligible === 0} variant="outline" size="sm" className="gap-2">
+                    {ocrStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+                    Test (50)
+                  </Button>
+                  <Button onClick={() => handleStartOcr(false)} disabled={ocrStarting || ocrEligible === 0} variant="secondary" className="gap-2">
+                    {ocrStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+                    Run Full OCR
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={handleStopOcr} variant="destructive" size="sm" className="gap-2">
+                  <Square className="h-4 w-4" />
+                  Stop
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {ocrEligible !== null && (
+            <div className="mt-4 space-y-2">
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>{ocrEligible.toLocaleString()} files eligible for OCR</span>
+                {ocrRunning && ocrRate && ocrRate > 0 && (
+                  <span>
+                    ~{ocrRate} files/min
+                    {ocrEligible > 0 && (() => {
+                      const etaMin = ocrEligible / ocrRate;
+                      const etaHours = Math.floor(etaMin / 60);
+                      const etaRemMin = Math.round(etaMin % 60);
+                      return ` • ETA: ${etaHours > 0 ? `${etaHours}h ${etaRemMin}m` : `${etaRemMin}m`}`;
+                    })()}
+                  </span>
+                )}
+              </div>
+              {ocrRunning && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Processing...
+                </div>
               )}
             </div>
           )}
