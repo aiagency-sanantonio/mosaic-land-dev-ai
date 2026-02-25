@@ -124,7 +124,7 @@ async function ocrPdf(binary: ArrayBuffer, fileName: string, mistralKey: string)
     headers: { 'Authorization': `Bearer ${mistralKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'mistral-ocr-latest',
-      document: { type: 'file_id', file_id: fileId },
+      document: { type: 'file', file_id: fileId },
     }),
   });
   if (!ocrRes.ok) throw new Error(`Mistral OCR PDF error (${ocrRes.status}): ${await ocrRes.text()}`);
