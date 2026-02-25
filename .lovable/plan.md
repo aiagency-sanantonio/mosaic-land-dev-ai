@@ -1,29 +1,48 @@
 
 
-## Add pg_cron Safety Nets for OCR and Structured Extraction
+## Add Image Description to OCR Pipeline
 
 ### Problem
-Both the `ocr-process` and `extract-structured-data` edge functions rely on self-chaining (each batch triggers the next via `setTimeout + fetch`). If a chain breaks due to a timeout, network error, or edge function cold-start failure, processing silently stops and requires a manual restart. The `batch-index` function already has a pg_cron job as a safety net -- we need the same for these two.
+The current OCR pipeline only extracts text from images using Mistral OCR. For many construction site photos, permits, and other visual documents, the text alone doesn't capture important context (e.g., what's shown in a photo, the condition of equipment, progress of work).
+
+### Approach
+After extracting OCR text from an image, send the same image to a vision-capable model to generate a natural language description. Combine the OCR text and description into a single document before chunking and embedding.
 
 ### Changes
 
-**1. Create pg_cron job for `ocr-process` (every minute)**
+**1. Update `supabase/functions/ocr-process/index.ts`**
 
-A SQL insert (not migration) to schedule a cron job that calls the `ocr-process` function every minute. The function already handles the case where there are no eligible files (returns early), so repeated cron calls when there's nothing to do are harmless.
+- Add a new `describeImage()` function that sends the base64 image to **Mistral's Pixtral model** (`pixtral-large-latest`) via the `/v1/chat/completions` endpoint with a vision prompt. The MISTRAL_API_KEY is already configured.
+- The prompt will ask the model to describe the visual content of the image: what it shows, any visible objects, conditions, context, etc.
+- Combine the results: prepend `## Image Description\n{description}\n\n## Extracted Text\n{ocrText}` so both are captured in the document chunks.
+- This applies **only to images** (not PDFs), since PDFs are multi-page text documents where description adds less value.
+- Add an `image_described: true` flag to the metadata so we can track which documents have descriptions.
 
-**2. Create pg_cron job for `extract-structured-data` (every minute)**
-
-Same pattern -- a cron job that POSTs to the extraction function every minute. The function already checks for unprocessed files and returns early if none exist.
-
-**3. Update both edge functions to be idempotent with concurrent calls**
-
-Both functions already query for unprocessed files and process them, so concurrent invocations from cron + self-chain will simply both grab files. Since each file is marked as processed (via `structured_extracted = true` or `status = 'success'`) before the next batch, there's minimal risk of double-processing. No code changes needed -- the existing logic is already safe.
+**2. No changes needed to other functions**
+- The chunking, embedding, and search logic all work on text content, so the combined text will flow through the existing pipeline seamlessly.
+- The structured data extraction will also benefit since it reads from the indexed chunks.
 
 ### Technical Details
 
-Two SQL statements using `cron.schedule` and `net.http_post`, matching the existing `batch-index-cron` pattern. Each will:
-- Run every minute (`*/1 * * * *`)
-- POST to the function URL with the anon key in the Authorization header
-- Pass an empty JSON body (or `{"cron": true}`)
+The vision call to Pixtral:
+```text
+POST https://api.mistral.ai/v1/chat/completions
+Model: pixtral-large-latest
+Messages:
+  - role: user
+    content:
+      - type: image_url (base64 data URI)
+      - type: text ("Describe this image in detail...")
+```
 
-The functions' existing auth allows the anon key bearer token (since `verify_jwt = false` in config.toml), so no auth changes are needed.
+The combined output format per image file:
+```text
+## Image Description
+[Vision model's description of what the image shows]
+
+## Extracted Text (OCR)
+[Mistral OCR extracted text/markdown]
+```
+
+This adds one extra API call per image file (not per PDF). The existing 90-second per-file timeout should accommodate this since both calls typically complete in under 30 seconds total.
+
