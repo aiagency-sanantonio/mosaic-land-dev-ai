@@ -32,3 +32,6 @@ verify_jwt = false
 
 [functions.extract-structured-data]
 verify_jwt = false
+
+[functions.ocr-process]
+verify_jwt = false
