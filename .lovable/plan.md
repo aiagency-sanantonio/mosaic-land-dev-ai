@@ -1,48 +1,43 @@
 
-## Fix Extract-Structured-Data: Two Critical Bugs
 
-### Problem 1: Only fetches 1,000 files (out of 9,475)
-The query on line 282 has `.limit(1000)`, so it never sees more than the first 1,000 files alphabetically. This is why logs always say "1000 remaining."
+## Fix Stalled Structured Data Extraction
 
-### Problem 2: Files with no extracted data loop forever
-The skip logic checks if a file has rows in `project_data`, `permits_tracking`, or `dd_checklists`. But most files (maps, surveys, images-as-PDFs) extract 0 metrics, 0 permits, 0 DD items -- so nothing gets inserted, and they're never marked as "done." The same 10 files get reprocessed on every self-chain call.
+### Problem
+The extraction self-chaining loop keeps dying because processing 50 files sequentially (each requiring an OpenAI API call taking 2-5 seconds) exceeds the edge function's execution time limit. Once the chain breaks, processing stops entirely -- there's no cron job to restart it like batch-index has.
 
 ### Solution
 
-**1. Add a tracking column to `indexing_status`** (database migration)
+**1. Reduce batch size in the edge function to 10 files** (from 50)
 
-Add a boolean column `structured_extracted` (default `false`) to the `indexing_status` table. After each file is processed (even if 0 items were extracted), set it to `true`.
+10 files at ~3-5 seconds each = 30-50 seconds, which fits within the edge function timeout. This keeps the self-chain alive.
 
-```sql
-ALTER TABLE indexing_status 
-ADD COLUMN structured_extracted boolean NOT NULL DEFAULT false;
-```
+**2. Add auto-polling to the Admin UI**
 
-**2. Rewrite the file selection query in the edge function**
+When the user clicks "Run Extraction", start a polling interval (every 15 seconds) that:
+- Refreshes the extraction progress counts from the database
+- If progress stalls (no change after 3 polls), auto-retriggers the edge function to restart the chain
+- Stops polling when all files are done or the user navigates away
 
-Instead of fetching 1,000 files and then filtering client-side, query directly for files where `status = 'success' AND structured_extracted = false`. This:
-- Removes the 1,000-file cap (use pagination instead)
-- Eliminates the need for the 3-table skip-check
-- Properly marks files as done even when they yield no structured data
+**3. Update the UI button to show live progress while running**
 
-**3. Mark files as extracted after processing**
-
-After each file completes (success or no data), update `indexing_status` to set `structured_extracted = true` for that file path.
+- Show a "running" state with a spinner while the extraction is actively processing
+- Auto-refresh the progress bar during extraction
+- Display the current rate (files/minute) based on progress changes
 
 ### Technical Changes
 
-**Database migration:**
-- Add `structured_extracted` boolean column to `indexing_status`
-
 **Edge function (`supabase/functions/extract-structured-data/index.ts`):**
-- Replace the `.limit(1000)` query + 3-table skip-check with a single query: `indexing_status WHERE status='success' AND structured_extracted=false`, limited to `batchSize`
-- After processing each file, run `UPDATE indexing_status SET structured_extracted=true WHERE file_path=...`
-- Keep the self-chaining logic as-is
-- Increase default batch_size from 10 to 50 for faster throughput
+- Change default batch_size from 50 to 10
+- Reduce self-chain delay from 500ms to 200ms for faster cycling
 
 **Admin UI (`src/pages/AdminIndexing.tsx`):**
-- Update the extraction card to show overall progress (query count of `structured_extracted=true` vs total success files)
-- Add a progress bar for extraction status
+- Add a `useEffect` polling interval when extraction is active
+- Track `extractionRunning` state that persists across polls
+- Auto-retrigger the function if progress stalls (same count for 3 consecutive polls)
+- Add a "Stop" button for extraction
+- Show estimated time remaining for extraction based on observed rate
 
-### Verifying the test run worked
-The logs confirm the test run did process files -- 5 unique files got data in `project_data` (13 rows total). But it kept looping over the same 10 files because the "0m 0p 0d" files were never marked as done. The fix will prevent this infinite loop.
+### File Changes
+1. `supabase/functions/extract-structured-data/index.ts` -- reduce batch_size default
+2. `src/pages/AdminIndexing.tsx` -- add polling/auto-restart logic for extraction
+
