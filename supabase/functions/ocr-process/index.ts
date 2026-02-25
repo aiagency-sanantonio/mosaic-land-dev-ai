@@ -61,6 +61,32 @@ async function downloadBinaryFromDropbox(filePath: string, token: string): Promi
   return res.arrayBuffer();
 }
 
+// ─── Mistral Vision (Pixtral) ─────────────────────────────────────────────────
+
+async function describeImage(base64: string, mimeType: string, mistralKey: string): Promise<string> {
+  const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${mistralKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'pixtral-large-latest',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
+          { type: 'text', text: 'Describe this image in detail. What does it show? Include any visible objects, people, equipment, conditions, text, signage, structures, surroundings, and any other relevant context. Be specific and thorough.' },
+        ],
+      }],
+      max_tokens: 1024,
+    }),
+  });
+  if (!res.ok) {
+    console.error(`Pixtral vision error (${res.status}): ${await res.text()}`);
+    return ''; // Non-fatal: return empty so OCR text still gets indexed
+  }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content?.trim() || '';
+}
+
 // ─── Mistral OCR ──────────────────────────────────────────────────────────────
 
 async function ocrImage(base64: string, mimeType: string, mistralKey: string): Promise<string> {
@@ -288,6 +314,7 @@ serve(async (req) => {
         await withTimeout((async () => {
           const ext = (file.file_name || file.file_path).split('.').pop()?.toLowerCase() || '';
           const isScannedPdf = file.error_message === OCR_PDF_ERROR;
+          let imageDescribed = false;
 
           // Download binary from Dropbox
           console.log(`Downloading: ${file.file_name || file.file_path}`);
@@ -308,6 +335,14 @@ serve(async (req) => {
             }
             const base64 = btoa(b64);
             ocrText = await ocrImage(base64, mimeType, mistralApiKey);
+
+            // Get image description via Pixtral vision model
+            console.log(`Describing image: ${file.file_name}`);
+            const description = await describeImage(base64, mimeType, mistralApiKey);
+            if (description) {
+              ocrText = `## Image Description\n${description}\n\n## Extracted Text (OCR)\n${ocrText}`;
+              imageDescribed = true;
+            }
           }
 
           if (ocrText.trim().length < 20) {
@@ -323,7 +358,7 @@ serve(async (req) => {
           let text = ocrText;
           if (text.length > MAX_TEXT_LENGTH) text = text.slice(0, MAX_TEXT_LENGTH);
 
-          console.log(`OCR extracted ${text.length} chars from ${file.file_name}`);
+          console.log(`OCR extracted ${text.length} chars from ${file.file_name}${imageDescribed ? ' (with description)' : ''}`);
 
           // Extract metadata
           const metadata = extractMetadata(text);
@@ -339,7 +374,7 @@ serve(async (req) => {
             embedding: JSON.stringify(embeddings[i]),
             file_path: file.file_path,
             file_name: file.file_name,
-            metadata: { ...metadata, chunk_index: i, total_chunks: chunks.length, ocr_source: 'mistral' },
+            metadata: { ...metadata, chunk_index: i, total_chunks: chunks.length, ocr_source: 'mistral', ...(imageDescribed ? { image_described: true } : {}) },
           }));
 
           const { error: insertError } = await supabase.from('documents').insert(documents);
@@ -350,7 +385,7 @@ serve(async (req) => {
             status: 'success',
             chunks_created: documents.length,
             error_message: null,
-            metadata: { ...metadata, ocr_source: 'mistral' },
+            metadata: { ...metadata, ocr_source: 'mistral', ...(imageDescribed ? { image_described: true } : {}) },
             indexed_at: new Date().toISOString(),
           }).eq('file_path', file.file_path);
 
