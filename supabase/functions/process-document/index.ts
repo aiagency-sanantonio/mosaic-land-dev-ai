@@ -140,7 +140,7 @@ interface ExtractedStructuredData {
 
 async function extractStructuredDataWithLLM(
   content: string, filePath: string, fileName: string,
-  lovableApiKey: string
+  openaiApiKey: string
 ): Promise<ExtractedStructuredData | null> {
   // Take first 6000 chars to stay within context limits while getting meaningful data
   const truncated = content.slice(0, 6000);
@@ -171,14 +171,14 @@ CRITICAL RULES:
 - If the document has no extractable structured data, return empty arrays.`;
 
   try {
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${lovableApiKey}`,
+        'Authorization': `Bearer ${openaiApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Extract structured data from this document.\n\nFile: ${fileName}\nPath: ${filePath}\n\n---\n${truncated}` },
@@ -371,7 +371,7 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const openaiApiKey = Deno.env.get('OPENAI_API_KEY')!;
-  const lovableApiKey = Deno.env.get('LOVABLE_API_KEY') || '';
+  
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   let filePath: string | null = null;
@@ -416,14 +416,10 @@ serve(async (req) => {
 
     // LLM structured extraction (runs in parallel with chunking/embedding)
     let structuredPromise: Promise<ExtractedStructuredData | null> = Promise.resolve(null);
-    if (lovableApiKey) {
-      console.log('Starting LLM structured extraction...');
-      structuredPromise = extractStructuredDataWithLLM(
-        content, file_path || '', file_name || '', lovableApiKey
-      );
-    } else {
-      console.warn('LOVABLE_API_KEY not set, skipping LLM extraction');
-    }
+    console.log('Starting LLM structured extraction...');
+    structuredPromise = extractStructuredDataWithLLM(
+      content, file_path || '', file_name || '', openaiApiKey
+    );
 
     // Delete existing chunks
     if (file_path) {
