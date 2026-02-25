@@ -38,6 +38,48 @@ export type Database = {
         }
         Relationships: []
       }
+      dd_checklists: {
+        Row: {
+          checklist_item: string
+          completed_date: string | null
+          confidence: number | null
+          created_at: string
+          id: string
+          notes: string | null
+          project_name: string
+          source_file_name: string | null
+          source_file_path: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          checklist_item: string
+          completed_date?: string | null
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          project_name: string
+          source_file_name?: string | null
+          source_file_path?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          checklist_item?: string
+          completed_date?: string | null
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          notes?: string | null
+          project_name?: string
+          source_file_name?: string | null
+          source_file_path?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       documents: {
         Row: {
           content: string
@@ -223,6 +265,57 @@ export type Database = {
           },
         ]
       }
+      permits_tracking: {
+        Row: {
+          confidence: number | null
+          created_at: string
+          description: string | null
+          expiration_date: string | null
+          id: string
+          issued_date: string | null
+          permit_no: string | null
+          permit_type: string
+          project_name: string
+          raw_text: string | null
+          source_file_name: string | null
+          source_file_path: string | null
+          status: string | null
+          updated_at: string
+        }
+        Insert: {
+          confidence?: number | null
+          created_at?: string
+          description?: string | null
+          expiration_date?: string | null
+          id?: string
+          issued_date?: string | null
+          permit_no?: string | null
+          permit_type: string
+          project_name: string
+          raw_text?: string | null
+          source_file_name?: string | null
+          source_file_path?: string | null
+          status?: string | null
+          updated_at?: string
+        }
+        Update: {
+          confidence?: number | null
+          created_at?: string
+          description?: string | null
+          expiration_date?: string | null
+          id?: string
+          issued_date?: string | null
+          permit_no?: string | null
+          permit_type?: string
+          project_name?: string
+          raw_text?: string | null
+          source_file_name?: string | null
+          source_file_path?: string | null
+          status?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -250,6 +343,54 @@ export type Database = {
           id?: string
           updated_at?: string
           user_id?: string
+        }
+        Relationships: []
+      }
+      project_data: {
+        Row: {
+          category: string
+          confidence: number | null
+          created_at: string
+          date: string | null
+          id: string
+          metric_name: string
+          project_name: string
+          raw_text: string | null
+          source_file_name: string | null
+          source_file_path: string | null
+          unit: string | null
+          updated_at: string
+          value: number
+        }
+        Insert: {
+          category: string
+          confidence?: number | null
+          created_at?: string
+          date?: string | null
+          id?: string
+          metric_name: string
+          project_name: string
+          raw_text?: string | null
+          source_file_name?: string | null
+          source_file_path?: string | null
+          unit?: string | null
+          updated_at?: string
+          value: number
+        }
+        Update: {
+          category?: string
+          confidence?: number | null
+          created_at?: string
+          date?: string | null
+          id?: string
+          metric_name?: string
+          project_name?: string
+          raw_text?: string | null
+          source_file_name?: string | null
+          source_file_path?: string | null
+          unit?: string | null
+          updated_at?: string
+          value?: number
         }
         Relationships: []
       }

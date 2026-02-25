@@ -17,3 +17,15 @@ verify_jwt = false
 
 [functions.batch-index]
 verify_jwt = false
+
+[functions.query-project-metrics]
+verify_jwt = false
+
+[functions.query-permits]
+verify_jwt = false
+
+[functions.query-dd-status]
+verify_jwt = false
+
+[functions.compare-projects]
+verify_jwt = false
