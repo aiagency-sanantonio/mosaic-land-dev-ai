@@ -1,24 +1,45 @@
 
-## Reset Mistral OCR + Failed Files for OpenAI Reprocessing
 
-### What
-Reset 7,236 files in the `indexing_status` table back to `skipped` status so they are eligible for reprocessing by the new OpenAI Vision pipeline.
+## Clean Up All Mistral OCR Data
 
-### Two SQL Updates
+### Summary
+Delete all document chunks and structured data that were created by the Mistral OCR pipeline, keeping only the OpenAI-processed data.
 
-**1. Reset 4,173 Mistral-processed files**
-- Target: files with `status = 'success'` and `metadata->>'ocr_source' = 'mistral'`
-- Set `status` to `'skipped'`, clear `chunks_created`, `indexed_at`, `error_message`
-- Clear `ocr_source` from metadata
-- Also delete their existing document chunks from the `documents` table (so we don't get duplicates when reprocessed)
+### What will be deleted
 
-**2. Reset 3,063 failed files**
-- Target: files with `status = 'failed'`
-- Set `status` to `'skipped'`, clear `error_message`, `chunks_created`, `indexed_at`
+| Table | Mistral Records | OpenAI Records (kept) |
+|-------|-----------------|----------------------|
+| documents | 17,512 chunks | 79 chunks |
+| project_data | 29 rows | untouched |
+| dd_checklists | 0 | n/a |
+| permits_tracking | 0 | n/a |
+| indexing_status | already cleaned | n/a |
 
 ### Steps
-1. Delete document chunks for the 4,173 Mistral files (match on `file_path`)
-2. Update those 4,173 records to `status = 'skipped'`
-3. Update the 3,063 failed records to `status = 'skipped'`
 
-No code or schema changes needed -- these are data updates only.
+1. **Delete 17,512 Mistral document chunks** from `documents` where `metadata->>'ocr_source' = 'mistral'`
+2. **Delete 29 Mistral-sourced project_data rows** whose `source_file_path` matches Mistral-processed files
+3. Verify final counts to confirm only OpenAI data remains
+
+### Technical Details
+
+Three SQL statements executed via the data update tool:
+
+```sql
+-- Step 1: Remove Mistral document chunks
+DELETE FROM documents WHERE metadata->>'ocr_source' = 'mistral';
+
+-- Step 2: Remove project_data rows linked to Mistral OCR files
+DELETE FROM project_data 
+WHERE source_file_path IN (
+  SELECT DISTINCT file_path FROM indexing_status 
+  WHERE error_message LIKE 'Scanned/image-only PDF%' 
+     OR error_message LIKE 'Non-vectorizable format%'
+);
+
+-- Step 3: Verification query
+SELECT metadata->>'ocr_source' as source, count(*) FROM documents GROUP BY 1;
+```
+
+No schema or code changes required -- data cleanup only.
+
