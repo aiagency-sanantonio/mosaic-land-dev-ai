@@ -8,6 +8,7 @@ const corsHeaders = {
 };
 
 const BATCH_SIZE = 10;
+const CONCURRENCY = 3;
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
@@ -230,6 +231,22 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(b64);
 }
 
+// ─── Concurrency limiter ──────────────────────────────────────────────────────
+
+async function processInGroups<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<string>,
+): Promise<PromiseSettledResult<string>[]> {
+  const results: PromiseSettledResult<string>[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const group = items.slice(i, i + concurrency);
+    const groupResults = await Promise.allSettled(group.map(fn));
+    results.push(...groupResults);
+  }
+  return results;
+}
+
 // ─── Main Handler ─────────────────────────────────────────────────────────────
 
 serve(async (req) => {
@@ -294,7 +311,7 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    console.log(`OCR batch: ${files.length} files to process (using OpenAI Vision)`);
+    console.log(`OCR batch: ${files.length} files to process (concurrency: ${CONCURRENCY}, using OpenAI Vision)`);
 
     const dropboxToken = await getDropboxAccessToken();
 
@@ -303,69 +320,67 @@ serve(async (req) => {
     let skipped = 0;
     const errors: Array<{ file: string; error: string }> = [];
 
-    const results = await Promise.allSettled(
-      files.map(file =>
-        withTimeout((async () => {
-          const ext = (file.file_name || file.file_path).split('.').pop()?.toLowerCase() || '';
-          const isScannedPdf = file.error_message === OCR_PDF_ERROR;
+    const results = await processInGroups(files, CONCURRENCY, (file) =>
+      withTimeout((async () => {
+        const ext = (file.file_name || file.file_path).split('.').pop()?.toLowerCase() || '';
+        const isScannedPdf = file.error_message === OCR_PDF_ERROR;
 
-          console.log(`Downloading: ${file.file_name || file.file_path}`);
-          const binary = await downloadBinaryFromDropbox(file.file_path, dropboxToken);
-          const base64 = arrayBufferToBase64(binary);
+        console.log(`Downloading: ${file.file_name || file.file_path}`);
+        const binary = await downloadBinaryFromDropbox(file.file_path, dropboxToken);
+        const base64 = arrayBufferToBase64(binary);
 
-          let analysisText: string;
-          if (isScannedPdf) {
-            console.log(`Analyzing PDF with OpenAI Vision: ${file.file_name}`);
-            analysisText = await analyzePdfWithOpenAI(base64, openaiApiKey);
-          } else {
-            const mimeType = MIME_MAP[ext] || 'image/jpeg';
-            console.log(`Analyzing image with OpenAI Vision: ${file.file_name}`);
-            analysisText = await analyzeImageWithOpenAI(base64, mimeType, openaiApiKey);
-          }
+        let analysisText: string;
+        if (isScannedPdf) {
+          console.log(`Analyzing PDF with OpenAI Vision: ${file.file_name}`);
+          analysisText = await analyzePdfWithOpenAI(base64, openaiApiKey);
+        } else {
+          const mimeType = MIME_MAP[ext] || 'image/jpeg';
+          console.log(`Analyzing image with OpenAI Vision: ${file.file_name}`);
+          analysisText = await analyzeImageWithOpenAI(base64, mimeType, openaiApiKey);
+        }
 
-          if (analysisText.trim().length < 20) {
-            console.log(`OpenAI returned minimal text for ${file.file_name}, marking skipped`);
-            await supabase.from('indexing_status').update({
-              status: 'skipped',
-              error_message: 'OCR returned insufficient text (< 20 chars)',
-            }).eq('file_path', file.file_path);
-            return 'skipped' as const;
-          }
-
-          let text = analysisText;
-          if (text.length > MAX_TEXT_LENGTH) text = text.slice(0, MAX_TEXT_LENGTH);
-
-          console.log(`OpenAI extracted ${text.length} chars from ${file.file_name}`);
-
-          const metadata = extractMetadata(text);
-
-          await supabase.from('documents').delete().eq('file_path', file.file_path);
-
-          const chunks = splitText(text);
-          const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
-          const documents = chunks.map((chunk, i) => ({
-            content: chunk,
-            embedding: JSON.stringify(embeddings[i]),
-            file_path: file.file_path,
-            file_name: file.file_name,
-            metadata: { ...metadata, chunk_index: i, total_chunks: chunks.length, ocr_source: 'openai', image_described: true },
-          }));
-
-          const { error: insertError } = await supabase.from('documents').insert(documents);
-          if (insertError) throw insertError;
-
+        if (analysisText.trim().length < 20) {
+          console.log(`OpenAI returned minimal text for ${file.file_name}, marking skipped`);
           await supabase.from('indexing_status').update({
-            status: 'success',
-            chunks_created: documents.length,
-            error_message: null,
-            metadata: { ...metadata, ocr_source: 'openai', image_described: true },
-            indexed_at: new Date().toISOString(),
+            status: 'skipped',
+            error_message: 'OCR returned insufficient text (< 20 chars)',
           }).eq('file_path', file.file_path);
+          return 'skipped' as const;
+        }
 
-          console.log(`✓ ${file.file_name}: ${documents.length} chunks`);
-          return 'processed' as const;
-        })(), PER_FILE_TIMEOUT_MS, file.file_name || file.file_path)
-      )
+        let text = analysisText;
+        if (text.length > MAX_TEXT_LENGTH) text = text.slice(0, MAX_TEXT_LENGTH);
+
+        console.log(`OpenAI extracted ${text.length} chars from ${file.file_name}`);
+
+        const metadata = extractMetadata(text);
+
+        await supabase.from('documents').delete().eq('file_path', file.file_path);
+
+        const chunks = splitText(text);
+        const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
+        const documents = chunks.map((chunk, i) => ({
+          content: chunk,
+          embedding: JSON.stringify(embeddings[i]),
+          file_path: file.file_path,
+          file_name: file.file_name,
+          metadata: { ...metadata, chunk_index: i, total_chunks: chunks.length, ocr_source: 'openai', image_described: true },
+        }));
+
+        const { error: insertError } = await supabase.from('documents').insert(documents);
+        if (insertError) throw insertError;
+
+        await supabase.from('indexing_status').update({
+          status: 'success',
+          chunks_created: documents.length,
+          error_message: null,
+          metadata: { ...metadata, ocr_source: 'openai', image_described: true },
+          indexed_at: new Date().toISOString(),
+        }).eq('file_path', file.file_path);
+
+        console.log(`✓ ${file.file_name}: ${documents.length} chunks`);
+        return 'processed' as const;
+      })(), PER_FILE_TIMEOUT_MS, file.file_name || file.file_path)
     );
 
     for (let i = 0; i < results.length; i++) {
