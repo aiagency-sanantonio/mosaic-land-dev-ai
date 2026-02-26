@@ -11,14 +11,12 @@ const BATCH_SIZE = 5;
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
-const PER_FILE_TIMEOUT_MS = 90_000; // 90s per file (OCR is slower)
+const PER_FILE_TIMEOUT_MS = 90_000;
 const MAX_TEXT_LENGTH = 100_000;
 
-// Extensions Mistral OCR supports
 const OCR_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'gif', 'webp']);
 const OCR_PDF_ERROR = 'Scanned/image-only PDF - no extractable text';
 
-// MIME types for Mistral OCR
 const MIME_MAP: Record<string, string> = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
   tif: 'image/tiff', tiff: 'image/tiff', bmp: 'image/bmp',
@@ -61,85 +59,69 @@ async function downloadBinaryFromDropbox(filePath: string, token: string): Promi
   return res.arrayBuffer();
 }
 
-// ─── Mistral Vision (Pixtral) ─────────────────────────────────────────────────
+// ─── OpenAI Vision (replaces Mistral OCR + Pixtral) ───────────────────────────
 
-async function describeImage(base64: string, mimeType: string, mistralKey: string): Promise<string> {
-  const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
+async function analyzeImageWithOpenAI(base64: string, mimeType: string, openaiApiKey: string): Promise<string> {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${mistralKey}`, 'Content-Type': 'application/json' },
+    headers: { 'Authorization': `Bearer ${openaiApiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'pixtral-large-latest',
+      model: 'gpt-4o',
       messages: [{
         role: 'user',
         content: [
           { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
-          { type: 'text', text: 'Describe this image in detail. What does it show? Include any visible objects, people, equipment, conditions, text, signage, structures, surroundings, and any other relevant context. Be specific and thorough.' },
+          { type: 'text', text: `Analyze this image. Provide TWO sections:
+
+## Image Description
+Describe the image in detail. Include any visible objects, people, equipment, conditions, structures, surroundings, signage, and any other relevant context. Be specific and thorough.
+
+## Extracted Text (OCR)
+Extract ALL visible text from this image verbatim. Include text from signs, labels, documents, headers, footers, watermarks, handwriting — everything. Preserve the original formatting and layout as much as possible. If no text is visible, write "No visible text found."` },
         ],
       }],
-      max_tokens: 1024,
+      max_tokens: 4096,
     }),
   });
   if (!res.ok) {
-    console.error(`Pixtral vision error (${res.status}): ${await res.text()}`);
-    return ''; // Non-fatal: return empty so OCR text still gets indexed
+    const errText = await res.text();
+    throw new Error(`OpenAI Vision error (${res.status}): ${errText}`);
   }
   const data = await res.json();
   return data.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// ─── Mistral OCR ──────────────────────────────────────────────────────────────
-
-async function ocrImage(base64: string, mimeType: string, mistralKey: string): Promise<string> {
-  const res = await fetch('https://api.mistral.ai/v1/ocr', {
+async function analyzePdfWithOpenAI(base64: string, openaiApiKey: string): Promise<string> {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${mistralKey}`, 'Content-Type': 'application/json' },
+    headers: { 'Authorization': `Bearer ${openaiApiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'mistral-ocr-latest',
-      document: { type: 'image_url', image_url: `data:${mimeType};base64,${base64}` },
+      model: 'gpt-4o',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'file', file: { filename: 'document.pdf', file_data: `data:application/pdf;base64,${base64}` } },
+          { type: 'text', text: `Analyze this PDF document. Provide TWO sections:
+
+## Document Description
+Describe what this document is about, its type (invoice, permit, report, contract, etc.), and summarize its key contents.
+
+## Extracted Text (OCR)
+Extract ALL visible text from this document verbatim. Preserve the original formatting, headers, tables, and layout as much as possible.` },
+        ],
+      }],
+      max_tokens: 4096,
     }),
   });
-  if (!res.ok) throw new Error(`Mistral OCR image error (${res.status}): ${await res.text()}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`OpenAI Vision PDF error (${res.status}): ${errText}`);
+  }
   const data = await res.json();
-  return (data.pages || []).map((p: { markdown: string }) => p.markdown || '').join('\n\n').trim();
+  return data.choices?.[0]?.message?.content?.trim() || '';
 }
 
-async function ocrPdf(binary: ArrayBuffer, fileName: string, mistralKey: string): Promise<string> {
-  // Step 1: Upload PDF to Mistral
-  const blob = new Blob([binary], { type: 'application/pdf' });
-  const formData = new FormData();
-  formData.append('purpose', 'ocr');
-  formData.append('file', blob, fileName || 'document.pdf');
-
-  const uploadRes = await fetch('https://api.mistral.ai/v1/files', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${mistralKey}` },
-    body: formData,
-  });
-  if (!uploadRes.ok) throw new Error(`Mistral file upload error (${uploadRes.status}): ${await uploadRes.text()}`);
-  const { id: fileId } = await uploadRes.json();
-
-  // Step 2: OCR the uploaded file
-  const ocrRes = await fetch('https://api.mistral.ai/v1/ocr', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${mistralKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'mistral-ocr-latest',
-      document: { type: 'file', file_id: fileId },
-    }),
-  });
-  if (!ocrRes.ok) throw new Error(`Mistral OCR PDF error (${ocrRes.status}): ${await ocrRes.text()}`);
-  const data = await ocrRes.json();
-
-  // Cleanup: delete uploaded file (best effort)
-  fetch(`https://api.mistral.ai/v1/files/${fileId}`, {
-    method: 'DELETE',
-    headers: { 'Authorization': `Bearer ${mistralKey}` },
-  }).catch(() => {});
-
-  return (data.pages || []).map((p: { markdown: string }) => p.markdown || '').join('\n\n').trim();
-}
-
-// ─── Text chunking & embeddings (same as batch-index) ─────────────────────────
+// ─── Text chunking & embeddings ───────────────────────────────────────────────
 
 function splitText(text: string): string[] {
   const separators = ['\n\n', '\n', '. ', ' ', ''];
@@ -198,7 +180,7 @@ async function generateEmbeddingsBatch(texts: string[], apiKey: string): Promise
   return results;
 }
 
-// ─── Metadata extraction (lightweight) ────────────────────────────────────────
+// ─── Metadata extraction ──────────────────────────────────────────────────────
 
 const COST_PATTERN = /\$[\d,]+(?:\.\d{2})?/g;
 const DATE_PATTERN = /\b(?:0?[1-9]|1[0-2])[-\/](?:0?[1-9]|[12]\d|3[01])[-\/](?:19|20)?\d{2}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b/gi;
@@ -236,6 +218,18 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
+// ─── Base64 encoding helper ──────────────────────────────────────────────────
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let b64 = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    b64 += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(b64);
+}
+
 // ─── Main Handler ─────────────────────────────────────────────────────────────
 
 serve(async (req) => {
@@ -244,16 +238,12 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const openaiApiKey = Deno.env.get('OPENAI_API_KEY')!;
-  const mistralApiKey = Deno.env.get('MISTRAL_API_KEY')!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
-    // Auth: cron path skips auth (protected by verify_jwt=false + service role),
-    // otherwise check N8N secret or Supabase JWT
     const authHeader = req.headers.get('Authorization');
     const expectedSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
 
-    // Parse body early so we can check for cron flag
     const body = await req.json().catch(() => ({}));
     const isCron = body.cron === true;
 
@@ -277,9 +267,6 @@ serve(async (req) => {
     const testMode = body.test_mode === true;
     const testLimit = body.test_limit || 50;
 
-    // Find OCR-eligible files: skipped images + scanned PDFs
-    // Images: error_message like 'Non-vectorizable format: .jpg' etc.
-    // PDFs: error_message = 'Scanned/image-only PDF - no extractable text'
     const ocrExtensions = [...OCR_IMAGE_EXTENSIONS].map(e => `Non-vectorizable format: .${e}`);
     const allEligibleErrors = [...ocrExtensions, OCR_PDF_ERROR];
 
@@ -294,7 +281,6 @@ serve(async (req) => {
     if (fetchError) throw fetchError;
 
     if (!files || files.length === 0) {
-      // Count total eligible for progress
       const { count } = await supabase
         .from('indexing_status')
         .select('*', { count: 'exact', head: true })
@@ -308,9 +294,8 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    console.log(`OCR batch: ${files.length} files to process`);
+    console.log(`OCR batch: ${files.length} files to process (using OpenAI Vision)`);
 
-    // Get Dropbox token
     const dropboxToken = await getDropboxAccessToken();
 
     let processed = 0;
@@ -323,41 +308,24 @@ serve(async (req) => {
         await withTimeout((async () => {
           const ext = (file.file_name || file.file_path).split('.').pop()?.toLowerCase() || '';
           const isScannedPdf = file.error_message === OCR_PDF_ERROR;
-          let imageDescribed = false;
 
-          // Download binary from Dropbox
           console.log(`Downloading: ${file.file_name || file.file_path}`);
           const binary = await downloadBinaryFromDropbox(file.file_path, dropboxToken);
+          const base64 = arrayBufferToBase64(binary);
 
-          // Run Mistral OCR
-          let ocrText: string;
+          // Single OpenAI call for both description + OCR
+          let analysisText: string;
           if (isScannedPdf) {
-            ocrText = await ocrPdf(binary, file.file_name || 'document.pdf', mistralApiKey);
+            console.log(`Analyzing PDF with OpenAI Vision: ${file.file_name}`);
+            analysisText = await analyzePdfWithOpenAI(base64, openaiApiKey);
           } else {
             const mimeType = MIME_MAP[ext] || 'image/jpeg';
-            const bytes = new Uint8Array(binary);
-            let b64 = '';
-            // Encode to base64 in chunks to avoid stack overflow
-            const chunkSize = 8192;
-            for (let i = 0; i < bytes.length; i += chunkSize) {
-              b64 += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-            }
-            const base64 = btoa(b64);
-            ocrText = await ocrImage(base64, mimeType, mistralApiKey);
-
-            // Rate-limit delay before Pixtral vision call
-            await new Promise(r => setTimeout(r, 2000));
-            // Get image description via Pixtral vision model
-            console.log(`Describing image: ${file.file_name}`);
-            const description = await describeImage(base64, mimeType, mistralApiKey);
-            if (description) {
-              ocrText = `## Image Description\n${description}\n\n## Extracted Text (OCR)\n${ocrText}`;
-              imageDescribed = true;
-            }
+            console.log(`Analyzing image with OpenAI Vision: ${file.file_name}`);
+            analysisText = await analyzeImageWithOpenAI(base64, mimeType, openaiApiKey);
           }
 
-          if (ocrText.trim().length < 20) {
-            console.log(`OCR returned minimal text for ${file.file_name}, marking skipped`);
+          if (analysisText.trim().length < 20) {
+            console.log(`OpenAI returned minimal text for ${file.file_name}, marking skipped`);
             await supabase.from('indexing_status').update({
               status: 'skipped',
               error_message: 'OCR returned insufficient text (< 20 chars)',
@@ -366,18 +334,15 @@ serve(async (req) => {
             return;
           }
 
-          let text = ocrText;
+          let text = analysisText;
           if (text.length > MAX_TEXT_LENGTH) text = text.slice(0, MAX_TEXT_LENGTH);
 
-          console.log(`OCR extracted ${text.length} chars from ${file.file_name}${imageDescribed ? ' (with description)' : ''}`);
+          console.log(`OpenAI extracted ${text.length} chars from ${file.file_name}`);
 
-          // Extract metadata
           const metadata = extractMetadata(text);
 
-          // Delete existing chunks if any
           await supabase.from('documents').delete().eq('file_path', file.file_path);
 
-          // Chunk & embed
           const chunks = splitText(text);
           const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
           const documents = chunks.map((chunk, i) => ({
@@ -385,18 +350,17 @@ serve(async (req) => {
             embedding: JSON.stringify(embeddings[i]),
             file_path: file.file_path,
             file_name: file.file_name,
-            metadata: { ...metadata, chunk_index: i, total_chunks: chunks.length, ocr_source: 'mistral', ...(imageDescribed ? { image_described: true } : {}) },
+            metadata: { ...metadata, chunk_index: i, total_chunks: chunks.length, ocr_source: 'openai', image_described: true },
           }));
 
           const { error: insertError } = await supabase.from('documents').insert(documents);
           if (insertError) throw insertError;
 
-          // Update indexing_status to success
           await supabase.from('indexing_status').update({
             status: 'success',
             chunks_created: documents.length,
             error_message: null,
-            metadata: { ...metadata, ocr_source: 'mistral', ...(imageDescribed ? { image_described: true } : {}) },
+            metadata: { ...metadata, ocr_source: 'openai', image_described: true },
             indexed_at: new Date().toISOString(),
           }).eq('file_path', file.file_path);
 
@@ -415,7 +379,6 @@ serve(async (req) => {
       }
     }
 
-    // Count remaining
     const { count: remainingCount } = await supabase
       .from('indexing_status')
       .select('*', { count: 'exact', head: true })
@@ -424,7 +387,6 @@ serve(async (req) => {
 
     const remaining = remainingCount ?? 0;
 
-    // Self-chain if more remain (and not test mode)
     if (remaining > 0 && !testMode) {
       const selfUrl = `${supabaseUrl}/functions/v1/ocr-process`;
       console.log(`Self-chaining: ${remaining} files remaining...`);
