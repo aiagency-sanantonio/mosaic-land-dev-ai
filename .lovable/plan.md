@@ -1,18 +1,17 @@
 
+## Fix: Delete button pushed off-screen by long thread titles
 
-## Remove Index Files and Bulk Indexing Buttons from Sidebar
+### Problem
+When a chat thread title is very long, the delete (trash) button gets pushed outside the visible area of the sidebar menu button, making it inaccessible.
 
-### What changes
-In `src/components/chat/ChatSidebar.tsx`:
+### Root Cause
+The `SidebarMenuButton` has `justify-between` but the inner flex container with `flex-1` can still push content beyond the button's bounds when the title text is very long.
 
-1. **Remove the "Index Files" button** (the `onIndexFiles` / `isIndexing` button)
-2. **Remove the "Bulk Indexing" button** (the one that navigates to `/admin/indexing`)
-3. **Remove unused imports**: `FolderSync`, `Database` from lucide-react
-4. **Remove unused props**: `onIndexFiles` and `isIndexing` from the component interface and props destructuring
+### Fix
+In `src/components/chat/ChatSidebar.tsx`, add `overflow-hidden` to the `SidebarMenuButton` so content never escapes its bounds. This ensures the truncated title and the delete button always stay within the visible area of the sidebar item.
 
-The routes (`/admin/indexing`) stay intact so you can still access them via the address bar. Only the sidebar UI buttons are removed.
+### Changes
+**`src/components/chat/ChatSidebar.tsx`** (line 119):
+- Add `overflow-hidden` to the `SidebarMenuButton` className so it becomes: `"group w-full justify-between overflow-hidden"`
 
-### Files modified
-- `src/components/chat/ChatSidebar.tsx` — remove buttons, props, and imports
-- `src/pages/Chat.tsx` — remove the `onIndexFiles` and `isIndexing` props passed to `ChatSidebar` (and any related state/handlers if they only served the sidebar button)
-
+This single class addition ensures long titles are properly truncated and the delete button remains visible and accessible on hover.
