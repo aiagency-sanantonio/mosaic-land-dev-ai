@@ -1,40 +1,38 @@
 
 
-## Optimize OCR Processing: Batch Size 10 + Parallel Processing
+## Fix: OCR Memory Limit Exceeded
+
+### Problem
+The parallel processing change (all 10 files via `Promise.allSettled`) downloads 10 images into memory simultaneously, converts them to base64, and fires 10 OpenAI Vision requests at once. Each image can be several MB, so holding all 10 in memory at once exceeds the edge function's ~150MB memory limit.
+
+### Solution
+Add a **concurrency limiter** that processes files in groups of 3. The batch size stays at 10 (meaning 10 files per cron cycle), but only 3 run in parallel at any time. This keeps memory usage manageable while still being 3x faster than fully sequential.
 
 ### Changes
 
 **File: `supabase/functions/ocr-process/index.ts`**
 
-1. **Increase default batch size** from 5 to 10 (line 10)
+1. Add a `processInGroups` helper function that splits an array into chunks of N and runs each chunk with `Promise.allSettled` sequentially:
 
-2. **Replace sequential `for` loop with `Promise.allSettled`** (lines 306-380)
-   - Instead of processing files one-by-one, process all files in the batch concurrently
-   - Each file's processing (download, OCR, chunk, embed, insert) becomes a self-contained async function
-   - `Promise.allSettled` ensures one failure doesn't cancel the others
-   - After settling, iterate results to tally `processed`, `failed`, `skipped` counts and collect errors
-
-### Technical Detail
-
-The sequential loop:
 ```text
-for (const file of files) {
-  // download, OCR, embed, insert (one at a time)
+async function processInGroups<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<PromiseSettledResult<string>>
+): Promise<PromiseSettledResult<string>[]> {
+  const results: PromiseSettledResult<string>[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const group = items.slice(i, i + concurrency);
+    const groupResults = await Promise.allSettled(group.map(fn));
+    results.push(...groupResults);
+  }
+  return results;
 }
 ```
 
-Becomes:
-```text
-const results = await Promise.allSettled(
-  files.map(file => withTimeout(async () => {
-    // download, OCR, embed, insert
-  }, PER_FILE_TIMEOUT_MS, file.file_name))
-);
-// tally results from settled promises
-```
+2. Replace the current `Promise.allSettled(files.map(...))` (lines 306-369) with `processInGroups(files, 3, ...)` so only 3 files are in memory at once.
 
-This means up to 10 OpenAI Vision calls run concurrently. Since each call takes 5-15 seconds, sequential processing of 10 files would take 50-150 seconds (risking edge function timeouts). With parallel processing, the batch completes in roughly the time of the slowest single file.
+3. Add a `CONCURRENCY` constant set to 3 alongside the existing `BATCH_SIZE = 10`.
 
-### Risk Note
-OpenAI rate limits for `gpt-4o` are generous (thousands of requests/min on most tiers), so 10 concurrent calls should be well within limits. If rate limiting does occur, the existing retry logic with exponential backoff on embeddings will handle it, and individual file failures won't block the rest thanks to `Promise.allSettled`.
+This gives us 10 files per batch cycle with 3 concurrent at a time -- roughly 3-4 groups per cycle, each completing in ~15 seconds, for ~45-60 seconds total (well within edge function limits).
 
