@@ -251,6 +251,14 @@ serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
+    // Kill switch: check if any indexing_jobs row has status 'stopped'
+    const { data: stopRow } = await supabase.from('indexing_jobs').select('id').eq('status', 'stopped').limit(1).single();
+    if (stopRow) {
+      console.log('Kill switch active — aborting structured data extraction');
+      return new Response(JSON.stringify({ message: 'Processing stopped by kill switch' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     // Auth: accept N8N_WEBHOOK_SECRET or valid Supabase JWT
     const authHeader = req.headers.get('Authorization');
     const expectedSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
