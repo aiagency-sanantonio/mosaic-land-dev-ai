@@ -15,7 +15,7 @@ export default function Chat() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [isIndexing, setIsIndexing] = useState(false);
+  
 
   const {
     threads,
@@ -39,29 +39,6 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleIndexFiles = async () => {
-    setIsIndexing(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('index-webhook', {
-        body: {
-          action: 'index',
-          userId: user?.id,
-        },
-      });
-
-      if (error) {
-        console.error('Index error:', error);
-        toast.error('Failed to start file indexing');
-      } else {
-        toast.success('File indexing started successfully');
-      }
-    } catch (error) {
-      console.error('Index error:', error);
-      toast.error('Failed to connect to indexing service');
-    } finally {
-      setIsIndexing(false);
-    }
-  };
 
   const handleSendMessage = (content: string) => {
     // Pass 'edge-function' as a signal to use the edge function
@@ -87,8 +64,6 @@ export default function Chat() {
             setCurrentThreadId(null);
           }}
           onDeleteThread={deleteThread}
-          onIndexFiles={handleIndexFiles}
-          isIndexing={isIndexing}
         />
 
         <main className="flex-1 flex flex-col min-h-screen">
