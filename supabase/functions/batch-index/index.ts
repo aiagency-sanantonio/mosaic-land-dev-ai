@@ -467,6 +467,14 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // Kill switch: check if any indexing_jobs row has status 'stopped'
+    const { data: stopRow } = await supabase.from('indexing_jobs').select('id').eq('status', 'stopped').limit(1).single();
+    if (stopRow) {
+      console.log('Kill switch active — aborting batch-index processing');
+      return new Response(JSON.stringify({ message: 'Processing stopped by kill switch' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     if (isCron) {
       // ===== CRON PATH: server-side background processing =====
       console.log('Cron invocation — checking for running job');
