@@ -1,37 +1,39 @@
 
+## Undo All OCR-Processed Images
 
-## Fix OCR Pipeline: Cron Auth + Rate Limiting
+### Current State
+- **2,766 images** marked as `success` in `indexing_status` (OCR-processed with Mistral)
+- **1,077 images** marked as `failed` (mostly 429 rate limit errors)
+- **4,919 document chunks** in `documents` table from OCR-processed images
+- **1,094 images** still `skipped`
 
-### Problem 1: Cron calls get 401 Unauthorized (blocking)
-The `ocr-process` cron job sends `{"cron": true}` with the anon key, but the function only accepts `N8N_WEBHOOK_SECRET` or a valid user JWT. Neither matches, so every cron tick returns 401 and no files get processed automatically.
+### What We'll Do
 
-The `batch-index` function handles this correctly with a separate `isCron` code path that skips auth. The OCR function needs the same pattern.
+**Step 1: Delete all OCR image chunks from the `documents` table**
+Remove all document chunks that came from OCR-processed image files (where `metadata->>'ocr_source' = 'mistral'` and file is an image).
 
-### Problem 2: Pixtral Vision rate limiting
-The Pixtral (image description) API returns 429 for 4 out of 5 images per batch. Need to add a delay between image descriptions to stay under the rate limit.
-
-### Fix (single file change)
-
-**File:** `supabase/functions/ocr-process/index.ts`
-
-1. **Add cron path detection**: Check `body.cron === true` and skip auth when present (matching the `batch-index` pattern). The cron job is already protected by `verify_jwt = false` in config.toml and the function uses the service role key internally.
-
-2. **Add delay between Pixtral vision calls**: Insert a 2-second delay before each `describeImage()` call to avoid 429 rate limits.
-
-3. **Keep existing auth for non-cron calls**: The N8N secret and JWT auth remain for manual/API invocations.
+**Step 2: Reset all image files in `indexing_status` back to `skipped`**
+Set all image files (success + failed) back to `status = 'skipped'` with their original `Non-vectorizable format: .ext` error message, clear `chunks_created`, `indexed_at`, and OCR metadata. This puts them back in the queue for when the OCR function is fixed and ready to re-process.
 
 ### Technical Details
 
-The auth section (around line 199) will be restructured:
-```text
-Before:
-  - Always checks N8N secret or JWT
+Two data operations (no schema changes):
 
-After:
-  - If body.cron === true -> skip auth (cron path, use service role)
-  - Otherwise -> check N8N secret or JWT (browser/API path)
+```sql
+-- 1. Delete OCR image chunks from documents
+DELETE FROM documents 
+WHERE metadata->>'ocr_source' = 'mistral' 
+  AND file_name ~* '\.(png|jpg|jpeg|gif|webp|tiff|tif|bmp)$';
+
+-- 2. Reset image indexing_status entries back to skipped
+UPDATE indexing_status 
+SET status = 'skipped',
+    chunks_created = 0,
+    indexed_at = NULL,
+    metadata = '{}',
+    error_message = 'Non-vectorizable format: .' || LOWER(REVERSE(SPLIT_PART(REVERSE(file_name), '.', 1)))
+WHERE file_name ~* '\.(png|jpg|jpeg|gif|webp|tiff|tif|bmp)$'
+  AND status IN ('success', 'failed');
 ```
 
-For rate limiting, a `await new Promise(r => setTimeout(r, 2000))` will be added before image description calls.
-
-No database changes needed. The function will be redeployed automatically.
+This resets ~3,843 image files (2,766 success + 1,077 failed) and removes ~4,919 document chunks.
