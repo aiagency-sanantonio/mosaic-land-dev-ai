@@ -1,48 +1,30 @@
 
-## Fix: Delete button still not visible on long thread titles
 
-### Problem
-The `overflow-hidden` fix on `SidebarMenuButton` wasn't sufficient. The inner `div` with `flex-1` still expands to fill all available space, pushing the delete button out of view. The screenshot confirms titles are still cut off with no delete button visible.
+## Fix: Delete button invisible on long thread titles (Root Cause Found)
 
-### Solution
-A more robust approach:
+### Root Cause
 
-1. Remove `justify-between` from `SidebarMenuButton` (it fights with `flex-1`)
-2. Add a hard `max-width` or `overflow-hidden` on the text wrapper div so it never grows beyond the available space
-3. Ensure the delete button uses `shrink-0` and `ml-auto` to always stay visible
+The previous fixes targeted the `SidebarMenuButton` and its children, but the `SidebarMenuButton` **already has `overflow-hidden` built into its base styles** in `sidebar.tsx`. The real problem is the **parent elements** don't constrain width:
+
+1. `SidebarMenuItem` (li) has only `relative` -- no width constraint, no overflow hidden
+2. `ScrollArea` allows content to expand horizontally
+3. So the li grows to fit the full text content, making the button's `w-full` equal to the (unconstrained) text width
+
+The fix is to add `overflow-hidden` to the `SidebarMenuItem` so it stays within the sidebar's bounds, which then makes everything inside it properly constrain.
 
 ### Changes
 
-**`src/components/chat/ChatSidebar.tsx`** — Restructure the thread item layout:
+**`src/components/chat/ChatSidebar.tsx`**:
 
-Replace the current `SidebarMenuButton` content (lines 116-137) with:
-
+1. Add `overflow-hidden` to the `SidebarMenuItem` (line 115):
 ```tsx
-<SidebarMenuButton
-  onClick={() => onSelectThread(thread.id)}
-  isActive={currentThreadId === thread.id}
-  className="group w-full overflow-hidden"
->
-  <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
-    <MessageSquare className="h-4 w-4 shrink-0" />
-    {!isCollapsed && (
-      <span className="truncate text-sm">{thread.title}</span>
-    )}
-  </div>
-  {!isCollapsed && (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-auto"
-      onClick={(e) => handleDeleteClick(thread.id, e)}
-    >
-      <Trash2 className="h-3 w-3" />
-    </Button>
-  )}
-</SidebarMenuButton>
+<SidebarMenuItem key={thread.id} className="overflow-hidden">
 ```
 
-Key changes:
-- Removed `justify-between` — replaced with `ml-auto` on the delete button
-- Added `overflow-hidden` to the inner text wrapper div so the `truncate` on the span actually works within the constrained parent
-- These two changes together ensure the text truncates properly and the delete button is always pinned to the right edge
+2. Clean up redundant classes on `SidebarMenuButton` (line 119) -- `overflow-hidden` and `w-full` are already in the base styles:
+```tsx
+className="group"
+```
+
+This ensures the `li` element constrains to the sidebar width, the button fills it, text truncates, and the delete button stays visible.
+
