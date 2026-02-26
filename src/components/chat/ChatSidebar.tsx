@@ -116,9 +116,9 @@ export function ChatSidebar({
                   <SidebarMenuButton
                     onClick={() => onSelectThread(thread.id)}
                     isActive={currentThreadId === thread.id}
-                    className="group w-full justify-between overflow-hidden"
+                    className="group w-full overflow-hidden"
                   >
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
                       <MessageSquare className="h-4 w-4 shrink-0" />
                       {!isCollapsed && (
                         <span className="truncate text-sm">{thread.title}</span>
@@ -128,7 +128,7 @@ export function ChatSidebar({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-auto"
                         onClick={(e) => handleDeleteClick(thread.id, e)}
                       >
                         <Trash2 className="h-3 w-3" />
