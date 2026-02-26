@@ -61,6 +61,9 @@ export default function AdminIndexing() {
   const [ocrStarting, setOcrStarting] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
   const [ocrEligible, setOcrEligible] = useState<number | null>(null);
+  const [ocrCompleted, setOcrCompleted] = useState(0);
+  const [ocrInsufficient, setOcrInsufficient] = useState(0);
+  const [ocrFailed, setOcrFailed] = useState(0);
   const [ocrRate, setOcrRate] = useState<number | null>(null);
   const [ocrElapsedSeconds, setOcrElapsedSeconds] = useState(0);
   const [ocrInitialEligible, setOcrInitialEligible] = useState<number | null>(null);
@@ -140,12 +143,16 @@ export default function AdminIndexing() {
       'Scanned/image-only PDF - no extractable text',
       ...['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'gif', 'webp'].map(e => `Non-vectorizable format: .${e}`),
     ];
-    const { count } = await supabase
-      .from('indexing_status')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'skipped')
-      .in('error_message', ocrErrors);
-    setOcrEligible(count ?? 0);
+    const [remainingRes, completedRes, insufficientRes, failedRes] = await Promise.all([
+      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped').in('error_message', ocrErrors),
+      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success').contains('metadata', { ocr_source: 'openai' }),
+      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped').eq('error_message', 'OCR returned insufficient text (< 20 chars)'),
+      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'failed').like('error_message', 'OCR failed%'),
+    ]);
+    setOcrEligible(remainingRes.count ?? 0);
+    setOcrCompleted(completedRes.count ?? 0);
+    setOcrInsufficient(insufficientRes.count ?? 0);
+    setOcrFailed(failedRes.count ?? 0);
   }, []);
 
   const fetchActivity = useCallback(async () => {
@@ -371,9 +378,9 @@ export default function AdminIndexing() {
   const totalDone = realStats.success + realStats.skipped + realStats.failed;
   const indexingPercent = realStats.totalDropbox > 0 ? (totalDone / realStats.totalDropbox) * 100 : 0;
   const extractPercent = extractionProgress.total > 0 ? (extractionProgress.done / extractionProgress.total) * 100 : 0;
-  const ocrTotal = ocrEligible ?? 0;
-  const ocrProcessedCount = ocrInitialEligible && ocrEligible !== null ? ocrInitialEligible - ocrEligible : 0;
-  const ocrPercent = ocrInitialEligible && ocrInitialEligible > 0 ? (ocrProcessedCount / ocrInitialEligible) * 100 : 0;
+  const ocrRemaining = ocrEligible ?? 0;
+  const ocrTotalAll = ocrCompleted + ocrRemaining + ocrInsufficient + ocrFailed;
+  const ocrPercent = ocrTotalAll > 0 ? ((ocrCompleted + ocrInsufficient + ocrFailed) / ocrTotalAll) * 100 : 0;
   const isRunning = job?.status === 'running';
 
   if (loading || loadingJob) return null;
@@ -383,7 +390,7 @@ export default function AdminIndexing() {
   const getStageStatus = (stage: 'index' | 'ocr' | 'extract') => {
     if (killSwitchActive) return 'paused';
     if (stage === 'index') return isRunning ? 'running' : indexingPercent >= 99.5 ? 'complete' : 'idle';
-    if (stage === 'ocr') return ocrRunning ? 'running' : 'idle';
+    if (stage === 'ocr') return ocrRunning ? 'running' : ocrRemaining === 0 && ocrCompleted > 0 ? 'complete' : 'idle';
     if (stage === 'extract') return extractionRunning ? 'running' : extractPercent >= 99.5 ? 'complete' : 'idle';
     return 'idle';
   };
@@ -473,12 +480,12 @@ export default function AdminIndexing() {
               <StatusBadge status={getStageStatus('ocr')} />
             </div>
             <div className="text-2xl font-bold text-foreground mb-1">
-              {ocrProcessedCount.toLocaleString()} <span className="text-sm font-normal text-muted-foreground">/ {ocrTotal.toLocaleString()}</span>
+              {ocrCompleted.toLocaleString()} <span className="text-sm font-normal text-muted-foreground">/ {ocrTotalAll.toLocaleString()}</span>
             </div>
-            <Progress value={ocrRunning ? Math.max(ocrPercent, ocrProcessedCount > 0 ? 1 : 0) : 0} className="h-2 mb-2" />
+            <Progress value={Math.max(ocrPercent, ocrCompleted > 0 ? 1 : 0)} className="h-2 mb-2" />
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>{ocrRunning ? `${formatPercent(ocrPercent)}%` : '—'}</span>
-              <span>{ocrTotal.toLocaleString()} eligible</span>
+              <span>{ocrPercent > 0 ? `${formatPercent(ocrPercent)}%` : '—'}</span>
+              <span>{ocrRemaining.toLocaleString()} remaining</span>
             </div>
           </CardContent>
         </Card>
@@ -574,8 +581,26 @@ export default function AdminIndexing() {
             <CollapsibleContent>
               <CardContent className="pt-0 pb-4">
                 <p className="text-xs text-muted-foreground mb-3">
-                  Extract text from scanned PDFs & images using Mistral OCR
+                  Extract text from scanned PDFs & images using OpenAI Vision
                 </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+                  <div className="text-center">
+                    <div className="text-xl font-bold text-primary">{ocrCompleted.toLocaleString()}</div>
+                    <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><CheckCircle2 className="h-3 w-3" /> Success</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-xl font-bold text-muted-foreground">{ocrRemaining.toLocaleString()}</div>
+                    <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><SkipForward className="h-3 w-3" /> Remaining</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-xl font-bold text-muted-foreground">{ocrInsufficient.toLocaleString()}</div>
+                    <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><AlertTriangle className="h-3 w-3" /> Insufficient</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-xl font-bold text-destructive">{ocrFailed.toLocaleString()}</div>
+                    <div className="text-xs text-muted-foreground flex items-center justify-center gap-1"><XCircle className="h-3 w-3" /> Failed</div>
+                  </div>
+                </div>
                 {ocrRunning && (
                   <div className="mb-3 p-3 bg-primary/10 border border-primary/30 rounded-lg flex items-center gap-4 flex-wrap text-sm">
                     <span className="flex items-center gap-2 font-medium text-primary">
