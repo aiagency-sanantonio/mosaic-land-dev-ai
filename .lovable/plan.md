@@ -1,73 +1,58 @@
 
 
-## Fix N8N Agent Prompt: Structured + Vector Search Routing
+## Fix: N8N Search Tool Description to Enforce Complete Schema
 
 ### Problem
-The prompt has three gaps that cause the agent to misroute queries or return empty results:
-1. Filter discovery (Step 0) only covers vector search, but structured tools use different matching
-2. "ALWAYS Search First" (Step 1) biases the agent toward vector search even for data questions
-3. No fallback logic when one tool type returns empty results
+The agent frequently omits filter fields from the search request body, which causes JSON serialization issues in N8N (empty interpolation slots instead of `null`). The current tool description doesn't make it clear that **every parameter must be included in the request**, even when not being used.
 
-### Changes (3 small edits to existing sections)
+### Solution
+Rewrite the tool description to explicitly list all required fields with their defaults, and instruct the agent to always send the complete schema.
 
-#### 1. Update Step 0 — clarify scope of discovered filters
+### Updated Tool Description
 
-Current ending:
+Replace the current description with:
+
 ```
-NEVER guess or fabricate filter values. Always match the user's request to the 
-closest value from this list. If no match exists, omit that filter.
-```
+Search the indexed document database using semantic similarity, metadata filters, 
+or both. At least one of "query" or a filter must be provided.
 
-Replace with:
-```
-NEVER guess or fabricate filter values. Always match the user's request to the 
-closest value from this list. If no match exists, omit that filter.
+IMPORTANT: You MUST include ALL parameters in every request. Set unused parameters 
+to null — do NOT omit them.
 
-NOTE: These discovered values apply to the **Vector Search** tool's filter_project, 
-filter_doc_type, and filter_file_type parameters. The Structured Query Tools 
-(Project Metrics, Permits, DD Status, Compare Projects) use fuzzy project_name 
-matching, so partial names like "Mosaic" or "Hillside" work there without exact 
-folder names.
-```
+Before using any filter, call "List Available Filters" first to get exact valid values.
 
-#### 2. Rewrite Step 1 — add tool selection logic before "search first"
+Parameters (ALL required in every request):
+- query (string or null): Natural language search text. Set to null for browse/filter-only mode.
+- match_count (number): How many results to return. Use 20 for broad questions, 10 for specific lookups.
+- match_threshold (number): Similarity threshold. Use 0.15 for broad, 0.2 for specific.
+- filter_project (string or null): Exact project folder name from "List Available Filters". Set to null if not filtering by project.
+- filter_doc_type (string or null): Document type from "List Available Filters" (e.g., "permit", "invoice", "contract"). Set to null if not filtering by type.
+- filter_file_type (string or null): File extension from "List Available Filters" (e.g., "pdf", "xlsx"). Set to null if not filtering by extension.
+- filter_date_from (string or null): Start date in YYYY-MM-DD format. Set to null if no date filter.
+- filter_date_to (string or null): End date in YYYY-MM-DD format. Set to null if no date filter.
 
-Current:
-```
-### 1. ALWAYS Search First
+Example request body:
+{
+  "query": "drainage easement",
+  "match_count": 15,
+  "match_threshold": 0.15,
+  "filter_project": "Landon Ridge",
+  "filter_doc_type": null,
+  "filter_file_type": "pdf",
+  "filter_date_from": null,
+  "filter_date_to": null
+}
 
-For any question about projects, costs, permits, dates, or specific documents, 
-use the search tool. Never guess or make up information.
-```
-
-Replace with:
-```
-### 1. CHOOSE THE RIGHT TOOL, THEN SEARCH
-
-Never guess or make up information. Always query your tools first.
-
-**Use Structured Query Tools** for questions about:
-- Costs, pricing, lot counts, acreage → Query Project Metrics
-- Permit status, expiration dates, bonds → Query Permits
-- Due diligence checklist progress → Query DD Status
-- Side-by-side project comparisons → Compare Projects
-
-**Use Vector Search** for questions about:
-- Document content ("What does the contract say about...")
-- Finding specific files ("Find the drainage report for...")
-- Discovering information you don't know exists
-- General questions that don't fit a structured category
-
-If one tool returns no results, try the other as a fallback.
+If only filters are provided with no query (query: null), results are returned in 
+reverse chronological order (browse mode).
 ```
 
-#### 3. No other changes
+### What Changed
+- Listed every parameter explicitly with type and default behavior
+- Added "ALL required in every request" and "do NOT omit them" instructions
+- Included a concrete example JSON body showing null usage
+- Kept the "List Available Filters" requirement and browse mode explanation
 
-Steps 2-6, Response Format, Examples, Structured Data Tools section, and Decision Logic all stay exactly as-is. The decision logic at the bottom reinforces the routing added in Step 1.
+### Where to Apply
+Paste this into the N8N AI Agent's tool description field for the Search tool (the HTTP Request node that calls the `search-documents` edge function).
 
-### Summary
-
-Three small text edits:
-- Step 0: Add a note that discovered filters are for vector search; structured tools use fuzzy matching
-- Step 1: Replace "ALWAYS Search First" with tool selection guidance + fallback instruction
-- Everything else unchanged
