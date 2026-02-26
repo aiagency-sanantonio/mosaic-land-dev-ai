@@ -1,68 +1,73 @@
 
 
-## Fix N8N Agent Prompt: Add Discovery-First Search Pattern
+## Fix N8N Agent Prompt: Structured + Vector Search Routing
 
 ### Problem
-The agent guesses project names and filter values instead of discovering them first. The `filter_project` parameter requires **exact folder names** (e.g., "Landon Ridge"), but the agent often passes wrong or partial names, returning empty or irrelevant results.
+The prompt has three gaps that cause the agent to misroute queries or return empty results:
+1. Filter discovery (Step 0) only covers vector search, but structured tools use different matching
+2. "ALWAYS Search First" (Step 1) biases the agent toward vector search even for data questions
+3. No fallback logic when one tool type returns empty results
 
-### Solution
-Add a small section to the prompt instructing the agent to **always call "List Available Filters" before searching**, and update the Vector Search tool instructions to reference those discovered values. Minimal changes to the existing prompt.
+### Changes (3 small edits to existing sections)
 
-### Changes to the Prompt
+#### 1. Update Step 0 — clarify scope of discovered filters
 
-**1. Add a new section after "## How to Answer Questions" / before "### 1. ALWAYS Search First":**
-
+Current ending:
 ```
-### 0. DISCOVER FILTERS FIRST
-Before your first search in any conversation, call the "List Available Filters" tool. This returns:
-- **projects**: Exact folder names (e.g., "Landon Ridge", "Mosaic")
-- **doc_types**: Available document categories (e.g., "permit", "invoice", "contract")
-- **file_types**: File extensions (e.g., "pdf", "xlsx")
-
-You MUST use these exact values when setting filter_project, filter_doc_type, or filter_file_type in the search tool. Do NOT guess project names -- always match the user's request to the closest value from the discovered list.
-```
-
-**2. Update "### 2. Use Appropriate Search Parameters" to add filter guidance:**
-
-Add after the existing bullet points:
-
-```
-- When filtering by project, use the EXACT folder name from the "List Available Filters" results (e.g., use "Landon Ridge" not "landon ridge" or "Landon")
-- When the user asks about a document type (permits, contracts, etc.), set filter_doc_type to the matching value from the filter list
-- You can combine a text query with filters for more precise results
-```
-
-**3. No other changes needed.** The rest of the prompt (structured tools, response format, examples, etc.) stays exactly as-is.
-
-### Updated Prompt (only the changed sections shown)
-
-Section to insert before "### 1. ALWAYS Search First":
-
-```text
-### 0. DISCOVER FILTERS FIRST
-Before your first search in any conversation, call the "List Available Filters" 
-tool. This returns the exact values you must use for search filters:
-- **projects**: Exact folder names (e.g., "Landon Ridge", "Mosaic")
-- **doc_types**: Document categories (e.g., "permit", "invoice", "contract")
-- **file_types**: File extensions (e.g., "pdf", "xlsx")
-
 NEVER guess or fabricate filter values. Always match the user's request to the 
 closest value from this list. If no match exists, omit that filter.
 ```
 
-Updated "### 2. Use Appropriate Search Parameters":
+Replace with:
+```
+NEVER guess or fabricate filter values. Always match the user's request to the 
+closest value from this list. If no match exists, omit that filter.
 
-```text
-### 2. Use Appropriate Search Parameters
-- For broad questions (aggregations, comparisons): use match_count: 20, match_threshold: 0.15
-- For specific lookups: use match_count: 10, match_threshold: 0.2
-- When the user mentions a specific project, set filter_project to the EXACT 
-  folder name from the "List Available Filters" results
-- When the user asks about a document type, set filter_doc_type to the matching 
-  value from the filter list
-- You can combine a text query with filters for more precise results
+NOTE: These discovered values apply to the **Vector Search** tool's filter_project, 
+filter_doc_type, and filter_file_type parameters. The Structured Query Tools 
+(Project Metrics, Permits, DD Status, Compare Projects) use fuzzy project_name 
+matching, so partial names like "Mosaic" or "Hillside" work there without exact 
+folder names.
 ```
 
-### Summary
-Two small insertions to the existing prompt. Everything else stays the same. This ensures the agent always has the correct filter vocabulary before searching.
+#### 2. Rewrite Step 1 — add tool selection logic before "search first"
 
+Current:
+```
+### 1. ALWAYS Search First
+
+For any question about projects, costs, permits, dates, or specific documents, 
+use the search tool. Never guess or make up information.
+```
+
+Replace with:
+```
+### 1. CHOOSE THE RIGHT TOOL, THEN SEARCH
+
+Never guess or make up information. Always query your tools first.
+
+**Use Structured Query Tools** for questions about:
+- Costs, pricing, lot counts, acreage → Query Project Metrics
+- Permit status, expiration dates, bonds → Query Permits
+- Due diligence checklist progress → Query DD Status
+- Side-by-side project comparisons → Compare Projects
+
+**Use Vector Search** for questions about:
+- Document content ("What does the contract say about...")
+- Finding specific files ("Find the drainage report for...")
+- Discovering information you don't know exists
+- General questions that don't fit a structured category
+
+If one tool returns no results, try the other as a fallback.
+```
+
+#### 3. No other changes
+
+Steps 2-6, Response Format, Examples, Structured Data Tools section, and Decision Logic all stay exactly as-is. The decision logic at the bottom reinforces the routing added in Step 1.
+
+### Summary
+
+Three small text edits:
+- Step 0: Add a note that discovered filters are for vector search; structured tools use fuzzy matching
+- Step 1: Replace "ALWAYS Search First" with tool selection guidance + fallback instruction
+- Everything else unchanged
