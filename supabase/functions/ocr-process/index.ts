@@ -7,7 +7,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const BATCH_SIZE = 5;
+const BATCH_SIZE = 10;
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
@@ -303,9 +303,9 @@ serve(async (req) => {
     let skipped = 0;
     const errors: Array<{ file: string; error: string }> = [];
 
-    for (const file of files) {
-      try {
-        await withTimeout((async () => {
+    const results = await Promise.allSettled(
+      files.map(file =>
+        withTimeout((async () => {
           const ext = (file.file_name || file.file_path).split('.').pop()?.toLowerCase() || '';
           const isScannedPdf = file.error_message === OCR_PDF_ERROR;
 
@@ -313,7 +313,6 @@ serve(async (req) => {
           const binary = await downloadBinaryFromDropbox(file.file_path, dropboxToken);
           const base64 = arrayBufferToBase64(binary);
 
-          // Single OpenAI call for both description + OCR
           let analysisText: string;
           if (isScannedPdf) {
             console.log(`Analyzing PDF with OpenAI Vision: ${file.file_name}`);
@@ -330,8 +329,7 @@ serve(async (req) => {
               status: 'skipped',
               error_message: 'OCR returned insufficient text (< 20 chars)',
             }).eq('file_path', file.file_path);
-            skipped++;
-            return;
+            return 'skipped' as const;
           }
 
           let text = analysisText;
@@ -364,12 +362,21 @@ serve(async (req) => {
             indexed_at: new Date().toISOString(),
           }).eq('file_path', file.file_path);
 
-          processed++;
           console.log(`✓ ${file.file_name}: ${documents.length} chunks`);
-        })(), PER_FILE_TIMEOUT_MS, file.file_name || file.file_path);
-      } catch (err) {
+          return 'processed' as const;
+        })(), PER_FILE_TIMEOUT_MS, file.file_name || file.file_path)
+      )
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      const file = files[i];
+      if (result.status === 'fulfilled') {
+        if (result.value === 'skipped') skipped++;
+        else processed++;
+      } else {
         failed++;
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
         errors.push({ file: file.file_path, error: msg });
         console.error(`✗ ${file.file_path}: ${msg}`);
         await supabase.from('indexing_status').update({
