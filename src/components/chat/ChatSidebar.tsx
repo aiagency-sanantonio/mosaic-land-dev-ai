@@ -112,11 +112,11 @@ export function ChatSidebar({
           <ScrollArea className="h-full">
             <SidebarMenu>
               {threads.map((thread) => (
-                <SidebarMenuItem key={thread.id}>
+                <SidebarMenuItem key={thread.id} className="overflow-hidden">
                   <SidebarMenuButton
                     onClick={() => onSelectThread(thread.id)}
                     isActive={currentThreadId === thread.id}
-                    className="group w-full overflow-hidden"
+                    className="group"
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
                       <MessageSquare className="h-4 w-4 shrink-0" />
