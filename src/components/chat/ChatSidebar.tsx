@@ -116,7 +116,7 @@ export function ChatSidebar({
                   <SidebarMenuButton
                     onClick={() => onSelectThread(thread.id)}
                     isActive={currentThreadId === thread.id}
-                    className="group w-full justify-between"
+                    className="group w-full justify-between overflow-hidden"
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <MessageSquare className="h-4 w-4 shrink-0" />
