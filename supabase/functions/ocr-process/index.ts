@@ -8,7 +8,7 @@ const corsHeaders = {
 };
 
 const BATCH_SIZE = 10;
-const CONCURRENCY = 3;
+const CONCURRENCY = 5;
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
