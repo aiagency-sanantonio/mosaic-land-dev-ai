@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, MessageSquare, Trash2, LogOut, Mountain, FolderPlus, ChevronRight, FolderOpen, Pencil, ArrowRight, MoreHorizontal } from 'lucide-react';
+import { Plus, MessageSquare, Trash2, LogOut, Mountain, FolderPlus, ChevronRight, FolderOpen, Pencil, MoreHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -24,11 +24,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import {
   AlertDialog,
@@ -63,7 +59,6 @@ interface ChatSidebarProps {
   currentThreadId: string | null;
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
-  onDeleteThread: (id: string) => void;
   onCreateFolder: (name: string) => void;
   onDeleteFolder: (id: string) => void;
   onRenameFolder: (id: string, name: string) => void;
@@ -72,7 +67,7 @@ interface ChatSidebarProps {
 
 export function ChatSidebar({
   threads, folders, currentThreadId,
-  onSelectThread, onNewThread, onDeleteThread,
+  onSelectThread, onNewThread,
   onCreateFolder, onDeleteFolder, onRenameFolder, onMoveThread,
 }: ChatSidebarProps) {
   const { signOut, user } = useAuth();
@@ -80,9 +75,8 @@ export function ChatSidebar({
   const { state } = useSidebar();
   const isCollapsed = state === 'collapsed';
 
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [threadToDelete, setThreadToDelete] = useState<string | null>(null);
   const [folderToDelete, setFolderToDelete] = useState<string | null>(null);
+  const [deleteFolderDialogOpen, setDeleteFolderDialogOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
@@ -95,23 +89,14 @@ export function ChatSidebar({
     toast.success('Signed out successfully');
   };
 
-  const handleDeleteThread = (threadId: string) => {
-    setThreadToDelete(threadId);
-    setFolderToDelete(null);
-    setDeleteDialogOpen(true);
-  };
-
   const handleDeleteFolder = (folderId: string) => {
     setFolderToDelete(folderId);
-    setThreadToDelete(null);
-    setDeleteDialogOpen(true);
+    setDeleteFolderDialogOpen(true);
   };
 
-  const confirmDelete = () => {
-    if (threadToDelete) onDeleteThread(threadToDelete);
+  const confirmDeleteFolder = () => {
     if (folderToDelete) onDeleteFolder(folderToDelete);
-    setDeleteDialogOpen(false);
-    setThreadToDelete(null);
+    setDeleteFolderDialogOpen(false);
     setFolderToDelete(null);
   };
 
@@ -161,40 +146,6 @@ export function ChatSidebar({
         <MessageSquare className="h-4 w-4 shrink-0" />
         {!isCollapsed && <span className="truncate min-w-0">{thread.title}</span>}
       </SidebarMenuButton>
-      {!isCollapsed && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground" onClick={(e) => e.stopPropagation()}>
-              <MoreHorizontal className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent side="right" align="start" className="w-48">
-            {folders.length > 0 && (
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <ArrowRight className="h-4 w-4 mr-2" />
-                  Move to folder
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuItem onClick={() => onMoveThread(thread.id, null)}>
-                    No folder
-                  </DropdownMenuItem>
-                  {folders.map((f) => (
-                    <DropdownMenuItem key={f.id} onClick={() => onMoveThread(thread.id, f.id)}>
-                      {f.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            )}
-            {folders.length > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleDeleteThread(thread.id)}>
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
     </SidebarMenuItem>
   );
 
@@ -277,8 +228,8 @@ export function ChatSidebar({
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label={`Open folder actions for ${folder.name}`}
-                        className="h-7 w-7 shrink-0 rounded-md text-sidebar-foreground/80 hover:text-sidebar-foreground hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-foreground"
+                        aria-label={`Folder actions for ${folder.name}`}
+                        className="h-7 w-7 shrink-0 rounded-md text-sidebar-foreground/80 hover:text-sidebar-foreground hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <MoreHorizontal className="h-4 w-4" />
@@ -342,19 +293,17 @@ export function ChatSidebar({
         </SidebarFooter>
       </Sidebar>
 
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <AlertDialog open={deleteFolderDialogOpen} onOpenChange={setDeleteFolderDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{folderToDelete ? 'Delete folder?' : 'Delete chat?'}</AlertDialogTitle>
+            <AlertDialogTitle>Delete folder?</AlertDialogTitle>
             <AlertDialogDescription>
-              {folderToDelete
-                ? 'This will delete the folder. Chats inside will be moved to the ungrouped section.'
-                : 'This will permanently delete this chat and all its messages. This action cannot be undone.'}
+              This will delete the folder. Chats inside will be moved to the ungrouped section.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+            <AlertDialogAction onClick={confirmDeleteFolder} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>
