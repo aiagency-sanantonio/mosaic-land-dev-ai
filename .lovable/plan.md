@@ -1,78 +1,32 @@
 
 
-## Chat Sidebar UI Fixes and Folder Organization
+## Chat Sidebar UI Fixes
 
-### Problem 1: Delete button not visible
-The delete button is placed **inside** `SidebarMenuButton`, which has `overflow-hidden` in its base styles. This clips the button. The sidebar component already provides a `SidebarMenuAction` component designed for exactly this use case -- it positions absolutely outside the button and supports `showOnHover`.
+### 1. Fix folder name input visibility (white-on-white text)
+The sidebar has dark background with light foreground text (`--sidebar-foreground`). The `Input` component uses `bg-background` (light) but inherits the sidebar's light text color. This makes typed text invisible.
 
-### Problem 2: No folder organization
-Chats are displayed in a flat list with no way to group them.
+**Fix**: Add explicit `text-foreground bg-background` classes to the new-folder and rename-folder Input components so the text is dark on a light background.
 
----
+### 2. Ensure chat titles truncate with ellipsis
+The `truncate` class is already on thread titles, but `SidebarMenuButton` needs `overflow-hidden` and `min-w-0` to allow truncation to work within the flex layout. Will verify the menu button styles allow truncation and add `min-w-0` to the span wrapper if needed.
 
-### Changes
+### 3. Add drag-and-drop for moving chats into folders
+Implement native HTML5 drag-and-drop (no extra dependencies needed):
 
-#### 1. Database: Add `chat_folders` table and update `chat_threads`
+- Make each thread item **draggable** with `draggable="true"`, storing the thread ID in `dataTransfer`
+- Make each folder header a **drop target** with `onDragOver` (prevent default to allow drop) and `onDrop` (call `onMoveThread`)
+- Add an "Ungrouped" drop zone so users can drag threads out of folders
+- Visual feedback: highlight the folder on `onDragEnter`/`onDragLeave` with a border/background change
 
-Create a new `chat_folders` table:
-- `id` (uuid, primary key)
-- `user_id` (uuid, not null)
-- `name` (text, not null)
-- `created_at`, `updated_at` (timestamps)
+### Technical changes
 
-Add a nullable `folder_id` column to `chat_threads` referencing `chat_folders.id` (with `ON DELETE SET NULL` so deleting a folder ungroups chats rather than deleting them).
+**File: `src/components/chat/ChatSidebar.tsx`**
 
-RLS policies: users can only CRUD their own folders.
+- Add `draggingThreadId` state for visual feedback
+- In `renderThread`: add `draggable="true"`, `onDragStart` (set thread ID), `onDragEnd` (clear state)
+- On folder `div`: add `onDragOver`, `onDragEnter`, `onDragLeave`, `onDrop` handlers; apply highlight class when a thread is dragged over
+- On ungrouped section: same drop handlers with `folderId = null`
+- Fix Input classes: add `text-foreground bg-background` to new folder input and rename input
+- Ensure thread title span has `truncate` and parent has `min-w-0 overflow-hidden`
 
-#### 2. Fix delete button in `ChatSidebar.tsx`
-
-Move the delete `Button` out of `SidebarMenuButton` and use `SidebarMenuAction` with `showOnHover` instead. This places it absolutely positioned to the right of each menu item, visible on hover, and not clipped by overflow.
-
-Before (broken):
-```
-<SidebarMenuItem>
-  <SidebarMenuButton>
-    <span>title</span>
-    <Button>delete</Button>  <!-- clipped by overflow-hidden -->
-  </SidebarMenuButton>
-</SidebarMenuItem>
-```
-
-After (fixed):
-```
-<SidebarMenuItem>
-  <SidebarMenuButton>
-    <MessageSquare />
-    <span>title</span>
-  </SidebarMenuButton>
-  <SidebarMenuAction showOnHover onClick={delete}>
-    <Trash2 />
-  </SidebarMenuAction>
-</SidebarMenuItem>
-```
-
-#### 3. Add folder management UI to `ChatSidebar.tsx`
-
-- Add a "New Folder" button next to "New Chat"
-- Display folders as collapsible `SidebarGroup` sections using the existing `Collapsible` component
-- Each folder header shows the folder name with a delete/rename option
-- Threads inside a folder are nested under their folder group
-- Ungrouped threads appear in a default "Chats" section
-- Drag-and-drop is not needed initially; instead, each thread's context (right-click or a small "move" action) lets users pick a folder via a dropdown/popover
-
-#### 4. Update `useChatThreads.tsx` hook
-
-- Add folder CRUD operations: `createFolder`, `deleteFolder`, `renameFolder`, `moveThreadToFolder`
-- Fetch threads with their `folder_id` included
-- Fetch folders list on load
-- Export folders and folder operations
-
-#### 5. Files changed
-
-| File | Change |
-|------|--------|
-| **New migration** | Create `chat_folders` table, add `folder_id` to `chat_threads` |
-| `src/hooks/useChatThreads.tsx` | Add folder state, CRUD, and `moveThreadToFolder` |
-| `src/components/chat/ChatSidebar.tsx` | Fix delete button using `SidebarMenuAction`; add folder groups with collapsible sections; add folder create/rename/delete UI; add "Move to folder" dropdown on threads |
-| `src/pages/Chat.tsx` | Pass new folder props down to `ChatSidebar` |
-
+No database or hook changes needed -- the existing `onMoveThread` prop handles the actual move.
