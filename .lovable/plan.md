@@ -1,32 +1,45 @@
 
 
-## Chat Sidebar UI Fixes
+## Fix Delete Buttons for Chats and Folders
 
-### 1. Fix folder name input visibility (white-on-white text)
-The sidebar has dark background with light foreground text (`--sidebar-foreground`). The `Input` component uses `bg-background` (light) but inherits the sidebar's light text color. This makes typed text invisible.
+### Root Cause
+The `SidebarMenuAction` with `showOnHover` uses `md:opacity-0` and relies on `group-hover/menu-item:opacity-100` to reveal buttons. In the narrow sidebar (16rem), this hover-based approach is not working reliably -- the buttons exist in the DOM but never become visible. The same issue affects folder action buttons which use `opacity-0 group-hover:opacity-100`.
 
-**Fix**: Add explicit `text-foreground bg-background` classes to the new-folder and rename-folder Input components so the text is dark on a light background.
+### Solution: Replace hover-based actions with a compact dropdown menu
 
-### 2. Ensure chat titles truncate with ellipsis
-The `truncate` class is already on thread titles, but `SidebarMenuButton` needs `overflow-hidden` and `min-w-0` to allow truncation to work within the flex layout. Will verify the menu button styles allow truncation and add `min-w-0` to the span wrapper if needed.
+Instead of relying on CSS hover states for opacity transitions, use a **DropdownMenu** (three-dot "more" menu) on each chat item and folder. This is always visible and provides a reliable way to access delete, move, and other actions.
 
-### 3. Add drag-and-drop for moving chats into folders
-Implement native HTML5 drag-and-drop (no extra dependencies needed):
+### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
 
-- Make each thread item **draggable** with `draggable="true"`, storing the thread ID in `dataTransfer`
-- Make each folder header a **drop target** with `onDragOver` (prevent default to allow drop) and `onDrop` (call `onMoveThread`)
-- Add an "Ungrouped" drop zone so users can drag threads out of folders
-- Visual feedback: highlight the folder on `onDragEnter`/`onDragLeave` with a border/background change
+**For each chat thread:**
+- Remove the two `SidebarMenuAction` buttons (delete + move popover)
+- Add a small `DropdownMenu` triggered by a `MoreHorizontal` icon button, positioned to the right of the chat title
+- The dropdown contains: "Move to folder" (submenu with folder list) and "Delete" (red, triggers confirmation dialog)
+- The trigger button is always visible (no hover-dependent opacity)
 
-### Technical changes
+**For each folder:**
+- The existing rename/delete buttons use `opacity-0 group-hover:opacity-100` which has the same issue
+- Replace with an always-visible `MoreHorizontal` dropdown containing "Rename" and "Delete" options
 
-**File: `src/components/chat/ChatSidebar.tsx`**
+**Layout approach:**
+- Each thread row: `flex` container with icon + truncated title taking `flex-1 min-w-0`, and a small fixed-width dropdown trigger button on the right
+- This avoids absolute positioning and opacity issues entirely
+- The dropdown trigger is a small 6x6 button with a subtle icon that doesn't take much space
 
-- Add `draggingThreadId` state for visual feedback
-- In `renderThread`: add `draggable="true"`, `onDragStart` (set thread ID), `onDragEnd` (clear state)
-- On folder `div`: add `onDragOver`, `onDragEnter`, `onDragLeave`, `onDrop` handlers; apply highlight class when a thread is dragged over
-- On ungrouped section: same drop handlers with `folderId = null`
-- Fix Input classes: add `text-foreground bg-background` to new folder input and rename input
-- Ensure thread title span has `truncate` and parent has `min-w-0 overflow-hidden`
+### Technical details
 
-No database or hook changes needed -- the existing `onMoveThread` prop handles the actual move.
+```text
+Before (broken):
+  SidebarMenuItem
+    SidebarMenuButton (full width, overflow-hidden)
+    SidebarMenuAction showOnHover (absolute, opacity-0 -> never shows)
+
+After (working):
+  SidebarMenuItem
+    SidebarMenuButton (flex-1, min-w-0, truncate)
+    DropdownMenu trigger (small fixed button, always visible)
+      DropdownMenuItem: Move to folder -> submenu
+      DropdownMenuItem: Delete (red)
+```
+
+No database changes needed. No hook changes needed. Only `ChatSidebar.tsx` is modified.
