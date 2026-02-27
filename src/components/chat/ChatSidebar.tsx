@@ -152,11 +152,11 @@ export function ChatSidebar({
   };
 
   const renderThread = (thread: ChatThread) => (
-    <SidebarMenuItem key={thread.id} className="flex items-center" draggable onDragStart={(e) => handleDragStart(e, thread.id)}>
+    <SidebarMenuItem key={thread.id} draggable onDragStart={(e) => handleDragStart(e, thread.id)}>
       <SidebarMenuButton
         onClick={() => onSelectThread(thread.id)}
         isActive={currentThreadId === thread.id}
-        className="min-w-0 flex-1 max-w-full"
+        className="min-w-0 flex-1"
       >
         <MessageSquare className="h-4 w-4 shrink-0" />
         {!isCollapsed && <span className="truncate min-w-0">{thread.title}</span>}
@@ -164,8 +164,8 @@ export function ChatSidebar({
       {!isCollapsed && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 opacity-60 hover:opacity-100 text-sidebar-foreground" onClick={(e) => e.stopPropagation()}>
-              <MoreHorizontal className="h-3.5 w-3.5" />
+            <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground" onClick={(e) => e.stopPropagation()}>
+              <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent side="right" align="start" className="w-48">
