@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, MessageSquare, Trash2, LogOut, Mountain, FolderPlus, ChevronRight, FolderOpen, Pencil, ArrowRight } from 'lucide-react';
+import { Plus, MessageSquare, Trash2, LogOut, Mountain, FolderPlus, ChevronRight, FolderOpen, Pencil, ArrowRight, MoreHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -11,7 +11,6 @@ import {
   SidebarFooter,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
@@ -22,10 +21,15 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -91,8 +95,7 @@ export function ChatSidebar({
     toast.success('Signed out successfully');
   };
 
-  const handleDeleteThread = (threadId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleDeleteThread = (threadId: string) => {
     setThreadToDelete(threadId);
     setFolderToDelete(null);
     setDeleteDialogOpen(true);
@@ -149,54 +152,48 @@ export function ChatSidebar({
   };
 
   const renderThread = (thread: ChatThread) => (
-    <SidebarMenuItem
-      key={thread.id}
-      draggable
-      onDragStart={(e) => handleDragStart(e, thread.id)}
-    >
+    <SidebarMenuItem key={thread.id} draggable onDragStart={(e) => handleDragStart(e, thread.id)}>
       <SidebarMenuButton
         onClick={() => onSelectThread(thread.id)}
         isActive={currentThreadId === thread.id}
-        className="min-w-0"
+        className="min-w-0 flex-1"
       >
         <MessageSquare className="h-4 w-4 shrink-0" />
         {!isCollapsed && <span className="truncate min-w-0">{thread.title}</span>}
       </SidebarMenuButton>
       {!isCollapsed && (
-        <>
-          <SidebarMenuAction showOnHover onClick={(e) => handleDeleteThread(thread.id, e)}>
-            <Trash2 className="h-4 w-4" />
-          </SidebarMenuAction>
-          <Popover>
-            <PopoverTrigger asChild>
-              <SidebarMenuAction
-                showOnHover
-                className="right-8"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <ArrowRight className="h-4 w-4" />
-              </SidebarMenuAction>
-            </PopoverTrigger>
-            <PopoverContent className="w-48 p-2" side="right" align="start">
-              <p className="text-xs font-medium text-muted-foreground px-2 py-1">Move to folder</p>
-              <button
-                className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent"
-                onClick={() => onMoveThread(thread.id, null)}
-              >
-                No folder
-              </button>
-              {folders.map((f) => (
-                <button
-                  key={f.id}
-                  className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent"
-                  onClick={() => onMoveThread(thread.id, f.id)}
-                >
-                  {f.name}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-        </>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground" onClick={(e) => e.stopPropagation()}>
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="right" align="start" className="w-48">
+            {folders.length > 0 && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <ArrowRight className="h-4 w-4 mr-2" />
+                  Move to folder
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuItem onClick={() => onMoveThread(thread.id, null)}>
+                    No folder
+                  </DropdownMenuItem>
+                  {folders.map((f) => (
+                    <DropdownMenuItem key={f.id} onClick={() => onMoveThread(thread.id, f.id)}>
+                      {f.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+            {folders.length > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleDeleteThread(thread.id)}>
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
     </SidebarMenuItem>
   );
@@ -253,15 +250,15 @@ export function ChatSidebar({
             {folders.map((folder) => (
               <Collapsible key={folder.id} defaultOpen className="mb-1">
                 <div
-                  className={`flex items-center group rounded transition-colors ${dragOverTarget === folder.id ? 'bg-sidebar-accent ring-1 ring-sidebar-primary' : ''}`}
+                  className={`flex items-center rounded transition-colors ${dragOverTarget === folder.id ? 'bg-sidebar-accent ring-1 ring-sidebar-primary' : ''}`}
                   onDragOver={handleDragOver}
                   onDragEnter={() => setDragOverTarget(folder.id)}
                   onDragLeave={() => setDragOverTarget(null)}
                   onDrop={(e) => handleDrop(e, folder.id)}
                 >
-                  <CollapsibleTrigger className="flex items-center gap-1 flex-1 px-2 py-1.5 text-xs font-medium text-sidebar-foreground/70 hover:text-sidebar-foreground rounded">
-                    <ChevronRight className="h-3 w-3 transition-transform duration-200 group-data-[state=open]:rotate-90" />
-                    <FolderOpen className="h-3.5 w-3.5" />
+                  <CollapsibleTrigger className="flex items-center gap-1 flex-1 px-2 py-1.5 text-xs font-medium text-sidebar-foreground/70 hover:text-sidebar-foreground rounded min-w-0">
+                    <ChevronRight className="h-3 w-3 shrink-0 transition-transform duration-200 group-data-[state=open]:rotate-90" />
+                    <FolderOpen className="h-3.5 w-3.5 shrink-0" />
                     {renamingFolder === folder.id ? (
                       <Input
                         value={renameValue}
@@ -275,14 +272,23 @@ export function ChatSidebar({
                       <span className="truncate">{folder.name}</span>
                     )}
                   </CollapsibleTrigger>
-                  <div className="opacity-0 group-hover:opacity-100 flex gap-0.5 pr-1">
-                    <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => { setRenamingFolder(folder.id); setRenameValue(folder.name); }}>
-                      <Pencil className="h-3 w-3" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleDeleteFolder(folder.id)}>
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground" onClick={(e) => e.stopPropagation()}>
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="right" align="start" className="w-40">
+                      <DropdownMenuItem onClick={() => { setRenamingFolder(folder.id); setRenameValue(folder.name); }}>
+                        <Pencil className="h-4 w-4 mr-2" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleDeleteFolder(folder.id)}>
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
                 <CollapsibleContent>
                   <SidebarMenu className="pl-4">
