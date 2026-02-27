@@ -83,6 +83,7 @@ export function ChatSidebar({
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
 
   const handleSignOut = async () => {
     await signOut();
@@ -130,14 +131,36 @@ export function ChatSidebar({
   const ungroupedThreads = threads.filter((t) => !t.folder_id);
   const threadsByFolder = (folderId: string) => threads.filter((t) => t.folder_id === folderId);
 
+  const handleDragStart = (e: React.DragEvent, threadId: string) => {
+    e.dataTransfer.setData('text/plain', threadId);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDrop = (e: React.DragEvent, folderId: string | null) => {
+    e.preventDefault();
+    setDragOverTarget(null);
+    const threadId = e.dataTransfer.getData('text/plain');
+    if (threadId) onMoveThread(threadId, folderId);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
   const renderThread = (thread: ChatThread) => (
-    <SidebarMenuItem key={thread.id}>
+    <SidebarMenuItem
+      key={thread.id}
+      draggable
+      onDragStart={(e) => handleDragStart(e, thread.id)}
+    >
       <SidebarMenuButton
         onClick={() => onSelectThread(thread.id)}
         isActive={currentThreadId === thread.id}
+        className="min-w-0"
       >
         <MessageSquare className="h-4 w-4 shrink-0" />
-        {!isCollapsed && <span className="truncate">{thread.title}</span>}
+        {!isCollapsed && <span className="truncate min-w-0">{thread.title}</span>}
       </SidebarMenuButton>
       {!isCollapsed && (
         <>
@@ -207,7 +230,7 @@ export function ChatSidebar({
                   value={newFolderName}
                   onChange={(e) => setNewFolderName(e.target.value)}
                   placeholder="Folder name"
-                  className="h-8 text-sm"
+                  className="h-8 text-sm text-foreground bg-background"
                   onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
                   autoFocus
                 />
@@ -229,7 +252,13 @@ export function ChatSidebar({
             {/* Folders */}
             {folders.map((folder) => (
               <Collapsible key={folder.id} defaultOpen className="mb-1">
-                <div className="flex items-center group">
+                <div
+                  className={`flex items-center group rounded transition-colors ${dragOverTarget === folder.id ? 'bg-sidebar-accent ring-1 ring-sidebar-primary' : ''}`}
+                  onDragOver={handleDragOver}
+                  onDragEnter={() => setDragOverTarget(folder.id)}
+                  onDragLeave={() => setDragOverTarget(null)}
+                  onDrop={(e) => handleDrop(e, folder.id)}
+                >
                   <CollapsibleTrigger className="flex items-center gap-1 flex-1 px-2 py-1.5 text-xs font-medium text-sidebar-foreground/70 hover:text-sidebar-foreground rounded">
                     <ChevronRight className="h-3 w-3 transition-transform duration-200 group-data-[state=open]:rotate-90" />
                     <FolderOpen className="h-3.5 w-3.5" />
@@ -237,7 +266,7 @@ export function ChatSidebar({
                       <Input
                         value={renameValue}
                         onChange={(e) => setRenameValue(e.target.value)}
-                        className="h-5 text-xs w-24"
+                        className="h-5 text-xs w-24 text-foreground bg-background"
                         onClick={(e) => e.stopPropagation()}
                         onKeyDown={(e) => { if (e.key === 'Enter') handleRenameFolder(folder.id); }}
                         autoFocus
@@ -269,7 +298,13 @@ export function ChatSidebar({
 
             {/* Ungrouped */}
             {ungroupedThreads.length > 0 && (
-              <div className="mt-1">
+              <div
+                className={`mt-1 rounded transition-colors ${dragOverTarget === 'ungrouped' ? 'bg-sidebar-accent ring-1 ring-sidebar-primary' : ''}`}
+                onDragOver={handleDragOver}
+                onDragEnter={() => setDragOverTarget('ungrouped')}
+                onDragLeave={() => setDragOverTarget(null)}
+                onDrop={(e) => handleDrop(e, null)}
+              >
                 {folders.length > 0 && (
                   <p className="px-2 py-1.5 text-xs font-medium text-sidebar-foreground/70">Chats</p>
                 )}
