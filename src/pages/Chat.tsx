@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
 import { ChatSidebar } from '@/components/chat/ChatSidebar';
@@ -8,40 +8,28 @@ import { EmptyState } from '@/components/chat/EmptyState';
 import { useAuth } from '@/hooks/useAuth';
 import { useChatThreads } from '@/hooks/useChatThreads';
 import { Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
-import { supabase } from '@/integrations/supabase/client';
 
 export default function Chat() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  
 
   const {
-    threads,
-    currentThreadId,
-    messages,
-    loading: threadsLoading,
-    sendingMessage,
-    setCurrentThreadId,
-    createThread,
-    deleteThread,
-    sendMessage,
+    threads, folders, currentThreadId, messages,
+    loading: threadsLoading, sendingMessage,
+    setCurrentThreadId, deleteThread, sendMessage,
+    createFolder, deleteFolder, renameFolder, moveThreadToFolder,
   } = useChatThreads();
 
   useEffect(() => {
-    if (!authLoading && !user) {
-      navigate('/auth');
-    }
+    if (!authLoading && !user) navigate('/auth');
   }, [user, authLoading, navigate]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-
   const handleSendMessage = (content: string) => {
-    // Pass 'edge-function' as a signal to use the edge function
     sendMessage(content, 'edge-function');
   };
 
@@ -58,16 +46,18 @@ export default function Chat() {
       <div className="min-h-screen flex w-full bg-background">
         <ChatSidebar
           threads={threads}
+          folders={folders}
           currentThreadId={currentThreadId}
           onSelectThread={setCurrentThreadId}
-          onNewThread={() => {
-            setCurrentThreadId(null);
-          }}
+          onNewThread={() => setCurrentThreadId(null)}
           onDeleteThread={deleteThread}
+          onCreateFolder={createFolder}
+          onDeleteFolder={deleteFolder}
+          onRenameFolder={renameFolder}
+          onMoveThread={moveThreadToFolder}
         />
 
         <main className="flex-1 flex flex-col min-h-screen">
-          {/* Header */}
           <header className="h-14 border-b border-border flex items-center px-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
             <div className="flex items-center gap-2">
               <SidebarTrigger />
@@ -79,7 +69,6 @@ export default function Chat() {
             </div>
           </header>
 
-          {/* Messages area */}
           <div className="flex-1 overflow-y-auto">
             {messages.length === 0 ? (
               <EmptyState />
@@ -112,12 +101,8 @@ export default function Chat() {
             )}
           </div>
 
-          {/* Input area */}
           <div className="p-4 bg-gradient-to-t from-background via-background to-transparent">
-            <ChatInput
-              onSend={handleSendMessage}
-              isLoading={sendingMessage}
-            />
+            <ChatInput onSend={handleSendMessage} isLoading={sendingMessage} />
           </div>
         </main>
       </div>
