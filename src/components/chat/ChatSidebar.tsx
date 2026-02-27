@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, MessageSquare, Trash2, LogOut, Mountain, FolderPlus, ChevronRight, FolderOpen, Pencil, MoreHorizontal } from 'lucide-react';
+import { Plus, MessageSquare, Trash2, LogOut, Mountain, FolderPlus, ChevronRight, FolderOpen, Pencil } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -20,12 +20,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -223,31 +217,28 @@ export function ChatSidebar({
                       <span className="truncate">{folder.name}</span>
                     )}
                   </CollapsibleTrigger>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`Folder actions for ${folder.name}`}
-                        className="h-7 w-7 shrink-0 rounded-md text-sidebar-foreground/80 hover:text-sidebar-foreground hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent side="right" align="start" className="w-40">
-                      <DropdownMenuItem onClick={() => { setRenamingFolder(folder.id); setRenameValue(folder.name); }}>
-                        <Pencil className="h-4 w-4 mr-2" />
-                        Rename
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleDeleteFolder(folder.id)}>
-                        <Trash2 className="h-4 w-4 mr-2" />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
                 </div>
                 <CollapsibleContent>
+                  <div className="flex items-center gap-1 pl-9 py-1 mb-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-xs text-sidebar-foreground/60 hover:text-sidebar-foreground"
+                      onClick={() => { setRenamingFolder(folder.id); setRenameValue(folder.name); }}
+                    >
+                      <Pencil className="h-3 w-3 mr-1" />
+                      Rename
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-xs text-destructive/70 hover:text-destructive"
+                      onClick={() => handleDeleteFolder(folder.id)}
+                    >
+                      <Trash2 className="h-3 w-3 mr-1" />
+                      Delete
+                    </Button>
+                  </div>
                   <SidebarMenu className="pl-4">
                     {threadsByFolder(folder.id).length === 0 ? (
                       <p className="text-xs text-sidebar-foreground/40 px-2 py-1">No chats</p>
