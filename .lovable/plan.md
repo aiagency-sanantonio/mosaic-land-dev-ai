@@ -1,58 +1,78 @@
 
 
-## Current State Summary
+## Chat Sidebar UI Fixes and Folder Organization
 
-**Data snapshot:**
-- 27,256 total Dropbox files
-- 10,821 successfully indexed (39.7%)
-- 16,338 skipped (59.9%), 97 failed (0.4%)
-- 10,129 / 10,821 structured extraction done (93.6%)
-- ~10,418 OCR-eligible files (scanned PDFs + images)
-- All processing is currently **stopped** (kill switch active, crons unscheduled)
+### Problem 1: Delete button not visible
+The delete button is placed **inside** `SidebarMenuButton`, which has `overflow-hidden` in its base styles. This clips the button. The sidebar component already provides a `SidebarMenuAction` component designed for exactly this use case -- it positions absolutely outside the button and supports `showOnHover`.
 
-**Current UI problems:**
-1. The page is a long vertical scroll of separate cards with no clear visual hierarchy or pipeline overview
-2. The "Progress" card (overall stats) is buried at the bottom, below OCR and extraction cards
-3. No indication that processing is globally stopped (kill switch active)
-4. OCR and extraction cards show "run/stop" buttons but no awareness of the kill switch state
-5. The activity log mixes all event types with no filtering
-6. No clear 3-stage pipeline visualization (Index → OCR → Extract)
+### Problem 2: No folder organization
+Chats are displayed in a flat list with no way to group them.
 
-## Plan: Redesigned Admin Dashboard
+---
 
-### 1. Add a global status banner at the top
-- Show a prominent banner when the kill switch is active ("All processing paused") with a "Resume Processing" button that deletes the stopped row
-- When running, show a green "Processing Active" banner
+### Changes
 
-### 2. Restructure layout with a pipeline overview at the top
-Replace the scattered cards with a clear top-level summary showing the 3-stage pipeline as a horizontal row of stat cards:
+#### 1. Database: Add `chat_folders` table and update `chat_threads`
 
-```text
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│  1. INDEXING     │  │  2. OCR          │  │  3. EXTRACTION   │
-│  10,821 / 27,256 │  │  0 / 10,418      │  │  10,129 / 10,821 │
-│  ████████░░ 40%  │  │  ░░░░░░░░░░ 0%   │  │  █████████░ 94%  │
-│  ✓ Complete      │  │  ⏸ Paused        │  │  ⏸ Paused        │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+Create a new `chat_folders` table:
+- `id` (uuid, primary key)
+- `user_id` (uuid, not null)
+- `name` (text, not null)
+- `created_at`, `updated_at` (timestamps)
+
+Add a nullable `folder_id` column to `chat_threads` referencing `chat_folders.id` (with `ON DELETE SET NULL` so deleting a folder ungroups chats rather than deleting them).
+
+RLS policies: users can only CRUD their own folders.
+
+#### 2. Fix delete button in `ChatSidebar.tsx`
+
+Move the delete `Button` out of `SidebarMenuButton` and use `SidebarMenuAction` with `showOnHover` instead. This places it absolutely positioned to the right of each menu item, visible on hover, and not clipped by overflow.
+
+Before (broken):
+```
+<SidebarMenuItem>
+  <SidebarMenuButton>
+    <span>title</span>
+    <Button>delete</Button>  <!-- clipped by overflow-hidden -->
+  </SidebarMenuButton>
+</SidebarMenuItem>
 ```
 
-### 3. Detailed sections below with collapsible cards
-Each pipeline stage gets a collapsible detail section with:
-- Breakdown stats (e.g., skipped reasons for indexing, OCR-eligible file types)
-- Start/Stop controls (disabled when kill switch is active)
-- Rate and ETA when running
+After (fixed):
+```
+<SidebarMenuItem>
+  <SidebarMenuButton>
+    <MessageSquare />
+    <span>title</span>
+  </SidebarMenuButton>
+  <SidebarMenuAction showOnHover onClick={delete}>
+    <Trash2 />
+  </SidebarMenuAction>
+</SidebarMenuItem>
+```
 
-### 4. Move Activity Log into a tab or collapsible section
-Keep it accessible but not taking prime real estate.
+#### 3. Add folder management UI to `ChatSidebar.tsx`
 
-### 5. Simplify state management
-- Fetch kill switch status on load to properly reflect global pause state
-- Disable all "Start" buttons when kill switch is active
-- Add clear "Resume All" / "Pause All" controls
+- Add a "New Folder" button next to "New Chat"
+- Display folders as collapsible `SidebarGroup` sections using the existing `Collapsible` component
+- Each folder header shows the folder name with a delete/rename option
+- Threads inside a folder are nested under their folder group
+- Ungrouped threads appear in a default "Chats" section
+- Drag-and-drop is not needed initially; instead, each thread's context (right-click or a small "move" action) lets users pick a folder via a dropdown/popover
 
-### Technical changes
-- Rewrite `src/pages/AdminIndexing.tsx` with the new layout
-- Add a `fetchKillSwitchStatus` function that checks `indexing_jobs` for `status = 'stopped'`
-- Restructure the return JSX into the pipeline overview + detail sections pattern
-- Add resume functionality (delete the stopped row from `indexing_jobs`)
+#### 4. Update `useChatThreads.tsx` hook
+
+- Add folder CRUD operations: `createFolder`, `deleteFolder`, `renameFolder`, `moveThreadToFolder`
+- Fetch threads with their `folder_id` included
+- Fetch folders list on load
+- Export folders and folder operations
+
+#### 5. Files changed
+
+| File | Change |
+|------|--------|
+| **New migration** | Create `chat_folders` table, add `folder_id` to `chat_threads` |
+| `src/hooks/useChatThreads.tsx` | Add folder state, CRUD, and `moveThreadToFolder` |
+| `src/components/chat/ChatSidebar.tsx` | Fix delete button using `SidebarMenuAction`; add folder groups with collapsible sections; add folder create/rename/delete UI; add "Move to folder" dropdown on threads |
+| `src/pages/Chat.tsx` | Pass new folder props down to `ChatSidebar` |
 
