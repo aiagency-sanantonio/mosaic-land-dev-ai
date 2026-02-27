@@ -274,8 +274,14 @@ export function ChatSidebar({
                   </CollapsibleTrigger>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground" onClick={(e) => e.stopPropagation()}>
-                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Open folder actions for ${folder.name}`}
+                        className="h-7 w-7 shrink-0 rounded-md text-sidebar-foreground/80 hover:text-sidebar-foreground hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-foreground"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent side="right" align="start" className="w-40">
