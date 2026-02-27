@@ -1,45 +1,34 @@
 
+## Fix Folder Actions Menu -- Move Below Folder Header
 
-## Redesign Delete Actions: Sidebar Simplification + Chat Header Menu
+### Problem
+The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
 
-### Overview
-Move chat deletion out of the sidebar into the chat window header. Keep folder management (rename + delete) in the sidebar but fix the broken dropdown. The sidebar becomes focused on organization (drag-drop, rename), while destructive actions live in the chat window.
+### Solution
+Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
 
-### Changes
+### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
 
-#### 1. Simplify sidebar thread items (`ChatSidebar.tsx`)
-- Remove the `DropdownMenu` from each thread row entirely -- threads become clean, clickable, draggable items with just an icon and truncated title
-- Remove the `AlertDialog` for thread deletion from the sidebar (it moves to Chat.tsx)
-- Keep the folder `DropdownMenu` (Rename + Delete) but fix the rendering: wrap the trigger in a proper `div` outside the `CollapsibleTrigger` scope and ensure pointer events don't bubble up to the collapsible
-- Keep the folder delete `AlertDialog` in the sidebar since folder delete stays here
-- Remove unused imports (`ArrowRight`, `DropdownMenuSub`, `DropdownMenuSubContent`, `DropdownMenuSubTrigger`, `DropdownMenuSeparator`)
+1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
 
-#### 2. Add delete action to chat header (`Chat.tsx`)
-- Add a three-dot `DropdownMenu` in the chat header bar (right side), visible only when a thread is selected
-- The dropdown contains a "Delete Chat" item styled in red/destructive
-- Add an `AlertDialog` confirmation dialog in Chat.tsx
-- On confirmation, call `deleteThread(currentThreadId)` which already clears the thread and shows a toast
-- Import `MoreHorizontal`, `Trash2` from lucide, plus `DropdownMenu` and `AlertDialog` components
+2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
+   - A "Rename" button (pencil icon + text)
+   - A "Delete" button (trash icon + text, styled destructive)
+   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
 
-#### 3. Update props
-- Remove `onDeleteThread` from `ChatSidebarProps` interface since deletion no longer happens in the sidebar
-- Keep `onDeleteFolder` since folder delete stays in the sidebar
+3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
 
-### Technical details
-
+### Layout sketch
 ```text
-ChatSidebar.tsx:
-  - Remove: DropdownMenu from renderThread()
-  - Remove: thread delete state/handlers (threadToDelete, handleDeleteThread)
-  - Remove: onDeleteThread from props interface
-  - Keep: folder DropdownMenu with Rename + Delete
-  - Keep: folderToDelete state + AlertDialog for folder deletion
-  - Fix: folder dropdown trigger -- ensure button is outside CollapsibleTrigger
+Before:
+  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
 
-Chat.tsx:
-  - Add: DropdownMenu in header with "Delete Chat" option
-  - Add: AlertDialog for delete confirmation
-  - Add: local state for deleteDialogOpen
-  - Wire: confirmDelete calls deleteThread(currentThreadId)
+After:
+  [chevron] [folder icon] Folder Name
+    [Rename] [Delete]                          <-- always visible action buttons
+    - Chat 1
+    - Chat 2
 ```
 
+### Technical note
+The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
