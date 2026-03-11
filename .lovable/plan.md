@@ -1,34 +1,28 @@
 
-## Fix Folder Actions Menu -- Move Below Folder Header
 
-### Problem
-The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
+# Fix: N8N response field not being read correctly
 
-### Solution
-Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
+## Problem
+The frontend (`useChatThreads.tsx` line 218) only checks `data.response` and `data.error` when reading the N8N webhook return. But N8N returns the AI agent's answer in the `output` field. Since neither `response` nor `error` exist on the returned object, it falls through to the fallback: *"I received your message but could not generate a response."*
 
-### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
-
-1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
-
-2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
-   - A "Rename" button (pencil icon + text)
-   - A "Delete" button (trash icon + text, styled destructive)
-   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
-
-3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
-
-### Layout sketch
-```text
-Before:
-  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
-
-After:
-  [chevron] [folder icon] Folder Name
-    [Rename] [Delete]                          <-- always visible action buttons
-    - Chat 1
-    - Chat 2
+## Root Cause
+```
+data?.response   → undefined (N8N doesn't use this field)
+data?.error      → undefined (no error)
+→ falls through to generic message
 ```
 
-### Technical note
-The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
+## Fix
+Update line 218 in `src/hooks/useChatThreads.tsx` to also check `data.output`:
+
+```typescript
+const responseContent = error
+  ? 'I apologize, but I encountered an issue processing your request. Please try again.'
+  : data?.response || data?.output || data?.error || 'I received your message but could not generate a response.';
+```
+
+This is a one-line change. The `data.output` check is added before `data.error` so valid responses are prioritized.
+
+## Technical Note
+The edge function (`chat-webhook/index.ts`) passes through whatever JSON N8N returns via `JSON.stringify(data)`. N8N's AI agent node outputs its result in the `output` field by default, not `response`. Adding `data?.output` covers this without breaking any existing behavior.
+
