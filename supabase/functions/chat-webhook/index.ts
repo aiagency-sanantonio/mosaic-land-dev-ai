@@ -33,7 +33,7 @@ serve(async (req) => {
     console.log('Forwarding chat message to N8N webhook');
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 300000); // 5 minutes
+    const timeout = setTimeout(() => controller.abort(), 600000); // 10 minutes
 
     const response = await fetch(webhookUrl, {
       method: 'POST',
