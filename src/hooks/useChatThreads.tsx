@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { toast } from 'sonner';
@@ -34,6 +34,8 @@ export function useChatThreads() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const activeSubscription = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchThreads = useCallback(async () => {
     if (!user) return;
@@ -90,6 +92,18 @@ export function useChatThreads() {
     }
   }, [currentThreadId, fetchMessages]);
 
+  // Cleanup subscriptions on unmount
+  useEffect(() => {
+    return () => {
+      if (activeSubscription.current) {
+        supabase.removeChannel(activeSubscription.current);
+      }
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
   const createThread = async (initialTitle: string = 'New Chat') => {
     if (!user) return null;
     const { data, error } = await supabase
@@ -123,7 +137,6 @@ export function useChatThreads() {
     }
   };
 
-  // Folder CRUD
   const createFolder = async (name: string) => {
     if (!user) return null;
     const { data, error } = await supabase
@@ -148,7 +161,6 @@ export function useChatThreads() {
       console.error(error);
     } else {
       setFolders((prev) => prev.filter((f) => f.id !== folderId));
-      // Threads with this folder_id will be set to null by DB cascade
       setThreads((prev) => prev.map((t) => t.folder_id === folderId ? { ...t, folder_id: null } : t));
       toast.success('Folder deleted');
     }
@@ -173,6 +185,17 @@ export function useChatThreads() {
       setThreads((prev) => prev.map((t) => t.id === threadId ? { ...t, folder_id: folderId } : t));
     }
   };
+
+  const cleanupJobSubscription = useCallback(() => {
+    if (activeSubscription.current) {
+      supabase.removeChannel(activeSubscription.current);
+      activeSubscription.current = null;
+    }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+  }, []);
 
   const sendMessage = async (content: string, webhookMode?: string) => {
     if (!user) return;
@@ -215,17 +238,101 @@ export function useChatThreads() {
 
         console.log('Edge function response:', { data, error });
 
-        const responseContent = error
-          ? 'I apologize, but I encountered an issue processing your request. Please try again.'
-          : data?.response || data?.output || data?.error || 'I received your message but could not generate a response.';
+        if (error || !data?.job_id) {
+          const errorMsg = 'I apologize, but I encountered an issue processing your request. Please try again.';
+          const { data: assistantMessage } = await supabase
+            .from('messages')
+            .insert({ thread_id: threadId, user_id: user.id, role: 'assistant', content: errorMsg })
+            .select()
+            .single();
+          if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+          setSendingMessage(false);
+          return;
+        }
 
-        const { data: assistantMessage } = await supabase
-          .from('messages')
-          .insert({ thread_id: threadId, user_id: user.id, role: 'assistant', content: responseContent })
-          .select()
-          .single();
+        const jobId = data.job_id;
+        const capturedThreadId = threadId;
 
-        if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+        // Clean up any previous subscription
+        cleanupJobSubscription();
+
+        // Set 10 minute timeout
+        timeoutRef.current = setTimeout(async () => {
+          cleanupJobSubscription();
+          setSendingMessage(false);
+          const timeoutMsg = 'The request timed out after 10 minutes. Please try again.';
+          const { data: assistantMessage } = await supabase
+            .from('messages')
+            .insert({ thread_id: capturedThreadId, user_id: user!.id, role: 'assistant', content: timeoutMsg })
+            .select()
+            .single();
+          if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+        }, 600000);
+
+        // Subscribe to realtime updates on this job
+        const channel = supabase
+          .channel(`chat-job-${jobId}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'UPDATE',
+              schema: 'public',
+              table: 'chat_jobs',
+              filter: `id=eq.${jobId}`,
+            },
+            async (payload) => {
+              const newStatus = payload.new?.status;
+              const responseContent = payload.new?.response_content;
+
+              console.log('Job update received:', { newStatus, responseContent });
+
+              if (newStatus === 'completed' || newStatus === 'failed') {
+                cleanupJobSubscription();
+                setSendingMessage(false);
+
+                const finalContent = responseContent || 'I received your message but could not generate a response.';
+                const { data: assistantMessage } = await supabase
+                  .from('messages')
+                  .insert({ thread_id: capturedThreadId, user_id: user!.id, role: 'assistant', content: finalContent })
+                  .select()
+                  .single();
+                if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+
+                await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', capturedThreadId);
+                fetchThreads();
+              }
+            }
+          )
+          .subscribe();
+
+        activeSubscription.current = channel;
+
+        // Also poll once after 5 seconds as a fallback in case realtime missed the update
+        setTimeout(async () => {
+          const { data: jobData } = await supabase
+            .from('chat_jobs')
+            .select('status, response_content')
+            .eq('id', jobId)
+            .single();
+          
+          if (jobData && (jobData.status === 'completed' || jobData.status === 'failed') && activeSubscription.current) {
+            console.log('Fallback poll caught completed job');
+            cleanupJobSubscription();
+            setSendingMessage(false);
+
+            const finalContent = jobData.response_content || 'I received your message but could not generate a response.';
+            const { data: assistantMessage } = await supabase
+              .from('messages')
+              .insert({ thread_id: capturedThreadId, user_id: user!.id, role: 'assistant', content: finalContent })
+              .select()
+              .single();
+            if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+
+            await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', capturedThreadId);
+            fetchThreads();
+          }
+        }, 5000);
+
       } catch (error) {
         console.error('Webhook error:', error);
         const { data: assistantMessage } = await supabase
@@ -234,6 +341,7 @@ export function useChatThreads() {
           .select()
           .single();
         if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+        setSendingMessage(false);
       }
     } else {
       const { data: assistantMessage } = await supabase
@@ -242,11 +350,15 @@ export function useChatThreads() {
         .select()
         .single();
       if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+      setSendingMessage(false);
     }
 
-    setSendingMessage(false);
-    await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
-    fetchThreads();
+    // Note: updated_at and fetchThreads are now handled inside the realtime callback
+    // for the async path, but still needed for the non-edge-function path
+    if (webhookMode !== 'edge-function') {
+      await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
+      fetchThreads();
+    }
   };
 
   return {
