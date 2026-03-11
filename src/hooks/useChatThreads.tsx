@@ -213,19 +213,66 @@ export function useChatThreads() {
           },
         });
 
-        console.log('Edge function response:', { data, error });
+        console.log('chat-webhook response:', { data, error });
 
-        const responseContent = error
-          ? 'I apologize, but I encountered an issue processing your request. Please try again.'
-          : data?.response || data?.output || data?.error || 'I received your message but could not generate a response.';
+        if (error || !data?.job_id) {
+          // Fallback: no async job created, show error
+          const fallbackContent = 'I apologize, but I encountered an issue processing your request. Please try again.';
+          const { data: assistantMessage } = await supabase
+            .from('messages')
+            .insert({ thread_id: threadId, user_id: user.id, role: 'assistant', content: fallbackContent })
+            .select()
+            .single();
+          if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+          setSendingMessage(false);
+        } else {
+          // Subscribe to Realtime updates for this job
+          const jobId = data.job_id;
+          const timeoutMs = 10 * 60 * 1000; // 10 minutes
 
-        const { data: assistantMessage } = await supabase
-          .from('messages')
-          .insert({ thread_id: threadId, user_id: user.id, role: 'assistant', content: responseContent })
-          .select()
-          .single();
+          const channel = supabase
+            .channel(`job-${jobId}`)
+            .on(
+              'postgres_changes',
+              {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'chat_jobs',
+                filter: `id=eq.${jobId}`,
+              },
+              async (payload) => {
+                const job = payload.new as { status: string; response_content: string | null };
+                console.log('Job update received:', job.status);
 
-        if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+                if (job.status === 'completed' || job.status === 'failed') {
+                  // The assistant message was already inserted by chat-response-webhook,
+                  // so just refetch messages
+                  if (threadId) {
+                    await fetchMessages(threadId);
+                  }
+                  setSendingMessage(false);
+                  supabase.removeChannel(channel);
+                  clearTimeout(timeout);
+                  await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
+                  fetchThreads();
+                }
+              }
+            )
+            .subscribe();
+
+          // Timeout fallback
+          const timeout = setTimeout(async () => {
+            console.warn('Job timed out:', jobId);
+            supabase.removeChannel(channel);
+            const { data: assistantMessage } = await supabase
+              .from('messages')
+              .insert({ thread_id: threadId!, user_id: user!.id, role: 'assistant', content: 'The request timed out. The AI agent may still be processing — please check back shortly.' })
+              .select()
+              .single();
+            if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+            setSendingMessage(false);
+          }, timeoutMs);
+        }
       } catch (error) {
         console.error('Webhook error:', error);
         const { data: assistantMessage } = await supabase
@@ -234,6 +281,7 @@ export function useChatThreads() {
           .select()
           .single();
         if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+        setSendingMessage(false);
       }
     } else {
       const { data: assistantMessage } = await supabase
@@ -242,11 +290,10 @@ export function useChatThreads() {
         .select()
         .single();
       if (assistantMessage) setMessages((prev) => [...prev, assistantMessage as Message]);
+      setSendingMessage(false);
     }
 
-    setSendingMessage(false);
-    await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
-    fetchThreads();
+    // Don't update thread timestamp here for async mode — it's done when the job completes
   };
 
   return {
