@@ -215,7 +215,7 @@ export function useChatThreads() {
 
         const responseContent = error
           ? 'I apologize, but I encountered an issue processing your request. Please try again.'
-          : data?.response || data?.error || 'I received your message but could not generate a response.';
+          : data?.response || data?.output || data?.error || 'I received your message but could not generate a response.';
 
         const { data: assistantMessage } = await supabase
           .from('messages')
