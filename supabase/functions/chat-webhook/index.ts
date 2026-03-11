@@ -32,13 +32,19 @@ serve(async (req) => {
     const body = await req.json();
     console.log('Forwarding chat message to N8N webhook');
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 300000); // 5 minutes
+
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: controller.signal,
     });
+
+    clearTimeout(timeout);
 
     if (!response.ok) {
       console.error('N8N webhook returned error:', response.status);
