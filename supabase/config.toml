@@ -35,6 +35,3 @@ verify_jwt = false
 
 [functions.ocr-process]
 verify_jwt = false
-
-[functions.chat-response-webhook]
-verify_jwt = false
