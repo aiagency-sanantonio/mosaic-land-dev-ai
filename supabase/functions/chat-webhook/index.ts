@@ -60,7 +60,7 @@ serve(async (req) => {
     }
 
     const data = await response.json();
-    console.log('N8N webhook response received');
+    console.log('N8N webhook response received, data:', JSON.stringify(data));
 
     return new Response(
       JSON.stringify(data),

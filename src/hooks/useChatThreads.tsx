@@ -213,6 +213,8 @@ export function useChatThreads() {
           },
         });
 
+        console.log('Edge function response:', { data, error });
+
         const responseContent = error
           ? 'I apologize, but I encountered an issue processing your request. Please try again.'
           : data?.response || data?.output || data?.error || 'I received your message but could not generate a response.';
