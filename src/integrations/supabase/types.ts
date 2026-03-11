@@ -38,6 +38,47 @@ export type Database = {
         }
         Relationships: []
       }
+      chat_jobs: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          id: string
+          request_payload: Json
+          response_content: string | null
+          status: string
+          thread_id: string
+          user_id: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          request_payload: Json
+          response_content?: string | null
+          status?: string
+          thread_id: string
+          user_id: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          id?: string
+          request_payload?: Json
+          response_content?: string | null
+          status?: string
+          thread_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "chat_jobs_thread_id_fkey"
+            columns: ["thread_id"]
+            isOneToOne: false
+            referencedRelation: "chat_threads"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       chat_threads: {
         Row: {
           created_at: string
