@@ -1,29 +1,34 @@
 
+## Fix Folder Actions Menu -- Move Below Folder Header
 
-# Fix: alias_type CHECK constraint blocking all inserts
+### Problem
+The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
 
-## Problem
-The `project_aliases` table has a CHECK constraint limiting `alias_type` to only: `owner_name`, `old_name`, `phase_name`, `abbreviation`.
+### Solution
+Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
 
-The `detect-project-aliases` function (and the `process-document` hook) insert with `alias_type = 'auto_detected'`, which violates this constraint. Every upsert silently fails.
+### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
 
-## Solution
+1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
 
-1. **Migration**: Drop the CHECK constraint and either remove it entirely or add `'auto_detected'` to the allowed values. Adding it is safer since the constraint may be intentional for manual entries.
+2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
+   - A "Rename" button (pencil icon + text)
+   - A "Delete" button (trash icon + text, styled destructive)
+   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
 
-```sql
-ALTER TABLE public.project_aliases DROP CONSTRAINT project_aliases_alias_type_check;
-ALTER TABLE public.project_aliases ADD CONSTRAINT project_aliases_alias_type_check 
-  CHECK (alias_type = ANY (ARRAY['owner_name','old_name','phase_name','abbreviation','auto_detected']));
+3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
+
+### Layout sketch
+```text
+Before:
+  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
+
+After:
+  [chevron] [folder icon] Folder Name
+    [Rename] [Delete]                          <-- always visible action buttons
+    - Chat 1
+    - Chat 2
 ```
 
-Also drop the duplicate unique constraint (there are two identical ones):
-```sql
-ALTER TABLE public.project_aliases DROP CONSTRAINT project_aliases_canonical_project_name_alias_name_key;
-```
-
-2. **No code changes needed** — both `detect-project-aliases` and `process-document` already use `'auto_detected'` correctly.
-
-## Files
-- **New migration** — ALTER the CHECK constraint
-
+### Technical note
+The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
