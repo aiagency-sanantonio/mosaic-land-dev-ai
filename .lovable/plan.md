@@ -1,34 +1,40 @@
 
-## Fix Folder Actions Menu -- Move Below Folder Header
 
-### Problem
-The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
+# Auto-Populate Project Aliases
 
-### Solution
-Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
+## Approach
+Two complementary mechanisms — no manual entry needed.
 
-### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
+### 1. Batch alias discovery edge function (`detect-project-aliases`)
+- Scans `project_data.project_name` grouped by the folder extracted from `source_file_path`
+- Also scans `documents.metadata->>'project_name'` and `permits_tracking.project_name`
+- Groups all distinct names that share the same `/1-Projects/X/` path prefix
+- For each group with 2+ distinct names, picks the most frequent as canonical and inserts the rest as aliases
+- Idempotent — skips existing alias pairs
+- Can be called manually or on a schedule
 
-1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
+### 2. Hook in `process-document` indexing
+- After LLM extraction, compare the extracted `project_name` against the folder name from `file_path`
+- If they differ meaningfully (not just casing), upsert into `project_aliases`
+- Lightweight — just one extra insert per document when a mismatch is found
 
-2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
-   - A "Rename" button (pencil icon + text)
-   - A "Delete" button (trash icon + text, styled destructive)
-   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
+### Database
+No schema changes — uses the existing `project_aliases` table.
 
-3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
+### Files
 
-### Layout sketch
-```text
-Before:
-  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
+**New**: `supabase/functions/detect-project-aliases/index.ts`
+- Queries `project_data`, `documents`, `permits_tracking` for distinct project names per path prefix
+- Groups and inserts aliases
+- Returns a summary of what was found/created
 
-After:
-  [chevron] [folder icon] Folder Name
-    [Rename] [Delete]                          <-- always visible action buttons
-    - Chat 1
-    - Chat 2
-```
+**Modified**: `supabase/functions/process-document/index.ts`
+- After `storeStructuredData`, extract folder name from path and compare to extracted project names
+- If mismatch, upsert alias row
 
-### Technical note
-The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
+**Modified**: `supabase/config.toml`
+- Register `detect-project-aliases` with `verify_jwt = false`
+
+### N8N note
+After running the batch scan once, aliases will be populated. Future indexing keeps them current automatically. No N8N changes needed.
+
