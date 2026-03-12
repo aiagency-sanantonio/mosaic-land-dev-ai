@@ -646,6 +646,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      get_filter_options: { Args: never; Returns: Json }
       get_unindexed_dropbox_files: {
         Args: {
           p_extension_filter?: string
