@@ -14,6 +14,39 @@ export type Database = {
   }
   public: {
     Tables: {
+      answer_feedback: {
+        Row: {
+          created_at: string
+          expected_source: string | null
+          feedback_text: string | null
+          id: string
+          message_id: string | null
+          rating: string | null
+          thread_id: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          expected_source?: string | null
+          feedback_text?: string | null
+          id?: string
+          message_id?: string | null
+          rating?: string | null
+          thread_id?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          expected_source?: string | null
+          feedback_text?: string | null
+          id?: string
+          message_id?: string | null
+          rating?: string | null
+          thread_id?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       chat_folders: {
         Row: {
           created_at: string
@@ -113,6 +146,33 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      concept_scopes: {
+        Row: {
+          created_at: string
+          default_included: boolean
+          doc_types: string[]
+          id: string
+          keywords: string[]
+          scope_name: string
+        }
+        Insert: {
+          created_at?: string
+          default_included?: boolean
+          doc_types?: string[]
+          id?: string
+          keywords?: string[]
+          scope_name: string
+        }
+        Update: {
+          created_at?: string
+          default_included?: boolean
+          doc_types?: string[]
+          id?: string
+          keywords?: string[]
+          scope_name?: string
+        }
+        Relationships: []
       }
       dd_checklists: {
         Row: {
@@ -425,6 +485,33 @@ export type Database = {
         }
         Relationships: []
       }
+      project_aliases: {
+        Row: {
+          alias_name: string
+          alias_type: string | null
+          canonical_project_name: string
+          created_at: string
+          id: string
+          notes: string | null
+        }
+        Insert: {
+          alias_name: string
+          alias_type?: string | null
+          canonical_project_name: string
+          created_at?: string
+          id?: string
+          notes?: string | null
+        }
+        Update: {
+          alias_name?: string
+          alias_type?: string | null
+          canonical_project_name?: string
+          created_at?: string
+          id?: string
+          notes?: string | null
+        }
+        Relationships: []
+      }
       project_data: {
         Row: {
           category: string
@@ -470,6 +557,87 @@ export type Database = {
           unit?: string | null
           updated_at?: string
           value?: number
+        }
+        Relationships: []
+      }
+      retrieval_logs: {
+        Row: {
+          answer_message_id: string | null
+          archive_included: boolean | null
+          created_at: string
+          id: string
+          normalized_project: string | null
+          query_type: string | null
+          question: string | null
+          source_type_breakdown: Json | null
+          thread_id: string | null
+          top_sources: Json | null
+          user_id: string | null
+        }
+        Insert: {
+          answer_message_id?: string | null
+          archive_included?: boolean | null
+          created_at?: string
+          id?: string
+          normalized_project?: string | null
+          query_type?: string | null
+          question?: string | null
+          source_type_breakdown?: Json | null
+          thread_id?: string | null
+          top_sources?: Json | null
+          user_id?: string | null
+        }
+        Update: {
+          answer_message_id?: string | null
+          archive_included?: boolean | null
+          created_at?: string
+          id?: string
+          normalized_project?: string | null
+          query_type?: string | null
+          question?: string | null
+          source_type_breakdown?: Json | null
+          thread_id?: string | null
+          top_sources?: Json | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      user_profiles_extended: {
+        Row: {
+          company_context_summary: string | null
+          created_at: string
+          display_name: string | null
+          drafting_preferences: string | null
+          id: string
+          notes_for_ai: string | null
+          preferred_projects: string[] | null
+          role_title: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          company_context_summary?: string | null
+          created_at?: string
+          display_name?: string | null
+          drafting_preferences?: string | null
+          id?: string
+          notes_for_ai?: string | null
+          preferred_projects?: string[] | null
+          role_title?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          company_context_summary?: string | null
+          created_at?: string
+          display_name?: string | null
+          drafting_preferences?: string | null
+          id?: string
+          notes_for_ai?: string | null
+          preferred_projects?: string[] | null
+          role_title?: string | null
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }
