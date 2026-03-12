@@ -361,6 +361,57 @@ function extractBasicMetadata(text: string): Record<string, unknown> {
   return metadata;
 }
 
+// ─── Auto-detect Project Aliases ──────────────────────────────────────────────
+
+function normalizeForComparison(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function extractFolderProjectName(filePath: string): string | null {
+  const match = filePath.match(/\/1-Projects\/([^/]+)/i);
+  return match ? match[1].trim() : null;
+}
+
+async function detectAndStoreAliases(
+  supabase: SupabaseClient,
+  data: ExtractedStructuredData,
+  filePath: string
+) {
+  const folderName = extractFolderProjectName(filePath);
+  if (!folderName) return;
+
+  // Collect all distinct project names from extracted data
+  const extractedNames = new Set<string>();
+  for (const m of data.project_metrics || []) {
+    if (m.project_name) extractedNames.add(m.project_name.trim());
+  }
+  for (const p of data.permits || []) {
+    if (p.project_name) extractedNames.add(p.project_name.trim());
+  }
+  for (const d of data.dd_items || []) {
+    if (d.project_name) extractedNames.add(d.project_name.trim());
+  }
+
+  for (const name of extractedNames) {
+    if (normalizeForComparison(name) === normalizeForComparison(folderName)) continue;
+    if (name.length < 2) continue;
+
+    // Use folder name as canonical, extracted name as alias
+    const { error } = await supabase.from('project_aliases').upsert({
+      canonical_project_name: folderName,
+      alias_name: name,
+      alias_type: 'auto_detected',
+      notes: `Auto-detected from file: ${filePath}`,
+    }, { onConflict: 'canonical_project_name,alias_name' });
+
+    if (error) {
+      console.warn(`Failed to upsert alias "${name}" → "${folderName}":`, error.message);
+    } else {
+      console.log(`Alias detected: "${name}" → "${folderName}"`);
+    }
+  }
+}
+
 // ─── Main Handler ─────────────────────────────────────────────────────────────
 
 serve(async (req) => {
@@ -452,6 +503,9 @@ serve(async (req) => {
       console.log('Storing structured data...');
       structuredResults = await storeStructuredData(supabase, structuredData, filePath, fileName || '');
       console.log(`Stored: ${structuredResults.metrics} metrics, ${structuredResults.permits} permits, ${structuredResults.dd_items} DD items`);
+
+      // Auto-detect project aliases by comparing extracted names to folder name
+      await detectAndStoreAliases(supabase, structuredData, filePath);
     }
 
     // Update status
