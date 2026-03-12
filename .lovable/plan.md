@@ -1,34 +1,62 @@
 
-## Fix Folder Actions Menu -- Move Below Folder Header
 
-### Problem
-The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
+# Fix: Reduce Agent Token Usage
 
-### Solution
-Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
+## Problem
+Each search returns 15-20 document chunks (~1000 chars each) with full `content`, `metadata`, `file_path`, and redundant fields. That's ~15,000-20,000 characters per tool call injected into the agent's context window. Multiply by several tool calls per conversation and context bloats fast.
 
-### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
+## Root Causes
+1. **Full chunk content returned** — each document chunk is ~1000 chars, all sent back raw
+2. **Redundant fields** — `metadata`, `file_path`, `id`, `is_archive`, `confidence` (duplicate of `similarity`) all inflate the response
+3. **Too many results by default** — 15-20 results when 8-10 would suffice for most queries
+4. **Filter list verbosity** — `list-filter-options` returns chunk counts the agent doesn't need
 
-1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
+## Solution: Truncate and slim responses server-side
 
-2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
-   - A "Rename" button (pencil icon + text)
-   - A "Delete" button (trash icon + text, styled destructive)
-   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
+### Change 1: Truncate content in `search-ranked-documents`
+Add a `content_max_length` parameter (default 300). Truncate each chunk's `content` to that limit and strip fields the agent doesn't use for reasoning.
 
-3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
+In the enriched document mapping (~line 302), change from returning the full object to a slim version:
 
-### Layout sketch
-```text
-Before:
-  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
+```typescript
+// Before: full content + all metadata
+{ id, content, file_name, file_path, file_url, metadata, similarity, source_type, ... }
 
-After:
-  [chevron] [folder icon] Folder Name
-    [Rename] [Delete]                          <-- always visible action buttons
-    - Chat 1
-    - Chat 2
+// After: truncated content, no metadata blob, no raw file_path
+{ file_name, content: doc.content.substring(0, contentMaxLength), source_type, 
+  document_date, project_name, similarity, file_url }
 ```
 
-### Technical note
-The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
+This cuts each result from ~1200 tokens to ~100-150 tokens.
+
+### Change 2: Reduce default match_count
+Change the default `match_count` from 15 to 8 for general queries. The agent prompt already specifies 10-20 — this just makes the edge function default leaner.
+
+### Change 3: Slim the top-level response
+Remove `resolved_projects`, `source_type_breakdown`, and `filters_applied` from the response — the agent doesn't need these for answering.
+
+### Change 4: Slim `list-filter-options` response
+Remove `chunk_count` from each entry — the agent only needs the names. Return simple string arrays instead of objects:
+```json
+{ "projects": ["Landon Ridge", "Mosaic"], "doc_types": ["permit", "contract"], "file_types": ["pdf", "xlsx"] }
+```
+
+### Implementation
+
+**File: `supabase/functions/search-ranked-documents/index.ts`**
+- Add `content_max_length` param (default 300)
+- Strip `id`, `metadata`, `file_path`, `is_archive`, `confidence`, `match_reason` from response documents
+- Change default `match_count` to 8
+- Remove `resolved_projects`, `source_type_breakdown`, `filters_applied` from top-level response
+
+**File: `supabase/functions/list-filter-options/index.ts`**  
+- Map the RPC result to simple string arrays (strip `chunk_count`)
+
+**Database: Update `get_filter_options()` function**
+- Simplify to return string arrays instead of objects with counts
+
+### Expected Impact
+- Per-search token cost drops from ~15,000 to ~2,000-3,000 characters
+- Filter discovery drops from ~500 tokens to ~100 tokens
+- Overall agent context stays manageable across multi-turn conversations
+
