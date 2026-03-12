@@ -23,6 +23,7 @@ const App = () => (
             <Route path="/" element={<Chat />} />
             <Route path="/auth" element={<Auth />} />
             <Route path="/admin/indexing" element={<AdminIndexing />} />
+            <Route path="/settings" element={<Settings />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

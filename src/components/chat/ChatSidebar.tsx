@@ -277,7 +277,10 @@ export function ChatSidebar({
                 <p className="text-xs text-sidebar-foreground/70 truncate">{user.email}</p>
               </div>
             )}
-            <Button variant="ghost" size="icon" onClick={handleSignOut} className="shrink-0 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent">
+            <Button variant="ghost" size="icon" onClick={() => navigate('/settings')} className="shrink-0 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent" title="Settings">
+              <Settings className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={handleSignOut} className="shrink-0 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent" title="Sign out">
               <LogOut className="h-4 w-4" />
             </Button>
           </div>
