@@ -38,3 +38,9 @@ verify_jwt = false
 
 [functions.chat-response-webhook]
 verify_jwt = false
+
+[functions.search-ranked-documents]
+verify_jwt = false
+
+[functions.resolve-project-alias]
+verify_jwt = false
