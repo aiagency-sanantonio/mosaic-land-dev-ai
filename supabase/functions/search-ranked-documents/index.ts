@@ -361,12 +361,8 @@ serve(async (req) => {
       JSON.stringify({
         success: true,
         documents: finalDocs,
-        query: query || null,
         query_type,
         match_count: finalDocs.length,
-        filters_applied: hasFilters,
-        resolved_projects: resolvedProjects,
-        source_type_breakdown: sourceBreakdown,
         ...(ddContext ? { due_diligence_scopes: ddContext.matchedScopes } : {}),
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

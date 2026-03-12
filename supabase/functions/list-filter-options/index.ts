@@ -33,11 +33,16 @@ serve(async (req) => {
     const { data, error } = await supabase.rpc('get_filter_options');
     if (error) throw error;
 
+    // Slim to simple string arrays (strip chunk_count)
+    const projects = (data?.projects || []).map((p: any) => p.name).filter(Boolean);
+    const doc_types = (data?.doc_types || []).map((d: any) => d.type).filter(Boolean);
+    const file_types = (data?.file_types || []).map((f: any) => f.extension).filter(Boolean);
+
     return new Response(JSON.stringify({
       success: true,
-      projects: data?.projects || [],
-      doc_types: data?.doc_types || [],
-      file_types: data?.file_types || [],
+      projects,
+      doc_types,
+      file_types,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {
