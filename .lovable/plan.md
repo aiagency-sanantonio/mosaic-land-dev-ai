@@ -1,34 +1,39 @@
 
-## Fix Folder Actions Menu -- Move Below Folder Header
 
-### Problem
-The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
+# Audit: Phase 2 Edge Functions — Issues Found
 
-### Solution
-Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
+After reviewing all Phase 2 edge functions, I found the following issues:
 
-### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
+## Issue 1: Missing `config.toml` entries (will cause deploy/auth failures)
 
-1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
+Three functions exist on disk but are **not registered** in `supabase/config.toml`:
+- `list-filter-options`
+- `chat-webhook`
+- `index-webhook`
 
-2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
-   - A "Rename" button (pencil icon + text)
-   - A "Delete" button (trash icon + text, styled destructive)
-   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
+Without `verify_jwt = false`, these functions will reject all requests with JWT verification errors.
 
-3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
+**Fix:** Add all three to `config.toml`.
 
-### Layout sketch
-```text
-Before:
-  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
+## Issue 2: `list-filter-options` has 1000-row limit
 
-After:
-  [chevron] [folder icon] Folder Name
-    [Rename] [Delete]                          <-- always visible action buttons
-    - Chat 1
-    - Chat 2
-```
+This function queries the `documents` table (which has many thousands of rows) with a hard `limit(1000)` on all three queries. It will return an incomplete list of projects, doc types, and file types. The code even has comments acknowledging this (lines 94-99).
 
-### Technical note
-The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
+**Fix:** Use the same `fetchAll` pagination pattern used in `detect-project-aliases`, or query `indexing_status` / `dropbox_files` for project names instead (lighter weight).
+
+## Issue 3: `query-project-metrics` has 500-row limit
+
+With 19,000+ rows in `project_data`, a broad query (no project filter) will silently truncate results and produce incorrect aggregations.
+
+**Fix:** Either paginate or increase the limit for aggregation queries. Since this is called by N8N with filters, a limit of 1000-2000 with a warning when truncated is reasonable.
+
+## Summary of Changes
+
+| File | Change |
+|------|--------|
+| `supabase/config.toml` | Add `list-filter-options`, `chat-webhook`, `index-webhook` entries |
+| `supabase/functions/list-filter-options/index.ts` | Add pagination to get complete project/doctype/filetype lists |
+| `supabase/functions/query-project-metrics/index.ts` | Increase limit and add `truncated` warning flag |
+
+No changes needed for: `detect-project-aliases` (already fixed), `resolve-project-alias`, `compare-projects`, `query-permits`, `query-dd-status`, `search-ranked-documents`, `extract-structured-data`, `process-document` — these all look correct.
+
