@@ -452,6 +452,9 @@ serve(async (req) => {
       console.log('Storing structured data...');
       structuredResults = await storeStructuredData(supabase, structuredData, filePath, fileName || '');
       console.log(`Stored: ${structuredResults.metrics} metrics, ${structuredResults.permits} permits, ${structuredResults.dd_items} DD items`);
+
+      // Auto-detect project aliases by comparing extracted names to folder name
+      await detectAndStoreAliases(supabase, structuredData, filePath);
     }
 
     // Update status
