@@ -197,7 +197,8 @@ serve(async (req) => {
     const {
       query = '',
       query_type = 'general',
-      match_count = 15,
+      match_count = 8,
+      content_max_length = 300,
       match_threshold = 0.15,
       filter_project = null,
       filter_doc_type = null,
