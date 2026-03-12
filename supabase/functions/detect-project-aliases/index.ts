@@ -6,20 +6,41 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-/**
- * Extract the project folder name from a Dropbox-style file path.
- * E.g. "/1-Projects/Sunset Ridge/Engineering/file.pdf" → "Sunset Ridge"
- */
 function extractFolderProject(filePath: string): string | null {
   const match = filePath.match(/\/1-Projects\/([^/]+)/i);
   return match ? match[1].trim() : null;
 }
 
-/**
- * Normalize a project name for comparison (lowercase, collapse whitespace, strip punctuation).
- */
 function normalize(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function isLikelyNoise(name: string): boolean {
+  if (name.length > 80) return true;
+  const noisePatterns = /acres field notes|attachment|exhibit|appendix|schedule|untitled/i;
+  return noisePatterns.test(name);
+}
+
+async function fetchAll(
+  supabase: any,
+  table: string,
+  columns: string,
+): Promise<any[]> {
+  const PAGE = 1000;
+  let offset = 0;
+  const all: any[] = [];
+  while (true) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(columns)
+      .range(offset, offset + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
 }
 
 serve(async (req) => {
@@ -35,7 +56,6 @@ serve(async (req) => {
   const authHeader = req.headers.get('Authorization');
   const expectedSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
   if (!authHeader || !expectedSecret || authHeader.replace('Bearer ', '') !== expectedSecret) {
-    // Also allow authenticated Supabase users
     const token = authHeader?.replace('Bearer ', '');
     if (token) {
       const { data: { user } } = await supabase.auth.getUser(token);
@@ -50,85 +70,57 @@ serve(async (req) => {
   }
 
   try {
-    // Gather project names from all structured tables, grouped by folder
-    const folderNames: Map<string, Map<string, number>> = new Map();
+    // folder -> Set of extracted project names
+    const folderNames: Map<string, Set<string>> = new Map();
 
     const addEntry = (folderProject: string | null, projectName: string | null) => {
       if (!folderProject || !projectName || projectName.trim().length === 0) return;
+      if (isLikelyNoise(projectName.trim())) return;
       const fp = folderProject.trim();
-      if (!folderNames.has(fp)) folderNames.set(fp, new Map());
-      const counts = folderNames.get(fp)!;
-      const name = projectName.trim();
-      counts.set(name, (counts.get(name) || 0) + 1);
+      if (!folderNames.has(fp)) folderNames.set(fp, new Set());
+      folderNames.get(fp)!.add(projectName.trim());
     };
 
-    // 1. project_data
-    const { data: pdRows } = await supabase
-      .from('project_data')
-      .select('project_name, source_file_path');
-    for (const row of pdRows || []) {
-      addEntry(extractFolderProject(row.source_file_path || ''), row.project_name);
-    }
+    // Fetch all rows with pagination
+    const [pdRows, ptRows, ddRows] = await Promise.all([
+      fetchAll(supabase, 'project_data', 'project_name, source_file_path'),
+      fetchAll(supabase, 'permits_tracking', 'project_name, source_file_path'),
+      fetchAll(supabase, 'dd_checklists', 'project_name, source_file_path'),
+    ]);
 
-    // 2. permits_tracking
-    const { data: ptRows } = await supabase
-      .from('permits_tracking')
-      .select('project_name, source_file_path');
-    for (const row of ptRows || []) {
-      addEntry(extractFolderProject(row.source_file_path || ''), row.project_name);
-    }
-
-    // 3. dd_checklists
-    const { data: ddRows } = await supabase
-      .from('dd_checklists')
-      .select('project_name, source_file_path');
-    for (const row of ddRows || []) {
-      addEntry(extractFolderProject(row.source_file_path || ''), row.project_name);
-    }
-
-    // Also add the folder name itself as a name variant
-    for (const [folderProject, counts] of folderNames) {
-      if (!counts.has(folderProject)) {
-        counts.set(folderProject, 0); // weight 0 so it only wins if no other names exist
-      }
-    }
+    for (const row of pdRows) addEntry(extractFolderProject(row.source_file_path || ''), row.project_name);
+    for (const row of ptRows) addEntry(extractFolderProject(row.source_file_path || ''), row.project_name);
+    for (const row of ddRows) addEntry(extractFolderProject(row.source_file_path || ''), row.project_name);
 
     // Load existing aliases to skip duplicates
-    const { data: existingAliases } = await supabase
-      .from('project_aliases')
-      .select('canonical_project_name, alias_name');
+    const existingAliases = await fetchAll(supabase, 'project_aliases', 'canonical_project_name, alias_name');
     const existingSet = new Set(
-      (existingAliases || []).map(a => `${normalize(a.canonical_project_name)}::${normalize(a.alias_name)}`)
+      existingAliases.map((a: any) => `${normalize(a.canonical_project_name)}::${normalize(a.alias_name)}`)
     );
 
     let aliasesCreated = 0;
     const summary: Array<{ folder: string; canonical: string; aliases: string[] }> = [];
 
-    for (const [folderProject, counts] of folderNames) {
-      const distinctNames = Array.from(counts.entries());
-      if (distinctNames.length < 2) continue;
-
-      // Pick the most frequent name as canonical
-      distinctNames.sort((a, b) => b[1] - a[1]);
-      const canonical = distinctNames[0][0];
-      const aliases = distinctNames.slice(1).map(([name]) => name);
-
+    for (const [folderProject, names] of folderNames) {
+      // Canonical = folder name. All extracted names that differ become aliases.
+      const canonical = folderProject;
       const newAliases: string[] = [];
-      for (const alias of aliases) {
-        if (normalize(alias) === normalize(canonical)) continue;
-        const key = `${normalize(canonical)}::${normalize(alias)}`;
+
+      for (const name of names) {
+        if (normalize(name) === normalize(canonical)) continue;
+        const key = `${normalize(canonical)}::${normalize(name)}`;
         if (existingSet.has(key)) continue;
 
         const { error } = await supabase.from('project_aliases').upsert({
           canonical_project_name: canonical,
-          alias_name: alias,
+          alias_name: name,
           alias_type: 'auto_detected',
           notes: `Auto-detected from folder "${folderProject}"`,
         }, { onConflict: 'canonical_project_name,alias_name' });
 
         if (!error) {
           aliasesCreated++;
-          newAliases.push(alias);
+          newAliases.push(name);
           existingSet.add(key);
         }
       }
@@ -142,6 +134,7 @@ serve(async (req) => {
       success: true,
       aliases_created: aliasesCreated,
       folders_scanned: folderNames.size,
+      rows_fetched: { project_data: pdRows.length, permits_tracking: ptRows.length, dd_checklists: ddRows.length },
       details: summary,
     }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
