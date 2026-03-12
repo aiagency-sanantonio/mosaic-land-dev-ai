@@ -1,32 +1,34 @@
 
+## Fix Folder Actions Menu -- Move Below Folder Header
 
-## Problem Diagnosis
+### Problem
+The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
 
-The agent is returning incomplete/inaccurate answers because of the aggressive token optimization we applied:
+### Solution
+Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
 
-1. **`content_max_length = 300`** — 300 characters is very short. Many documents have key information beyond the first 300 chars (e.g., cost breakdowns, permit details, scope descriptions). The agent simply can't see enough of each document to give complete answers.
+### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
 
-2. **`match_count = 8`** — For aggregation questions ("total costs across all phases"), 8 results may miss relevant documents.
+1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
 
-## Proposed Fix
+2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
+   - A "Rename" button (pencil icon + text)
+   - A "Delete" button (trash icon + text, styled destructive)
+   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
 
-Increase the defaults to a balanced middle ground — enough content for accuracy without blowing up the context window:
+3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
 
-### Changes to `supabase/functions/search-ranked-documents/index.ts`
+### Layout sketch
+```text
+Before:
+  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
 
-| Parameter | Current | Proposed | Rationale |
-|-----------|---------|----------|-----------|
-| `content_max_length` | 300 | 800 | Captures most key content (costs, dates, terms) while still being ~60% smaller than full content |
-| `match_count` (general) | 8 | 12 | Better coverage for aggregation questions |
-| `match_count` (pricing) | 30 → trim to 8 | 30 → trim to 12 | More final results for cost comparisons |
-| `match_count` (DD) | 25 → trim to 8 | 25 → trim to 12 | Better DD scope coverage |
+After:
+  [chevron] [folder icon] Folder Name
+    [Rename] [Delete]                          <-- always visible action buttons
+    - Chat 1
+    - Chat 2
+```
 
-This is a single-line default change plus updating the `initialMatchCount` fallback. The agent prompt's recommended `match_count` values (10 for specific, 20 for broad) will override these defaults when the agent sends them explicitly.
-
-### N8N Agent Prompt Update
-
-Update the search parameter guidance to recommend:
-- Broad questions: `match_count: 15` (was 20 — still fine)
-- Specific lookups: `match_count: 10` (unchanged)
-- Add `content_max_length: 800` as a visible parameter the agent can override to `1200` for content-heavy questions like "what does the contract say about..."
-
+### Technical note
+The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
