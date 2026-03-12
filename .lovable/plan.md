@@ -1,34 +1,24 @@
 
-## Fix Folder Actions Menu -- Move Below Folder Header
 
-### Problem
-The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
+# Fix: Batch Alias Detection Pagination
 
-### Solution
-Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
+## Problem
+The `detect-project-aliases` function queries `project_data` (19,287 rows), `permits_tracking` (1,137 rows), and `dd_checklists` (557 rows) using the Supabase client, which defaults to a **1,000-row limit**. Most data is never seen, so no aliases get created.
 
-### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
+## Solution
+Update `detect-project-aliases/index.ts` to paginate all three queries using `.range()` in batches of 1,000 until all rows are consumed.
 
-1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
+Additionally, add a smarter canonical name selection: use the **folder name** as canonical (since that's the stable identifier) rather than the most frequent extracted name. Many extracted names are document titles or legal descriptions, not actual project names.
 
-2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
-   - A "Rename" button (pencil icon + text)
-   - A "Delete" button (trash icon + text, styled destructive)
-   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
+## Changes
 
-3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
+### `supabase/functions/detect-project-aliases/index.ts`
+- Add a `fetchAll` helper that paginates `.select()` calls in batches of 1,000
+- Use it for all three table queries
+- Change canonical name logic: always use the folder name as canonical, all other distinct names become aliases
+- Filter out aliases that are clearly document titles (very long names, contain "acres field notes", etc.) — optional heuristic to reduce noise
+- Lower the threshold: create aliases even when there's only 1 distinct name that differs from the folder name (currently requires `< 2` distinct names)
 
-### Layout sketch
-```text
-Before:
-  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
+## File changed
+- `supabase/functions/detect-project-aliases/index.ts` — pagination + canonical logic fix
 
-After:
-  [chevron] [folder icon] Folder Name
-    [Rename] [Delete]                          <-- always visible action buttons
-    - Chat 1
-    - Chat 2
-```
-
-### Technical note
-The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
