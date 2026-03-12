@@ -1,1 +1,0 @@
-ALTER TABLE public.project_aliases ADD CONSTRAINT project_aliases_canonical_alias_unique UNIQUE (canonical_project_name, alias_name);
