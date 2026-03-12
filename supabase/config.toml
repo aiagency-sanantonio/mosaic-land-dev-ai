@@ -47,3 +47,12 @@ verify_jwt = false
 
 [functions.detect-project-aliases]
 verify_jwt = false
+
+[functions.list-filter-options]
+verify_jwt = false
+
+[functions.chat-webhook]
+verify_jwt = false
+
+[functions.index-webhook]
+verify_jwt = false
