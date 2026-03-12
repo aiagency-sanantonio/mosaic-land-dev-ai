@@ -301,19 +301,14 @@ serve(async (req) => {
       const isArchive = isArchivePath(doc.file_path);
 
       return {
-        id: doc.id,
-        content: doc.content,
         file_name: doc.file_name,
-        file_path: doc.file_path,
-        file_url: fileUrl,
-        metadata: doc.metadata,
-        similarity: doc.similarity,
+        content: doc.content.substring(0, content_max_length),
         source_type: sourceType,
         document_date: documentDate,
         project_name: projectName,
+        similarity: doc.similarity,
+        file_url: fileUrl,
         is_archive: isArchive,
-        match_reason: 'semantic',
-        confidence: doc.similarity,
       };
     });
 
