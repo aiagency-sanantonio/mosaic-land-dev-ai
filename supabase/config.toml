@@ -44,3 +44,6 @@ verify_jwt = false
 
 [functions.resolve-project-alias]
 verify_jwt = false
+
+[functions.detect-project-aliases]
+verify_jwt = false
