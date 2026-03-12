@@ -1,27 +1,34 @@
 
+## Fix Folder Actions Menu -- Move Below Folder Header
 
-# Phase 3: User Profile Settings Page
+### Problem
+The three-dot menu button for folders sits inline with the `CollapsibleTrigger` inside a flex row. The sidebar's overflow constraints and the Collapsible component's event handling are likely preventing the dropdown from rendering or being clickable. The button may be clipped or swallowed by the collapsible trigger.
 
-## What we're building
-A settings page accessible from the chat sidebar where users can view and edit their profile preferences. These preferences feed into the AI's context so it can tailor responses.
+### Solution
+Move the folder actions (Rename / Delete) out of the folder header row and into a small action bar that appears **below** the folder name, inside the `CollapsibleContent`. This guarantees visibility and avoids all interaction conflicts with the `CollapsibleTrigger`.
 
-## Database
-The `user_profiles_extended` table already exists with all needed columns: `display_name`, `role_title`, `company_context_summary`, `drafting_preferences`, `preferred_projects`, `notes_for_ai`. No migrations needed.
+### Changes (single file: `src/components/chat/ChatSidebar.tsx`)
 
-## Files
+1. **Remove the `DropdownMenu` from the folder header row** (lines 226-248) -- the header becomes just the chevron + folder icon + name, acting purely as a collapsible toggle.
 
-### New: `src/pages/Settings.tsx`
-- Form with fields for all `user_profiles_extended` columns
-- Loads existing profile on mount via `supabase.from('user_profiles_extended').select().eq('user_id', user.id).single()`
-- Upserts on save
-- Fields: Display Name, Role/Title, Company Context Summary (textarea), Drafting Preferences (textarea), Preferred Projects (comma-separated input mapped to text array), Notes for AI (textarea)
-- Back button to return to chat
-- Toast on save success/error
+2. **Add a folder action bar inside `CollapsibleContent`**, rendered as a small row below the folder name and above the thread list:
+   - A "Rename" button (pencil icon + text)
+   - A "Delete" button (trash icon + text, styled destructive)
+   - Styled as small, subtle ghost buttons in a flex row with `px-4 py-1` padding to align with the indented thread list
 
-### Modified: `src/App.tsx`
-- Add route: `/settings` -> `Settings`
+3. **Keep all existing logic unchanged** -- `handleDeleteFolder`, `handleRenameFolder`, rename input state, and the `AlertDialog` for delete confirmation all stay as-is. Only the UI placement moves.
 
-### Modified: `src/components/chat/ChatSidebar.tsx`
-- Add a Settings icon button (gear icon) next to the sign-out button in the footer
-- Navigates to `/settings`
+### Layout sketch
+```text
+Before:
+  [chevron] [folder icon] Folder Name  [...]  <-- dots often invisible/unclickable
 
+After:
+  [chevron] [folder icon] Folder Name
+    [Rename] [Delete]                          <-- always visible action buttons
+    - Chat 1
+    - Chat 2
+```
+
+### Technical note
+The rename inline input will continue to appear in the header row (replacing the folder name text) when the user clicks Rename -- that behavior stays the same. The only change is where the Rename/Delete triggers live.
