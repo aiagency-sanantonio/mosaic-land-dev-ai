@@ -27,11 +27,14 @@ serve(async (req) => {
     if (date_from) query = query.gte('date', date_from);
     if (date_to) query = query.lte('date', date_to);
 
-    const { data, error } = await query.order('date', { ascending: false }).limit(500);
+    const LIMIT = 2000;
+    const { data, error } = await query.order('date', { ascending: false }).limit(LIMIT);
     if (error) throw error;
 
+    const truncated = (data?.length || 0) >= LIMIT;
+
     // Compute aggregations if requested
-    let result: Record<string, unknown> = { rows: data, count: data?.length || 0 };
+    let result: Record<string, unknown> = { rows: data, count: data?.length || 0, truncated };
 
     if (aggregation && data && data.length > 0) {
       const values = data.map(r => Number(r.value)).filter(v => !isNaN(v));
