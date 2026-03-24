@@ -459,6 +459,7 @@ serve(async (req) => {
     } else if (query_type === 'STATUS_LOOKUP') {
       context = await retrieveStatus(project_name, message);
       contextType = 'Permit Status Data';
+      systemAddendum += '\n\nWhen permit records are missing a permit number, flag them with ⚠️ INCOMPLETE RECORD and note that the data may have been extracted incorrectly from the source document. Do not treat incomplete records as fully reliable.';
     } else if (query_type === 'DOCUMENT_SEARCH') {
       context = await retrieveDocuments(message, project_name, userId, threadId);
       contextType = 'Retrieved Documents';
