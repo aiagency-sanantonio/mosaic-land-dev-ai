@@ -1,34 +1,22 @@
 
 
-## Update `retrieveDocuments` with name-variation fallback
+## Update classifier prompt for due diligence CLARIFY responses
 
-### What changes
+### Change
 
-Modify `retrieveDocuments` in `supabase/functions/chat-rag/index.ts` (lines 158-204) to try multiple project name variations and fall back to an unfiltered search if results are sparse.
+Update the `CLASSIFY_SYSTEM_PROMPT` in `supabase/functions/chat-rag/index.ts` (line 21) to include a specific clarify question for due diligence cost queries.
 
-### Logic
+**File: `supabase/functions/chat-rag/index.ts`** — modify the CLARIFY line in the prompt:
 
-1. **Build name variations** from the classified `projectName`:
-   - The original name (e.g. `"Landon Ridge"`)
-   - Common prefixes/suffixes: `"<name> MLP"`, `"SA <name>"`, `"MLP <name>"`
-   - These cover the most common alias patterns in the data
+Replace:
+```
+CLARIFY — too ambiguous, especially any "due diligence cost" or "DD cost" question without specified scope
+```
 
-2. **First attempt**: Call `search-ranked-documents` with `filter_project` set to the original `projectName` (current behavior).
+With:
+```
+CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
+```
 
-3. **Check result count**: If fewer than 3 documents come back, **retry** with `filter_project: null` but prepend the project name to the query string (e.g. `"Landon Ridge: <original message>"`) so vector similarity still prioritizes relevant docs.
-
-4. **Merge & deduplicate**: Combine results from both calls, deduplicate by document `id`, keep the higher-similarity hit when duplicates exist.
-
-5. **No project name → skip variations**: If `projectName` is null, make a single call as today.
-
-### Changes
-
-**File: `supabase/functions/chat-rag/index.ts`** — replace `retrieveDocuments` function (lines 158-204):
-
-- Add a helper to call `search-ranked-documents` with given params
-- First call with `filter_project: projectName`
-- If `docs.length < 3`, retry with `filter_project: null`, `query: "${projectName}: ${message}"`
-- Deduplicate by `id`, format and return
-
-Single file change. No database migrations.
+Single line change. No other files affected.
 
