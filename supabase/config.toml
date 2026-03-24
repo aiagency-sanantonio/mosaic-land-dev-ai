@@ -56,3 +56,6 @@ verify_jwt = false
 
 [functions.index-webhook]
 verify_jwt = false
+
+[functions.chat-rag]
+verify_jwt = false
