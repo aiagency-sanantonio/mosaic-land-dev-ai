@@ -260,28 +260,51 @@ serve(async (req) => {
       embeddingText = JSON.stringify(queryEmbedding);
     }
 
-    // --- Run base vector search (for each resolved project name or once with the original filter) ---
+    // --- Run base vector search ---
     let allResults: any[] = [];
 
     const projectFilters = resolvedProjects.length > 0 ? resolvedProjects : [fProject];
+    const manyAliases = projectFilters.length > 5;
 
-    for (const projFilter of projectFilters) {
+    if (manyAliases) {
+      // Too many aliases — run a single unfiltered query, then filter in JS
+      console.log(`[search-ranked] ${projectFilters.length} aliases — using single query + JS filter`);
       const { data: docs, error: searchErr } = await supabase.rpc('match_documents_filtered_v2', {
         query_embedding_text: embeddingText,
         match_threshold,
-        match_count: initialMatchCount,
-        filter_project: projFilter,
+        match_count: initialMatchCount * 3,
+        filter_project: null,
         filter_doc_type: fDocType,
         filter_file_type: fFileType,
         filter_date_from: fDateFrom,
         filter_date_to: fDateTo,
       });
+      if (searchErr) { console.error('Search RPC error:', searchErr); throw searchErr; }
 
-      if (searchErr) {
-        console.error('Search RPC error:', searchErr);
-        throw searchErr;
+      // Build lowercase set of all alias names for fast matching
+      const aliasSet = new Set(projectFilters.map((n: string) => n.toLowerCase()));
+      allResults = (docs || []).filter((d: any) => {
+        const metaProject = (d.metadata?.project_name || '').toLowerCase();
+        const pathProject = ((d.file_path || '').match(/\/1-Projects\/([^/]+)/i) || [])[1]?.toLowerCase() || '';
+        return aliasSet.has(metaProject) || aliasSet.has(pathProject);
+      });
+      console.log(`[search-ranked] JS-filtered to ${allResults.length} results from ${(docs || []).length}`);
+    } else {
+      // Small alias set — query per project (fast enough)
+      for (const projFilter of projectFilters) {
+        const { data: docs, error: searchErr } = await supabase.rpc('match_documents_filtered_v2', {
+          query_embedding_text: embeddingText,
+          match_threshold,
+          match_count: initialMatchCount,
+          filter_project: projFilter,
+          filter_doc_type: fDocType,
+          filter_file_type: fFileType,
+          filter_date_from: fDateFrom,
+          filter_date_to: fDateTo,
+        });
+        if (searchErr) { console.error('Search RPC error:', searchErr); throw searchErr; }
+        if (docs) allResults.push(...docs);
       }
-      if (docs) allResults.push(...docs);
     }
 
     // Deduplicate by document id
