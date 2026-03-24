@@ -286,7 +286,8 @@ async function synthesizeAnswer(
   message: string,
   chatHistory: string,
   context: string,
-  contextType: string
+  contextType: string,
+  systemAddendum: string = ''
 ): Promise<string> {
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
