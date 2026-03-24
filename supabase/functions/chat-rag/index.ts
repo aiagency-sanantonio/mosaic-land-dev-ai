@@ -31,9 +31,14 @@ interface ClassifyResult {
   reasoning: string;
 }
 
-async function classifyQuery(message: string): Promise<ClassifyResult> {
+async function classifyQuery(message: string, chatHistory: string = ''): Promise<ClassifyResult> {
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+
+  const trimmedHistory = chatHistory ? chatHistory.slice(-1500) : '';
+  const userContent = trimmedHistory
+    ? `## Recent Chat History\n${trimmedHistory}\n\n## Current Question\n${message}`
+    : message;
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -46,7 +51,7 @@ async function classifyQuery(message: string): Promise<ClassifyResult> {
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 256,
       system: CLASSIFY_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: message }],
+      messages: [{ role: 'user', content: userContent }],
     }),
   });
 
