@@ -1,18 +1,16 @@
 
 
-## Fix: Claude Haiku returning markdown-wrapped JSON in `classifyQuery`
+## Fix: Invalid Anthropic model name causing 404
 
 ### Problem
-The `classifyQuery` function in `chat-rag/index.ts` calls Claude Haiku to classify user queries. Despite the system prompt saying "Return ONLY valid JSON — no markdown", Haiku is wrapping the response in ` ```json ... ``` ` code fences. `JSON.parse` then fails, causing the entire pipeline to error out and the frontend spinner to spin forever.
+The edge function logs show the error clearly:
+```
+Anthropic API error (404): model: claude-sonnet-4-6-20250514
+```
+The model `claude-sonnet-4-6-20250514` does not exist. The `synthesizeAnswer` function fails, chat-rag returns 500, and the frontend never gets a response (no spinner either, since the job gets marked as failed but the UI doesn't show that).
 
 ### Fix
-Strip markdown code fences from the response text before parsing JSON. Add a simple regex cleanup in the `classifyQuery` function (line 60):
+Change the model in `synthesizeAnswer` in `supabase/functions/chat-rag/index.ts` from `claude-sonnet-4-6-20250514` to `claude-sonnet-4-20250514` (the correct model identifier).
 
-```typescript
-// Before JSON.parse, strip markdown fences if present
-const cleaned = text.replace(/```(?:json)?\s*/g, '').trim();
-return JSON.parse(cleaned) as ClassifyResult;
-```
-
-This is a one-line change in `supabase/functions/chat-rag/index.ts` at line 60. No other files need changes.
+Single line change — update the model string in the `synthesizeAnswer` function's fetch body.
 
