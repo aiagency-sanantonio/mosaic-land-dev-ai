@@ -188,15 +188,28 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
   }
 
   const lowerMsg = message.toLowerCase();
+  const wantsHistorical = /\b(historical|all permits|full history|past permits|every permit)\b/.test(lowerMsg);
+
   if (lowerMsg.includes('expiring') || lowerMsg.includes('due')) {
     const now = new Date();
     const future = new Date();
     future.setDate(future.getDate() + 90);
     query = query.gte('expiration_date', now.toISOString().split('T')[0]);
     query = query.lte('expiration_date', future.toISOString().split('T')[0]);
+  } else if (!wantsHistorical) {
+    const past90 = new Date();
+    past90.setDate(past90.getDate() - 90);
+    query = query.gte('expiration_date', past90.toISOString().split('T')[0]);
   }
 
-  const { data, error } = await query.order('expiration_date', { ascending: true }).limit(200);
+  let countQuery = supabase.from('permits_tracking').select('*', { count: 'exact', head: true });
+  if (projectName) countQuery = countQuery.ilike('project_name', `%${projectName}%`);
+
+  const [{ data, error }, { count: totalCount }] = await Promise.all([
+    query.order('expiration_date', { ascending: true }).limit(200),
+    countQuery,
+  ]);
+
   if (error) throw new Error(`permits_tracking query failed: ${error.message}`);
 
   const now = new Date();
@@ -223,7 +236,10 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
     };
   });
 
-  return JSON.stringify(results);
+  return JSON.stringify({
+    permits: results,
+    _note: `Showing ${results.length} permits within the actionable window. ${totalCount ?? '?'} total permits exist in the system. Ask for "all permits" or "historical permits" to see the full list.`,
+  });
 }
 
 async function callSearchRanked(
