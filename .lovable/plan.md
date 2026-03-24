@@ -1,27 +1,27 @@
 
 
-## Add `synthesizeAnswer` function to `chat-rag`
+## Rewire `chat-webhook` to call `chat-rag` instead of N8N
 
-### What it does
+### What changes
 
-Calls the Anthropic API (claude-sonnet-4-6) with the TerraChat system prompt, combining chat history, user question, and retrieved context into a final answer.
+Replace the N8N forwarding logic in `chat-webhook/index.ts` so it calls the internal `chat-rag` edge function instead.
 
-### Implementation
+### What stays the same
+- `chat_jobs` row creation (lines 34-52) — untouched
+- `callbackUrl` construction (line 58) — untouched
+- `EdgeRuntime.waitUntil` / fallback pattern — untouched
+- Error handling that marks job as `failed` — kept, updated messaging
+- Returns `{ job_id }` immediately — untouched
 
-Add `synthesizeAnswer(message: string, chatHistory: string, context: string, contextType: string)` after `retrieveDocuments` (around line 201):
+### What changes
+1. **Remove** the `N8N_CHAT_WEBHOOK_URL` env check (lines 16-24)
+2. **Remove** the `xhr` import (line 1) — not needed
+3. **Build the `chat-rag` URL** as `${supabaseUrl}/functions/v1/chat-rag`
+4. **Replace the fetch target** from `webhookUrl` to the chat-rag URL
+5. **Add auth header** using `SUPABASE_ANON_KEY` as Bearer token (already available as a secret)
+6. **Update error messages** from "N8N" references to "chat-rag" / "processing service"
 
-1. Gets `ANTHROPIC_API_KEY` from env
-2. Trims `chatHistory` to last 3000 characters
-3. Builds user content string:
-   - `## Recent Chat History\n{trimmedHistory}` (if any)
-   - `## User Question\n{message}`
-   - `## {contextType}\n{context}` — where `contextType` is one of `"Structured Cost Data"`, `"Permit Status Data"`, or `"Retrieved Documents"`
-4. Calls `https://api.anthropic.com/v1/messages` with:
-   - `model: 'claude-sonnet-4-6-20250514'`
-   - `max_tokens: 2048`
-   - The TerraChat system prompt (Texas land dev context, source citation rules, urgency flagging, data age warnings)
-   - Single user message with the assembled content
-5. Returns the text response
+### Technical detail
 
-No database or config changes needed. Function defined but not yet wired into the main handler.
+The payload sent to `chat-rag` remains identical: `{ ...body, job_id, callback_url }`. The only difference is the destination URL and the addition of an `Authorization: Bearer <SUPABASE_ANON_KEY>` header. The `chat-rag` function already handles the full RAG pipeline and posts results to the callback URL.
 
