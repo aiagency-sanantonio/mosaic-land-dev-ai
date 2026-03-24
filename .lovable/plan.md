@@ -1,41 +1,34 @@
 
 
-## Fix: Document search timeout caused by alias resolution explosion
+## Update `retrieveDocuments` with name-variation fallback
 
-### Problem
+### What changes
 
-When a user asks about "Landon Ridge", the `search-ranked-documents` function resolves it to **80+ project aliases** via the `project_aliases` table. It then loops through every single alias calling `match_documents_filtered_v2` sequentially — that's 80+ individual vector search RPC calls. This causes a Postgres statement timeout (`code: "57014"`), which surfaces as a 500 error. The first attempt fails; sometimes a retry succeeds if caching kicks in.
+Modify `retrieveDocuments` in `supabase/functions/chat-rag/index.ts` (lines 158-204) to try multiple project name variations and fall back to an unfiltered search if results are sparse.
 
-The logs confirm this:
-- `Resolved "Landon Ridge" → [80+ names]`
-- `canceling statement due to statement timeout`
+### Logic
 
-### Fix
+1. **Build name variations** from the classified `projectName`:
+   - The original name (e.g. `"Landon Ridge"`)
+   - Common prefixes/suffixes: `"<name> MLP"`, `"SA <name>"`, `"MLP <name>"`
+   - These cover the most common alias patterns in the data
 
-Instead of looping through each alias individually, pass all resolved project names into a **single** RPC call. The `match_documents_filtered_v2` function currently accepts a single `filter_project` string. Two options:
+2. **First attempt**: Call `search-ranked-documents` with `filter_project` set to the original `projectName` (current behavior).
 
-**Option chosen**: Filter by project in application code instead of per-alias RPC calls.
-1. Call `match_documents_filtered_v2` **once** with `filter_project = null` (no project filter) when there are many aliases (say > 5)
-2. Then filter the results in JS by checking if each document's project name matches any of the resolved aliases
-3. For small alias sets (≤ 5), keep the current loop behavior since it's fast enough
+3. **Check result count**: If fewer than 3 documents come back, **retry** with `filter_project: null` but prepend the project name to the query string (e.g. `"Landon Ridge: <original message>"`) so vector similarity still prioritizes relevant docs.
 
-This avoids modifying the database function and keeps the fix contained to the edge function.
+4. **Merge & deduplicate**: Combine results from both calls, deduplicate by document `id`, keep the higher-similarity hit when duplicates exist.
+
+5. **No project name → skip variations**: If `projectName` is null, make a single call as today.
 
 ### Changes
 
-**File: `supabase/functions/search-ranked-documents/index.ts`**
+**File: `supabase/functions/chat-rag/index.ts`** — replace `retrieveDocuments` function (lines 158-204):
 
-Replace the loop at lines 266-285 with:
-- If `resolvedProjects.length <= 5`: keep existing per-project loop
-- If `resolvedProjects.length > 5`: run a single unfiltered query, then filter results in JS by checking if the document's file_path or metadata project_name matches any resolved alias (case-insensitive)
-- Increase `initialMatchCount` for the unfiltered query to compensate (e.g., `match_count * 3`)
+- Add a helper to call `search-ranked-documents` with given params
+- First call with `filter_project: projectName`
+- If `docs.length < 3`, retry with `filter_project: null`, `query: "${projectName}: ${message}"`
+- Deduplicate by `id`, format and return
 
-### Technical detail
-
-```text
-Before:  80 aliases → 80 sequential RPC calls → timeout
-After:   80 aliases → 1 RPC call (no project filter) → JS filter → fast
-```
-
-No database migrations needed. Single file change.
+Single file change. No database migrations.
 
