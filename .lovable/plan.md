@@ -1,22 +1,31 @@
 
 
-## Update classifier prompt for due diligence CLARIFY responses
+## Update `getSourcePriority` in `chat-rag/index.ts`
 
 ### Change
 
-Update the `CLASSIFY_SYSTEM_PROMPT` in `supabase/functions/chat-rag/index.ts` (line 21) to include a specific clarify question for due diligence cost queries.
+Split the current rank-0 tier into two tiers, giving the `zz md_50kft` / `recent bids` / `average cost` folder the highest priority (rank 0), and demoting regular `bid tab` matches to rank 1.
 
-**File: `supabase/functions/chat-rag/index.ts`** — modify the CLARIFY line in the prompt:
+**File: `supabase/functions/chat-rag/index.ts`**, lines 64–73 — replace `getSourcePriority`:
 
-Replace:
-```
-CLARIFY — too ambiguous, especially any "due diligence cost" or "DD cost" question without specified scope
+```typescript
+function getSourcePriority(filePath: string | null): { rank: number; label: string } {
+  const fp = (filePath || '').toLowerCase();
+  // Tier 0 — company master cost tracking folder
+  if (fp.includes('zz md_50kft') || fp.includes('recent bids') || fp.includes('average cost')) {
+    return { rank: 0, label: 'HIGHEST (master cost)' };
+  }
+  // Tier 1 — regular bid tabs
+  if (fp.includes('bid tab')) {
+    return { rank: 1, label: 'HIGH (bid tab)' };
+  }
+  // Tier 3 — OPC / opinion of probable cost
+  if (fp.includes('opc') || fp.includes('opinion')) {
+    return { rank: 3, label: 'LOW (OPC)' };
+  }
+  return { rank: 2, label: 'NORMAL' };
+}
 ```
 
-With:
-```
-CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
-```
-
-Single line change. No other files affected.
+Rank scale (lower = better): 0 master cost → 1 bid tab → 2 normal → 3 OPC. The sort in `retrieveAggregate` already sorts ascending by `_rank`, so no other changes needed.
 
