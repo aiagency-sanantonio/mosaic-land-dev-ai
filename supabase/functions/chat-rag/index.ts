@@ -96,6 +96,11 @@ async function retrieveAggregate(
   const { data, error } = await query.order('date', { ascending: false }).limit(200);
   if (error) throw new Error(`project_data query failed: ${error.message}`);
 
+  if (!data || data.length === 0) {
+    console.log('retrieveAggregate: no structured data found, falling back to document search');
+    return retrieveDocuments(message, projectName, userId, threadId);
+  }
+
   const rows = (data || []).map(r => {
     const priority = getSourcePriority(r.source_file_path);
     return {
