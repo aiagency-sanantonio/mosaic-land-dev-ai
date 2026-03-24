@@ -1,61 +1,53 @@
 
 
-## Add data currency flags to `retrieveAggregate`
+## Inject preferred projects into system prompt
 
 ### What changes
 
-**File: `supabase/functions/chat-rag/index.ts`**, lines 104–121
+**File: `supabase/functions/chat-rag/index.ts`**
 
-Add a `data_currency_flag` field to each row in the mapping step, computed from the `date` field:
+Currently the profile's `preferred_projects` are only mentioned in the chat history prefix. The request is to also inject them into the system prompt so the LLM prioritizes those projects for general queries.
 
-- `null` date → `"⚠️ No date available — cannot assess data currency"`
-- Older than 730 days → `"⚠️ Data is over 2 years old — recommend getting fresh bids"`
-- 365–730 days old → `"⚠️ Data is 1-2 years old"`
-- Otherwise → `null` (no flag)
+1. **Change `synthesizeAnswer` signature** — add an optional `profileSystemAddendum` parameter (string, default empty).
 
-The flag is included in the JSON output passed to the synthesizer, so it naturally appears in the context the LLM uses to compose the final answer.
+2. **Append to system prompt in `synthesizeAnswer`** — concatenate `TERRACHAT_SYSTEM_PROMPT + profileSystemAddendum` when calling the Anthropic API.
 
-### Code
+3. **Build the addendum in the main handler** — after fetching the profile (line ~355), if `profile.preferred_projects` has items, build the string:
+   ```
+   "\n\nThis user works primarily with these projects: Project A, Project B. When answering general questions that don't mention a specific project, prioritize data from these projects first."
+   ```
 
-Replace the row mapping block (lines 104–121) with:
+4. **Pass it through** — thread `profileSystemAddendum` into `synthesizeAnswer` at the call site (~line 425).
 
+### Code details
+
+**synthesizeAnswer** (line ~285):
 ```typescript
-const now = new Date();
-
-const rows = (data || []).map(r => {
-  const priority = getSourcePriority(r.source_file_path);
-
-  let data_currency_flag: string | null = null;
-  if (!r.date) {
-    data_currency_flag = '⚠️ No date available — cannot assess data currency';
-  } else {
-    const ageMs = now.getTime() - new Date(r.date).getTime();
-    const ageDays = ageMs / (1000 * 60 * 60 * 24);
-    if (ageDays > 730) {
-      data_currency_flag = '⚠️ Data is over 2 years old — recommend getting fresh bids';
-    } else if (ageDays > 365) {
-      data_currency_flag = '⚠️ Data is 1-2 years old';
-    }
-  }
-
-  return {
-    project_name: r.project_name,
-    category: r.category,
-    metric_name: r.metric_name,
-    value: r.value,
-    unit: r.unit,
-    date: r.date,
-    source_file_name: r.source_file_name,
-    source_priority: priority.label,
-    data_currency_flag,
-    _rank: priority.rank,
-  };
-});
-
-rows.sort((a, b) => a._rank - b._rank);
-
-return JSON.stringify(rows.map(({ _rank, ...rest }) => rest));
+async function synthesizeAnswer(
+  message: string,
+  chatHistory: string,
+  context: string,
+  contextType: string,
+  systemAddendum: string = ''
+): Promise<string> {
+  // ...
+  system: TERRACHAT_SYSTEM_PROMPT + systemAddendum,
+  // ...
+}
 ```
 
-No other files or call sites need changes — the flags flow through the existing `context` string into `synthesizeAnswer`, and the system prompt already instructs the model to "flag data older than 2 years."
+**Main handler** (after line ~370, build addendum):
+```typescript
+let systemAddendum = '';
+if (profile?.preferred_projects?.length) {
+  systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
+}
+```
+
+**Call site** (~line 425):
+```typescript
+const answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
+```
+
+No database or other file changes needed.
 
