@@ -1,62 +1,65 @@
 
 
-## Extract dates from filenames when `date` is null
+## Update `retrieveStatus` default date window
 
 ### What changes
 
-**File: `supabase/functions/chat-rag/index.ts`**
+**File: `supabase/functions/chat-rag/index.ts`** — `retrieveStatus` function (lines 179-227)
 
-1. **Add a `extractDateFromFilename` helper** (before `retrieveAggregate`) that tries two patterns on a filename:
-   - `YYMMDD` — 6 digits at the start of the filename (e.g. `190128_BidTab.xlsx` → `2019-01-28`)
-   - `YYYY-MM-DD` — anywhere in the filename (e.g. `report_2021-06-15.pdf` → `2021-06-15`)
-   - Returns a `Date` object or `null`
+1. **Detect "historical" intent** — check if the message contains keywords like `historical`, `all permits`, `full history`, `past permits`. If so, skip date filtering (current behavior).
 
-2. **Update the null-date branch** in `retrieveAggregate` — instead of immediately flagging "No date available", call `extractDateFromFilename(r.source_file_name)`. If a date is found, use it for recency calculation and set the row's `date` field to a readable string like `"2019-01-28 (from filename)"`. If no date can be extracted, keep the existing flag.
+2. **Apply default 90-day window** — when the user does NOT ask for expiring/due specifically AND does not ask for historical data, apply a default filter: `expiration_date >= now - 90 days` (excludes permits expired more than 90 days ago). The existing `expiring`/`due` branch stays as-is (future 90 days only).
 
-### Helper function
+3. **Get total count** — run a separate count query (`select('*', { count: 'exact', head: true })`) to get total permits in the system (optionally filtered by project).
+
+4. **Append summary note** — add a note at the end of the JSON output: `"_note": "Showing X permits within the actionable window (expired ≤90 days or expiring ≤90 days). Y total permits exist in the system. Ask for 'all permits' or 'historical permits' to see the full list."`
+
+### Code sketch
 
 ```typescript
-function extractDateFromFilename(fileName: string | null): Date | null {
-  if (!fileName) return null;
-  // Try YYYY-MM-DD anywhere
-  const isoMatch = fileName.match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (isoMatch) {
-    const d = new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`);
-    if (!isNaN(d.getTime())) return d;
+async function retrieveStatus(projectName: string | null, message: string): Promise<string> {
+  const supabase = createClient(/*...*/);
+
+  let query = supabase.from('permits_tracking').select('*');
+  if (projectName) query = query.ilike('project_name', `%${projectName}%`);
+
+  const lowerMsg = message.toLowerCase();
+  const wantsHistorical = /\b(historical|all permits|full history|past permits|every permit)\b/.test(lowerMsg);
+
+  if (lowerMsg.includes('expiring') || lowerMsg.includes('due')) {
+    // Existing: future 90 days only
+    const now = new Date();
+    const future = new Date();
+    future.setDate(future.getDate() + 90);
+    query = query.gte('expiration_date', now.toISOString().split('T')[0]);
+    query = query.lte('expiration_date', future.toISOString().split('T')[0]);
+  } else if (!wantsHistorical) {
+    // Default: 90 days ago through future
+    const past90 = new Date();
+    past90.setDate(past90.getDate() - 90);
+    query = query.gte('expiration_date', past90.toISOString().split('T')[0]);
   }
-  // Try YYMMDD at the start
-  const yymmddMatch = fileName.match(/^(\d{2})(\d{2})(\d{2})/);
-  if (yymmddMatch) {
-    const yy = parseInt(yymmddMatch[1]);
-    const year = yy >= 50 ? 1900 + yy : 2000 + yy;
-    const d = new Date(`${year}-${yymmddMatch[2]}-${yymmddMatch[3]}`);
-    if (!isNaN(d.getTime())) return d;
-  }
-  return null;
+  // If wantsHistorical: no date filter applied
+
+  // Get total count
+  let countQuery = supabase.from('permits_tracking').select('*', { count: 'exact', head: true });
+  if (projectName) countQuery = countQuery.ilike('project_name', `%${projectName}%`);
+
+  const [{ data, error }, { count: totalCount }] = await Promise.all([
+    query.order('expiration_date', { ascending: true }).limit(200),
+    countQuery,
+  ]);
+
+  if (error) throw new Error(`permits_tracking query failed: ${error.message}`);
+
+  // ... existing urgency mapping logic unchanged ...
+
+  return JSON.stringify({
+    permits: results,
+    _note: `Showing ${results.length} permits. ${totalCount ?? '?'} total permits exist in the system. Ask for "all permits" or "historical permits" to see the full list.`,
+  });
 }
 ```
 
-### Updated null-date branch (lines 117-118)
-
-```typescript
-if (!r.date) {
-  const fileDate = extractDateFromFilename(r.source_file_name);
-  if (fileDate) {
-    // Use extracted date for recency check
-    const ageMs = now.getTime() - fileDate.getTime();
-    const ageDays = ageMs / (1000 * 60 * 60 * 24);
-    const dateStr = fileDate.toISOString().split('T')[0];
-    effectiveDate = `${dateStr} (from filename)`;
-    if (ageDays > 730) {
-      data_currency_flag = '⚠️ Data is over 2 years old — recommend getting fresh bids';
-    } else if (ageDays > 365) {
-      data_currency_flag = '⚠️ Data is 1-2 years old';
-    }
-  } else {
-    data_currency_flag = '⚠️ No date available — cannot assess data currency';
-  }
-}
-```
-
-The row's `date` field in the output will use `effectiveDate` (either `r.date` or the extracted date string), so the synthesizer sees a meaningful date even when the DB field is null.
+No database or other file changes needed.
 
