@@ -370,6 +370,11 @@ serve(async (req) => {
       }
     }
 
+    let systemAddendum = '';
+    if (profile?.preferred_projects?.length) {
+      systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
+    }
+
     const { query_type, project_name, clarify_question } = classification;
 
     // CLARIFY — return the clarify question directly, no retrieval
