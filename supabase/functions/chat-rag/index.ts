@@ -377,7 +377,7 @@ serve(async (req) => {
     let contextType = 'Retrieved Documents';
 
     if (query_type === 'AGGREGATE') {
-      context = await retrieveAggregate(project_name);
+      context = await retrieveAggregate(project_name, message, userId, threadId);
       contextType = 'Structured Cost Data';
     } else if (query_type === 'STATUS_LOOKUP') {
       context = await retrieveStatus(project_name, message);
