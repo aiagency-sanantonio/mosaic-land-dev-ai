@@ -68,6 +68,23 @@ async function classifyQuery(message: string, chatHistory: string = ''): Promise
   return JSON.parse(cleaned) as ClassifyResult;
 }
 
+function extractDateFromFilename(fileName: string | null): Date | null {
+  if (!fileName) return null;
+  const isoMatch = fileName.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const d = new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`);
+    if (!isNaN(d.getTime())) return d;
+  }
+  const yymmddMatch = fileName.match(/^(\d{2})(\d{2})(\d{2})/);
+  if (yymmddMatch) {
+    const yy = parseInt(yymmddMatch[1]);
+    const year = yy >= 50 ? 1900 + yy : 2000 + yy;
+    const d = new Date(`${year}-${yymmddMatch[2]}-${yymmddMatch[3]}`);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
 function getSourcePriority(filePath: string | null): { rank: number; label: string } {
   const fp = (filePath || '').toLowerCase();
   // Tier 0 — company master cost tracking folder
