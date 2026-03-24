@@ -63,13 +63,19 @@ async function classifyQuery(message: string): Promise<ClassifyResult> {
 
 function getSourcePriority(filePath: string | null): { rank: number; label: string } {
   const fp = (filePath || '').toLowerCase();
-  if (fp.includes('zz md_50kft') || fp.includes('recent bids') || fp.includes('bid tab')) {
-    return { rank: 0, label: 'HIGH (bid tab)' };
+  // Tier 0 — company master cost tracking folder
+  if (fp.includes('zz md_50kft') || fp.includes('recent bids') || fp.includes('average cost')) {
+    return { rank: 0, label: 'HIGHEST (master cost)' };
   }
+  // Tier 1 — regular bid tabs
+  if (fp.includes('bid tab')) {
+    return { rank: 1, label: 'HIGH (bid tab)' };
+  }
+  // Tier 3 — OPC / opinion of probable cost
   if (fp.includes('opc') || fp.includes('opinion')) {
-    return { rank: 2, label: 'LOW (OPC)' };
+    return { rank: 3, label: 'LOW (OPC)' };
   }
-  return { rank: 1, label: 'NORMAL' };
+  return { rank: 2, label: 'NORMAL' };
 }
 
 async function retrieveAggregate(projectName: string | null): Promise<string> {
