@@ -20,6 +20,8 @@ HYBRID — needs both structured data and documents (e.g. "full status update fo
 
 CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
 
+If the chat history shows the assistant just asked a clarifying question and the user's current message is a short follow-up answer (e.g. "all", "yes", "all of the above", a project name, or a list of components), do NOT return CLARIFY. Instead, combine the original question from chat history with the user's answer and classify the combined intent as AGGREGATE, STATUS_LOOKUP, DOCUMENT_SEARCH, or HYBRID accordingly.
+
 Return: { "query_type": "...", "project_name": "name or null", "clarify_question": "question to ask user or null", "reasoning": "one sentence" }`;
 
 interface ClassifyResult {
@@ -29,9 +31,14 @@ interface ClassifyResult {
   reasoning: string;
 }
 
-async function classifyQuery(message: string): Promise<ClassifyResult> {
+async function classifyQuery(message: string, chatHistory: string = ''): Promise<ClassifyResult> {
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+
+  const trimmedHistory = chatHistory ? chatHistory.slice(-1500) : '';
+  const userContent = trimmedHistory
+    ? `## Recent Chat History\n${trimmedHistory}\n\n## Current Question\n${message}`
+    : message;
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -44,7 +51,7 @@ async function classifyQuery(message: string): Promise<ClassifyResult> {
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 256,
       system: CLASSIFY_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: message }],
+      messages: [{ role: 'user', content: userContent }],
     }),
   });
 
@@ -348,7 +355,7 @@ serve(async (req) => {
         .select('display_name, role_title, preferred_projects')
         .eq('user_id', userId)
         .maybeSingle(),
-      classifyQuery(message),
+      classifyQuery(message, chatHistory || ''),
     ]);
 
     console.log('classification:', JSON.stringify(classification));
