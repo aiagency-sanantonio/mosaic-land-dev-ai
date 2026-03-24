@@ -1,53 +1,45 @@
 
 
-## Inject preferred projects into system prompt
+## Update `classifyQuery` to handle follow-up answers to clarifying questions
 
 ### What changes
 
 **File: `supabase/functions/chat-rag/index.ts`**
 
-Currently the profile's `preferred_projects` are only mentioned in the chat history prefix. The request is to also inject them into the system prompt so the LLM prioritizes those projects for general queries.
+**1. Update `CLASSIFY_SYSTEM_PROMPT`** — Add instructions telling the classifier that when chat history shows the assistant just asked a clarifying question and the user's current message is a short answer (e.g. "all", "yes", a project name), it should NOT return CLARIFY. Instead, it should combine the original question with the answer and classify as the appropriate type.
 
-1. **Change `synthesizeAnswer` signature** — add an optional `profileSystemAddendum` parameter (string, default empty).
+**2. Update `classifyQuery` signature** — Accept `chatHistory: string` parameter.
 
-2. **Append to system prompt in `synthesizeAnswer`** — concatenate `TERRACHAT_SYSTEM_PROMPT + profileSystemAddendum` when calling the Anthropic API.
+**3. Pass chat history into the classifier messages** — Include trimmed recent chat history (last ~1500 chars) as context before the user message, so the LLM can detect follow-up patterns.
 
-3. **Build the addendum in the main handler** — after fetching the profile (line ~355), if `profile.preferred_projects` has items, build the string:
-   ```
-   "\n\nThis user works primarily with these projects: Project A, Project B. When answering general questions that don't mention a specific project, prioritize data from these projects first."
-   ```
-
-4. **Pass it through** — thread `profileSystemAddendum` into `synthesizeAnswer` at the call site (~line 425).
+**4. Update the call site** (line 351) — Pass `chatHistory` (or `body.chatHistory`) to `classifyQuery`.
 
 ### Code details
 
-**synthesizeAnswer** (line ~285):
+**`CLASSIFY_SYSTEM_PROMPT`** — append:
+```
+If the chat history shows the assistant just asked a clarifying question and the user's current message is a short follow-up answer (e.g. "all", "yes", "all of the above", a project name, or a list of components), do NOT return CLARIFY. Instead, combine the original question from chat history with the user's answer and classify the combined intent as AGGREGATE, STATUS_LOOKUP, DOCUMENT_SEARCH, or HYBRID accordingly.
+```
+
+**`classifyQuery`** signature and body:
 ```typescript
-async function synthesizeAnswer(
-  message: string,
-  chatHistory: string,
-  context: string,
-  contextType: string,
-  systemAddendum: string = ''
-): Promise<string> {
+async function classifyQuery(message: string, chatHistory: string = ''): Promise<ClassifyResult> {
   // ...
-  system: TERRACHAT_SYSTEM_PROMPT + systemAddendum,
-  // ...
+  const messages: any[] = [];
+  const trimmedHistory = chatHistory ? chatHistory.slice(-1500) : '';
+  if (trimmedHistory) {
+    messages.push({ role: 'user', content: `## Recent Chat History\n${trimmedHistory}\n\n## Current Question\n${message}` });
+  } else {
+    messages.push({ role: 'user', content: message });
+  }
+  // pass messages array to the API call
 }
 ```
 
-**Main handler** (after line ~370, build addendum):
+**Call site** (line 351):
 ```typescript
-let systemAddendum = '';
-if (profile?.preferred_projects?.length) {
-  systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
-}
+classifyQuery(message, chatHistory || ''),
 ```
 
-**Call site** (~line 425):
-```typescript
-const answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
-```
-
-No database or other file changes needed.
+No database changes needed.
 
