@@ -258,7 +258,27 @@ export function useChatThreads() {
                 }
               }
             )
-            .subscribe();
+            .subscribe(async (status) => {
+              if (status === 'SUBSCRIBED') {
+                // Race condition fix: check if job already completed before subscription was active
+                const { data: existingJob } = await supabase
+                  .from('chat_jobs')
+                  .select('status, response_content')
+                  .eq('id', jobId)
+                  .single();
+
+                if (existingJob && (existingJob.status === 'completed' || existingJob.status === 'failed')) {
+                  if (threadId) {
+                    await fetchMessages(threadId);
+                  }
+                  setSendingMessage(false);
+                  supabase.removeChannel(channel);
+                  clearTimeout(timeout);
+                  await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
+                  fetchThreads();
+                }
+              }
+            });
 
           // Timeout fallback
           const timeout = setTimeout(async () => {
