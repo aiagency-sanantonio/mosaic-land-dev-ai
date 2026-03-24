@@ -1,20 +1,20 @@
 
 
-## Export Documents Table (Split into Two Files)
+## Create `chat-rag` Edge Function (Stub)
 
 ### What I'll do
 
-Run two `psql COPY` commands to export the documents table:
+1. **Create `supabase/functions/chat-rag/index.ts`** — A stub edge function that:
+   - Handles CORS preflight
+   - Parses the POST body (`threadId`, `userId`, `message`, `chatHistory`, `job_id`, `callback_url`)
+   - Logs the body
+   - Returns `{ success: true }`
 
-1. **`documents_data.csv`** — all columns except embeddings (id, content, metadata, file_path, file_name, created_at, updated_at)
-2. **`documents_embeddings.csv`** — just id + embedding
+2. **Add config entry** to `supabase/config.toml`:
+   ```toml
+   [functions.chat-rag]
+   verify_jwt = false
+   ```
 
-Both files go to `/mnt/documents/` for immediate download.
-
-### Steps
-
-1. Export `documents_data.csv` (all columns minus embedding)
-2. Export `documents_embeddings.csv` (id + embedding only)
-3. Compress both with gzip since they'll be large
-4. Deliver both files
+Straightforward stub — no database changes needed.
 
