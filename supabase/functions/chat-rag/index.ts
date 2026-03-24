@@ -68,6 +68,23 @@ async function classifyQuery(message: string, chatHistory: string = ''): Promise
   return JSON.parse(cleaned) as ClassifyResult;
 }
 
+function extractDateFromFilename(fileName: string | null): Date | null {
+  if (!fileName) return null;
+  const isoMatch = fileName.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const d = new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`);
+    if (!isNaN(d.getTime())) return d;
+  }
+  const yymmddMatch = fileName.match(/^(\d{2})(\d{2})(\d{2})/);
+  if (yymmddMatch) {
+    const yy = parseInt(yymmddMatch[1]);
+    const year = yy >= 50 ? 1900 + yy : 2000 + yy;
+    const d = new Date(`${year}-${yymmddMatch[2]}-${yymmddMatch[3]}`);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
 function getSourcePriority(filePath: string | null): { rank: number; label: string } {
   const fp = (filePath || '').toLowerCase();
   // Tier 0 — company master cost tracking folder
@@ -114,8 +131,22 @@ async function retrieveAggregate(
     const priority = getSourcePriority(r.source_file_path);
 
     let data_currency_flag: string | null = null;
+    let effectiveDate: string | null = r.date;
     if (!r.date) {
-      data_currency_flag = '⚠️ No date available — cannot assess data currency';
+      const fileDate = extractDateFromFilename(r.source_file_name);
+      if (fileDate) {
+        const ageMs = now.getTime() - fileDate.getTime();
+        const ageDays = ageMs / (1000 * 60 * 60 * 24);
+        const dateStr = fileDate.toISOString().split('T')[0];
+        effectiveDate = `${dateStr} (from filename)`;
+        if (ageDays > 730) {
+          data_currency_flag = '⚠️ Data is over 2 years old — recommend getting fresh bids';
+        } else if (ageDays > 365) {
+          data_currency_flag = '⚠️ Data is 1-2 years old';
+        }
+      } else {
+        data_currency_flag = '⚠️ No date available — cannot assess data currency';
+      }
     } else {
       const ageMs = now.getTime() - new Date(r.date).getTime();
       const ageDays = ageMs / (1000 * 60 * 60 * 24);
@@ -132,7 +163,7 @@ async function retrieveAggregate(
       metric_name: r.metric_name,
       value: r.value,
       unit: r.unit,
-      date: r.date,
+      date: effectiveDate,
       source_file_name: r.source_file_name,
       source_priority: priority.label,
       data_currency_flag,
