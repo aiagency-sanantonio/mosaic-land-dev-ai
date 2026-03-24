@@ -311,7 +311,7 @@ async function synthesizeAnswer(
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2048,
-      system: TERRACHAT_SYSTEM_PROMPT,
+      system: TERRACHAT_SYSTEM_PROMPT + systemAddendum,
       messages: [{ role: 'user', content: userContent }],
     }),
   });
