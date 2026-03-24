@@ -78,7 +78,12 @@ function getSourcePriority(filePath: string | null): { rank: number; label: stri
   return { rank: 2, label: 'NORMAL' };
 }
 
-async function retrieveAggregate(projectName: string | null): Promise<string> {
+async function retrieveAggregate(
+  projectName: string | null,
+  message: string,
+  userId: string,
+  threadId: string
+): Promise<string> {
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
