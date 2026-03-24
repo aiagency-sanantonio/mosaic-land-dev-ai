@@ -286,7 +286,8 @@ async function synthesizeAnswer(
   message: string,
   chatHistory: string,
   context: string,
-  contextType: string
+  contextType: string,
+  systemAddendum: string = ''
 ): Promise<string> {
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
@@ -310,7 +311,7 @@ async function synthesizeAnswer(
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2048,
-      system: TERRACHAT_SYSTEM_PROMPT,
+      system: TERRACHAT_SYSTEM_PROMPT + systemAddendum,
       messages: [{ role: 'user', content: userContent }],
     }),
   });
@@ -369,6 +370,11 @@ serve(async (req) => {
       }
     }
 
+    let systemAddendum = '';
+    if (profile?.preferred_projects?.length) {
+      systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
+    }
+
     const { query_type, project_name, clarify_question } = classification;
 
     // CLARIFY — return the clarify question directly, no retrieval
@@ -418,7 +424,7 @@ serve(async (req) => {
     console.log(`context retrieved (${contextType}), length=${context.length}`);
 
     // Synthesize final answer
-    const answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType);
+    const answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
 
     // POST result to callback
     if (callback_url && job_id) {
