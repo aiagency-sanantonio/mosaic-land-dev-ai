@@ -131,8 +131,22 @@ async function retrieveAggregate(
     const priority = getSourcePriority(r.source_file_path);
 
     let data_currency_flag: string | null = null;
+    let effectiveDate: string | null = r.date;
     if (!r.date) {
-      data_currency_flag = '⚠️ No date available — cannot assess data currency';
+      const fileDate = extractDateFromFilename(r.source_file_name);
+      if (fileDate) {
+        const ageMs = now.getTime() - fileDate.getTime();
+        const ageDays = ageMs / (1000 * 60 * 60 * 24);
+        const dateStr = fileDate.toISOString().split('T')[0];
+        effectiveDate = `${dateStr} (from filename)`;
+        if (ageDays > 730) {
+          data_currency_flag = '⚠️ Data is over 2 years old — recommend getting fresh bids';
+        } else if (ageDays > 365) {
+          data_currency_flag = '⚠️ Data is 1-2 years old';
+        }
+      } else {
+        data_currency_flag = '⚠️ No date available — cannot assess data currency';
+      }
     } else {
       const ageMs = now.getTime() - new Date(r.date).getTime();
       const ageDays = ageMs / (1000 * 60 * 60 * 24);
@@ -149,7 +163,7 @@ async function retrieveAggregate(
       metric_name: r.metric_name,
       value: r.value,
       unit: r.unit,
-      date: r.date,
+      date: effectiveDate,
       source_file_name: r.source_file_name,
       source_priority: priority.label,
       data_currency_flag,
