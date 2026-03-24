@@ -102,6 +102,56 @@ async function retrieveAggregate(projectName: string | null): Promise<string> {
   return JSON.stringify(rows.map(({ _rank, ...rest }) => rest));
 }
 
+async function retrieveStatus(projectName: string | null, message: string): Promise<string> {
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  );
+
+  let query = supabase.from('permits_tracking').select('*');
+  if (projectName) {
+    query = query.ilike('project_name', `%${projectName}%`);
+  }
+
+  const lowerMsg = message.toLowerCase();
+  if (lowerMsg.includes('expiring') || lowerMsg.includes('due')) {
+    const now = new Date();
+    const future = new Date();
+    future.setDate(future.getDate() + 90);
+    query = query.gte('expiration_date', now.toISOString().split('T')[0]);
+    query = query.lte('expiration_date', future.toISOString().split('T')[0]);
+  }
+
+  const { data, error } = await query.order('expiration_date', { ascending: true }).limit(200);
+  if (error) throw new Error(`permits_tracking query failed: ${error.message}`);
+
+  const now = new Date();
+  const results = (data || []).map(r => {
+    let days_until_expiry: number | null = null;
+    let urgency = 'OK';
+    if (r.expiration_date) {
+      const exp = new Date(r.expiration_date);
+      days_until_expiry = Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (days_until_expiry < 0) urgency = 'EXPIRED';
+      else if (days_until_expiry <= 30) urgency = 'CRITICAL';
+      else if (days_until_expiry <= 90) urgency = 'WARNING';
+    }
+    return {
+      project_name: r.project_name,
+      permit_type: r.permit_type,
+      permit_no: r.permit_no,
+      status: r.status,
+      description: r.description,
+      issued_date: r.issued_date,
+      expiration_date: r.expiration_date,
+      days_until_expiry,
+      urgency,
+    };
+  });
+
+  return JSON.stringify(results);
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
