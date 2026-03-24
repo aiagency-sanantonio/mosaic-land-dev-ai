@@ -202,6 +202,48 @@ async function retrieveDocuments(
     .join('\n\n');
 }
 
+async function synthesizeAnswer(
+  message: string,
+  chatHistory: string,
+  context: string,
+  contextType: string
+): Promise<string> {
+  const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+
+  const trimmedHistory = chatHistory ? chatHistory.slice(-3000) : '';
+
+  let userContent = '';
+  if (trimmedHistory) {
+    userContent += `## Recent Chat History\n${trimmedHistory}\n\n`;
+  }
+  userContent += `## User Question\n${message}\n\n`;
+  userContent += `## ${contextType}\n${context}`;
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6-20250514',
+      max_tokens: 2048,
+      system: TERRACHAT_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userContent }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Anthropic API error (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  return data.content?.[0]?.text || '';
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
