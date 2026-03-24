@@ -188,18 +188,12 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
   }
 
   const lowerMsg = message.toLowerCase();
-  const wantsHistorical = /\b(historical|all permits|full history|past permits|every permit)\b/.test(lowerMsg);
+  const wantsExpired = /\b(show expired|expired permits|historical|all permits|full history|past permits|every permit)\b/.test(lowerMsg);
 
-  if (lowerMsg.includes('expiring') || lowerMsg.includes('due')) {
-    const now = new Date();
-    const future = new Date();
-    future.setDate(future.getDate() + 90);
-    query = query.gte('expiration_date', now.toISOString().split('T')[0]);
-    query = query.lte('expiration_date', future.toISOString().split('T')[0]);
-  } else if (!wantsHistorical) {
-    const past90 = new Date();
-    past90.setDate(past90.getDate() - 90);
-    query = query.gte('expiration_date', past90.toISOString().split('T')[0]);
+  if (!wantsExpired) {
+    // Default: only future permits (not yet expired)
+    const today = new Date().toISOString().split('T')[0];
+    query = query.gte('expiration_date', today);
   }
 
   let countQuery = supabase.from('permits_tracking').select('*', { count: 'exact', head: true });
@@ -213,17 +207,16 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
   if (error) throw new Error(`permits_tracking query failed: ${error.message}`);
 
   const now = new Date();
-  const results = (data || []).map(r => {
-    let days_until_expiry: number | null = null;
-    let urgency = 'OK';
-    if (r.expiration_date) {
-      const exp = new Date(r.expiration_date);
-      days_until_expiry = Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-      if (days_until_expiry < 0) urgency = 'EXPIRED';
-      else if (days_until_expiry <= 30) urgency = 'CRITICAL';
-      else if (days_until_expiry <= 90) urgency = 'WARNING';
-    }
-    return {
+  const sections: Record<string, any[]> = {
+    '🚨 CRITICAL — expiring within 30 days': [],
+    '⚠️ WARNING — expiring 31-90 days': [],
+    '📋 UPCOMING — expiring 91 days to 1 year': [],
+    '✅ OK — expiring beyond 1 year': [],
+  };
+  const expiredSection: any[] = [];
+
+  for (const r of data || []) {
+    const permit = {
       project_name: r.project_name,
       permit_type: r.permit_type,
       permit_no: r.permit_no,
@@ -231,14 +224,47 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
       description: r.description,
       issued_date: r.issued_date,
       expiration_date: r.expiration_date,
-      days_until_expiry,
-      urgency,
     };
-  });
+
+    if (!r.expiration_date) {
+      sections['📋 UPCOMING — expiring 91 days to 1 year'].push({ ...permit, days_until_expiry: null, urgency: 'UNKNOWN' });
+      continue;
+    }
+
+    const exp = new Date(r.expiration_date);
+    const days = Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (days < 0) {
+      expiredSection.push({ ...permit, days_until_expiry: days, urgency: 'EXPIRED' });
+    } else if (days <= 30) {
+      sections['🚨 CRITICAL — expiring within 30 days'].push({ ...permit, days_until_expiry: days, urgency: 'CRITICAL' });
+    } else if (days <= 90) {
+      sections['⚠️ WARNING — expiring 31-90 days'].push({ ...permit, days_until_expiry: days, urgency: 'WARNING' });
+    } else if (days <= 365) {
+      sections['📋 UPCOMING — expiring 91 days to 1 year'].push({ ...permit, days_until_expiry: days, urgency: 'UPCOMING' });
+    } else {
+      sections['✅ OK — expiring beyond 1 year'].push({ ...permit, days_until_expiry: days, urgency: 'OK' });
+    }
+  }
+
+  // Build grouped output, only include non-empty sections
+  const grouped: Record<string, any[]> = {};
+  for (const [label, permits] of Object.entries(sections)) {
+    if (permits.length > 0) grouped[label] = permits;
+  }
+  if (wantsExpired && expiredSection.length > 0) {
+    grouped['❌ EXPIRED'] = expiredSection;
+  }
+
+  const shownCount = Object.values(grouped).reduce((sum, arr) => sum + arr.length, 0);
 
   return JSON.stringify({
-    permits: results,
-    _note: `Showing ${results.length} permits within the actionable window. ${totalCount ?? '?'} total permits exist in the system. Ask for "all permits" or "historical permits" to see the full list.`,
+    total_permits_in_system: totalCount ?? '?',
+    showing: shownCount,
+    ...grouped,
+    _note: wantsExpired
+      ? `Showing all ${shownCount} permits including expired. ${totalCount ?? '?'} total in system.`
+      : `Showing ${shownCount} active/future permits. Expired permits are hidden — ask for "show expired" or "historical permits" to include them. ${totalCount ?? '?'} total in system.`,
   });
 }
 
