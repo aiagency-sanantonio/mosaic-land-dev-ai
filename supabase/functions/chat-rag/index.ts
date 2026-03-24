@@ -6,6 +6,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+const TERRACHAT_SYSTEM_PROMPT = `You are TerraChat, the AI assistant for Mosaic Land Development — a Texas land development company managing 30+ active residential projects. Be specific, always cite sources (file name, source type, date). For costs: show the source tier (bid tab vs OPC) and flag data older than 2 years. For permits: highlight EXPIRED and CRITICAL urgency prominently. If data is incomplete or conflicting, say so explicitly. Do not fabricate numbers. Texas context: MUDs, PIDs, TIRZs, TxDOT, TCEQ, TPDES, plat bonds.`;
+
 const CLASSIFY_SYSTEM_PROMPT = `Classify the question into exactly one type. Return ONLY valid JSON — no markdown:
 
 AGGREGATE — cost averages, totals, comparisons across projects (e.g. "average grading cost per lot")
@@ -198,6 +200,48 @@ async function retrieveDocuments(
       `[${i + 1}] ${d.file_name || 'Unknown'} (${d.source_type || 'document'}, ${d.document_date || 'no date'})\n${d.content || ''}`
     )
     .join('\n\n');
+}
+
+async function synthesizeAnswer(
+  message: string,
+  chatHistory: string,
+  context: string,
+  contextType: string
+): Promise<string> {
+  const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+
+  const trimmedHistory = chatHistory ? chatHistory.slice(-3000) : '';
+
+  let userContent = '';
+  if (trimmedHistory) {
+    userContent += `## Recent Chat History\n${trimmedHistory}\n\n`;
+  }
+  userContent += `## User Question\n${message}\n\n`;
+  userContent += `## ${contextType}\n${context}`;
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6-20250514',
+      max_tokens: 2048,
+      system: TERRACHAT_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userContent }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Anthropic API error (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  return data.content?.[0]?.text || '';
 }
 
 serve(async (req) => {
