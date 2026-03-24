@@ -152,6 +152,54 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
   return JSON.stringify(results);
 }
 
+async function retrieveDocuments(
+  message: string,
+  projectName: string | null,
+  userId: string,
+  threadId: string
+): Promise<string> {
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const webhookSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
+  if (!supabaseUrl || !webhookSecret) {
+    throw new Error('SUPABASE_URL or N8N_WEBHOOK_SECRET not configured');
+  }
+
+  const res = await fetch(`${supabaseUrl}/functions/v1/search-ranked-documents`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${webhookSecret}`,
+    },
+    body: JSON.stringify({
+      query: message,
+      query_type: 'general',
+      match_count: 12,
+      content_max_length: 1000,
+      match_threshold: 0.15,
+      filter_project: projectName,
+      user_id: userId,
+      thread_id: threadId,
+      include_archive: false,
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`search-ranked-documents error (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  const docs = data.documents || [];
+
+  if (docs.length === 0) return 'No relevant documents found.';
+
+  return docs
+    .map((d: any, i: number) =>
+      `[${i + 1}] ${d.file_name || 'Unknown'} (${d.source_type || 'document'}, ${d.document_date || 'no date'})\n${d.content || ''}`
+    )
+    .join('\n\n');
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
