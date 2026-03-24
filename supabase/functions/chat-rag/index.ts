@@ -155,12 +155,13 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
   return JSON.stringify(results);
 }
 
-async function retrieveDocuments(
-  message: string,
-  projectName: string | null,
+async function callSearchRanked(
+  query: string,
+  filterProject: string | null,
+  matchCount: number,
   userId: string,
   threadId: string
-): Promise<string> {
+): Promise<any[]> {
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
   const webhookSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
   if (!supabaseUrl || !webhookSecret) {
@@ -174,12 +175,12 @@ async function retrieveDocuments(
       'Authorization': `Bearer ${webhookSecret}`,
     },
     body: JSON.stringify({
-      query: message,
+      query,
       query_type: 'general',
-      match_count: 12,
+      match_count: matchCount,
       content_max_length: 1000,
       match_threshold: 0.15,
-      filter_project: projectName,
+      filter_project: filterProject,
       user_id: userId,
       thread_id: threadId,
       include_archive: false,
@@ -192,15 +193,60 @@ async function retrieveDocuments(
   }
 
   const data = await res.json();
-  const docs = data.documents || [];
+  return data.documents || [];
+}
 
+function formatDocs(docs: any[]): string {
   if (docs.length === 0) return 'No relevant documents found.';
-
   return docs
     .map((d: any, i: number) =>
       `[${i + 1}] ${d.file_name || 'Unknown'} (${d.source_type || 'document'}, ${d.document_date || 'no date'})\n${d.content || ''}`
     )
     .join('\n\n');
+}
+
+async function retrieveDocuments(
+  message: string,
+  projectName: string | null,
+  userId: string,
+  threadId: string
+): Promise<string> {
+  // No project name — single unfiltered call
+  if (!projectName) {
+    const docs = await callSearchRanked(message, null, 12, userId, threadId);
+    return formatDocs(docs);
+  }
+
+  // First attempt: filter by classified project name
+  console.log(`retrieveDocuments: first attempt with filter_project="${projectName}"`);
+  const firstDocs = await callSearchRanked(message, projectName, 12, userId, threadId);
+  console.log(`retrieveDocuments: first attempt returned ${firstDocs.length} docs`);
+
+  if (firstDocs.length >= 3) {
+    return formatDocs(firstDocs);
+  }
+
+  // Fallback: unfiltered search with project name prepended to query
+  console.log(`retrieveDocuments: fallback — unfiltered search with project name in query`);
+  const augmentedQuery = `${projectName}: ${message}`;
+  const fallbackDocs = await callSearchRanked(augmentedQuery, null, 20, userId, threadId);
+  console.log(`retrieveDocuments: fallback returned ${fallbackDocs.length} docs`);
+
+  // Merge & deduplicate by id, keeping higher-similarity hit
+  const docMap = new Map<string, any>();
+  for (const doc of [...firstDocs, ...fallbackDocs]) {
+    const id = doc.id || doc.file_name;
+    const existing = docMap.get(id);
+    if (!existing || (doc.similarity ?? 0) > (existing.similarity ?? 0)) {
+      docMap.set(id, doc);
+    }
+  }
+
+  const merged = Array.from(docMap.values())
+    .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
+    .slice(0, 15);
+
+  return formatDocs(merged);
 }
 
 async function synthesizeAnswer(
