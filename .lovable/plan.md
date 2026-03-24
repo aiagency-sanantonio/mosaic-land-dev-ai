@@ -1,31 +1,46 @@
 
 
-## Update `getSourcePriority` in `chat-rag/index.ts`
+## Update `retrieveAggregate` to fall back to document search
 
-### Change
+### What changes
 
-Split the current rank-0 tier into two tiers, giving the `zz md_50kft` / `recent bids` / `average cost` folder the highest priority (rank 0), and demoting regular `bid tab` matches to rank 1.
+**File: `supabase/functions/chat-rag/index.ts`**
 
-**File: `supabase/functions/chat-rag/index.ts`**, lines 64–73 — replace `getSourcePriority`:
+1. **Change `retrieveAggregate` signature** — add `message`, `userId`, and `threadId` parameters so it can call `retrieveDocuments` as a fallback.
+
+2. **Add fallback logic** — after querying `project_data`, if `rows.length === 0`, log a message and return `await retrieveDocuments(message, projectName, userId, threadId)` instead of an empty JSON array.
+
+3. **Update call sites** — pass `message`, `userId`, `threadId` to `retrieveAggregate` at both call sites (line ~370 for AGGREGATE and line ~380 for HYBRID).
+
+### Updated function signature
 
 ```typescript
-function getSourcePriority(filePath: string | null): { rank: number; label: string } {
-  const fp = (filePath || '').toLowerCase();
-  // Tier 0 — company master cost tracking folder
-  if (fp.includes('zz md_50kft') || fp.includes('recent bids') || fp.includes('average cost')) {
-    return { rank: 0, label: 'HIGHEST (master cost)' };
-  }
-  // Tier 1 — regular bid tabs
-  if (fp.includes('bid tab')) {
-    return { rank: 1, label: 'HIGH (bid tab)' };
-  }
-  // Tier 3 — OPC / opinion of probable cost
-  if (fp.includes('opc') || fp.includes('opinion')) {
-    return { rank: 3, label: 'LOW (OPC)' };
-  }
-  return { rank: 2, label: 'NORMAL' };
+async function retrieveAggregate(
+  projectName: string | null,
+  message: string,
+  userId: string,
+  threadId: string
+): Promise<string>
+```
+
+### Fallback insertion (after the query, before mapping rows)
+
+```typescript
+if (!data || data.length === 0) {
+  console.log('retrieveAggregate: no structured data found, falling back to document search');
+  return retrieveDocuments(message, projectName, userId, threadId);
 }
 ```
 
-Rank scale (lower = better): 0 master cost → 1 bid tab → 2 normal → 3 OPC. The sort in `retrieveAggregate` already sorts ascending by `_rank`, so no other changes needed.
+### Call site updates
+
+```typescript
+// AGGREGATE
+context = await retrieveAggregate(project_name, message, userId, threadId);
+
+// HYBRID
+retrieveAggregate(project_name, message, userId, threadId),
+```
+
+When the fallback triggers, `contextType` remains "Structured Cost Data" at the AGGREGATE call site, but the synthesizer will see document content and adapt its answer accordingly. For HYBRID, the parallel call already merges with document results.
 
