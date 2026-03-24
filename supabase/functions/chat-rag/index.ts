@@ -387,7 +387,7 @@ serve(async (req) => {
       contextType = 'Retrieved Documents';
     } else if (query_type === 'HYBRID') {
       const [aggResult, docResult] = await Promise.allSettled([
-        retrieveAggregate(project_name),
+        retrieveAggregate(project_name, message, userId, threadId),
         retrieveDocuments(message, project_name, userId, threadId),
       ]);
 
