@@ -57,7 +57,8 @@ async function classifyQuery(message: string): Promise<ClassifyResult> {
   const text = data.content?.[0]?.text || '';
   console.log('classifyQuery raw response:', text);
 
-  return JSON.parse(text) as ClassifyResult;
+  const cleaned = text.replace(/```(?:json)?\s*/g, '').trim();
+  return JSON.parse(cleaned) as ClassifyResult;
 }
 
 function getSourcePriority(filePath: string | null): { rank: number; label: string } {
