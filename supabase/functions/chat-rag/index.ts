@@ -78,7 +78,12 @@ function getSourcePriority(filePath: string | null): { rank: number; label: stri
   return { rank: 2, label: 'NORMAL' };
 }
 
-async function retrieveAggregate(projectName: string | null): Promise<string> {
+async function retrieveAggregate(
+  projectName: string | null,
+  message: string,
+  userId: string,
+  threadId: string
+): Promise<string> {
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -90,6 +95,11 @@ async function retrieveAggregate(projectName: string | null): Promise<string> {
   }
   const { data, error } = await query.order('date', { ascending: false }).limit(200);
   if (error) throw new Error(`project_data query failed: ${error.message}`);
+
+  if (!data || data.length === 0) {
+    console.log('retrieveAggregate: no structured data found, falling back to document search');
+    return retrieveDocuments(message, projectName, userId, threadId);
+  }
 
   const rows = (data || []).map(r => {
     const priority = getSourcePriority(r.source_file_path);
@@ -367,7 +377,7 @@ serve(async (req) => {
     let contextType = 'Retrieved Documents';
 
     if (query_type === 'AGGREGATE') {
-      context = await retrieveAggregate(project_name);
+      context = await retrieveAggregate(project_name, message, userId, threadId);
       contextType = 'Structured Cost Data';
     } else if (query_type === 'STATUS_LOOKUP') {
       context = await retrieveStatus(project_name, message);
@@ -377,7 +387,7 @@ serve(async (req) => {
       contextType = 'Retrieved Documents';
     } else if (query_type === 'HYBRID') {
       const [aggResult, docResult] = await Promise.allSettled([
-        retrieveAggregate(project_name),
+        retrieveAggregate(project_name, message, userId, threadId),
         retrieveDocuments(message, project_name, userId, threadId),
       ]);
 
