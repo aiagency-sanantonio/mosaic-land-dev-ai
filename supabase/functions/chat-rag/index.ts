@@ -101,8 +101,24 @@ async function retrieveAggregate(
     return retrieveDocuments(message, projectName, userId, threadId);
   }
 
+  const now = new Date();
+
   const rows = (data || []).map(r => {
     const priority = getSourcePriority(r.source_file_path);
+
+    let data_currency_flag: string | null = null;
+    if (!r.date) {
+      data_currency_flag = '⚠️ No date available — cannot assess data currency';
+    } else {
+      const ageMs = now.getTime() - new Date(r.date).getTime();
+      const ageDays = ageMs / (1000 * 60 * 60 * 24);
+      if (ageDays > 730) {
+        data_currency_flag = '⚠️ Data is over 2 years old — recommend getting fresh bids';
+      } else if (ageDays > 365) {
+        data_currency_flag = '⚠️ Data is 1-2 years old';
+      }
+    }
+
     return {
       project_name: r.project_name,
       category: r.category,
@@ -112,6 +128,7 @@ async function retrieveAggregate(
       date: r.date,
       source_file_name: r.source_file_name,
       source_priority: priority.label,
+      data_currency_flag,
       _rank: priority.rank,
     };
   });
