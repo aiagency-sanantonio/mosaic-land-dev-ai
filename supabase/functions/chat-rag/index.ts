@@ -196,7 +196,9 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
     query = query.gte('expiration_date', today);
   }
 
-  let countQuery = supabase.from('permits_tracking').select('*', { count: 'exact', head: true });
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  let countQuery = supabase.from('permits_tracking').select('*', { count: 'exact', head: true })
+    .gte('expiration_date', ninetyDaysAgo);
   if (projectName) countQuery = countQuery.ilike('project_name', `%${projectName}%`);
 
   const [{ data, error }, { count: totalCount }] = await Promise.all([
