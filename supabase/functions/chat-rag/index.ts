@@ -255,11 +255,102 @@ serve(async (req) => {
 
     console.log('chat-rag received:', JSON.stringify({ threadId, userId, message, job_id, callback_url }));
 
-    const classification = await classifyQuery(message);
+    // Fetch user profile and classify in parallel
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+
+    const [profileResult, classification] = await Promise.all([
+      supabase
+        .from('user_profiles_extended')
+        .select('display_name, role_title, preferred_projects')
+        .eq('user_id', userId)
+        .maybeSingle(),
+      classifyQuery(message),
+    ]);
+
     console.log('classification:', JSON.stringify(classification));
 
+    const profile = profileResult.data;
+    if (profile) {
+      const profileLines: string[] = [];
+      if (profile.display_name) profileLines.push(`User: ${profile.display_name}`);
+      if (profile.role_title) profileLines.push(`Role: ${profile.role_title}`);
+      if (profile.preferred_projects?.length) {
+        profileLines.push(`Preferred projects: ${profile.preferred_projects.join(', ')}`);
+      }
+      // No mutation needed — synthesizeAnswer already uses TERRACHAT_SYSTEM_PROMPT;
+      // we'll pass profile context as part of the chat history prefix instead.
+      if (profileLines.length > 0) {
+        const profileContext = `[User Profile]\n${profileLines.join('\n')}\n\n`;
+        // Prepend to chatHistory so synthesizeAnswer includes it
+        body.chatHistory = profileContext + (chatHistory || '');
+      }
+    }
+
+    const { query_type, project_name, clarify_question } = classification;
+
+    // CLARIFY — return the clarify question directly, no retrieval
+    if (query_type === 'CLARIFY') {
+      const response = clarify_question || 'Could you please provide more details about your question?';
+
+      if (callback_url && job_id) {
+        await fetch(callback_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id, response }),
+        });
+      }
+
+      return new Response(
+        JSON.stringify({ success: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Retrieve context based on query type
+    let context = '';
+    let contextType = 'Retrieved Documents';
+
+    if (query_type === 'AGGREGATE') {
+      context = await retrieveAggregate(project_name);
+      contextType = 'Structured Cost Data';
+    } else if (query_type === 'STATUS_LOOKUP') {
+      context = await retrieveStatus(project_name, message);
+      contextType = 'Permit Status Data';
+    } else if (query_type === 'DOCUMENT_SEARCH') {
+      context = await retrieveDocuments(message, project_name, userId, threadId);
+      contextType = 'Retrieved Documents';
+    } else if (query_type === 'HYBRID') {
+      const [aggResult, docResult] = await Promise.allSettled([
+        retrieveAggregate(project_name),
+        retrieveDocuments(message, project_name, userId, threadId),
+      ]);
+
+      const parts: string[] = [];
+      if (aggResult.status === 'fulfilled') parts.push(`## Structured Cost Data\n${aggResult.value}`);
+      if (docResult.status === 'fulfilled') parts.push(`## Retrieved Documents\n${docResult.value}`);
+      context = parts.join('\n\n');
+      contextType = 'Combined Data';
+    }
+
+    console.log(`context retrieved (${contextType}), length=${context.length}`);
+
+    // Synthesize final answer
+    const answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType);
+
+    // POST result to callback
+    if (callback_url && job_id) {
+      await fetch(callback_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id, response: answer }),
+      });
+    }
+
     return new Response(
-      JSON.stringify({ success: true, classification }),
+      JSON.stringify({ success: true }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {
