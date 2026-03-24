@@ -1,4 +1,3 @@
-import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
@@ -13,21 +12,12 @@ serve(async (req) => {
   }
 
   try {
-    const webhookUrl = Deno.env.get('N8N_CHAT_WEBHOOK_URL');
-
-    if (!webhookUrl) {
-      console.error('N8N_CHAT_WEBHOOK_URL is not configured');
-      return new Response(
-        JSON.stringify({ error: 'Chat webhook is not configured' }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
     const body = await req.json();
     const { threadId, userId, message, messages, chatHistory } = body;
 
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
+      supabaseUrl,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
@@ -53,36 +43,40 @@ serve(async (req) => {
 
     console.log('Created chat job:', job.id);
 
-    // Build the callback URL for N8N to post back to
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    // Build the callback URL for chat-response-webhook
     const callbackUrl = `${supabaseUrl}/functions/v1/chat-response-webhook`;
 
-    // Fire-and-forget: send to N8N but don't await the response
-    const n8nPayload = {
+    // Build the chat-rag URL
+    const chatRagUrl = `${supabaseUrl}/functions/v1/chat-rag`;
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+
+    const ragPayload = {
       ...body,
       job_id: job.id,
       callback_url: callbackUrl,
     };
 
-    // Use EdgeRuntime.waitUntil if available, otherwise fire-and-forget via catch
-    const n8nFetch = fetch(webhookUrl, {
+    // Fire-and-forget: send to chat-rag but don't block the response
+    const ragFetch = fetch(chatRagUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(n8nPayload),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${anonKey}`,
+      },
+      body: JSON.stringify(ragPayload),
     }).then(async (res) => {
-      console.log('N8N responded with status:', res.status);
+      console.log('chat-rag responded with status:', res.status);
       if (!res.ok) {
         const text = await res.text().catch(() => 'no body');
-        console.error('N8N error response:', text);
-        // Mark job as failed if N8N returns error immediately
+        console.error('chat-rag error response:', text);
         await supabase.from('chat_jobs').update({
           status: 'failed',
-          response_content: 'N8N returned an error. Please try again.',
+          response_content: 'Processing service returned an error. Please try again.',
           completed_at: new Date().toISOString(),
         }).eq('id', job.id);
       }
     }).catch(async (err) => {
-      console.error('N8N fetch error:', err);
+      console.error('chat-rag fetch error:', err);
       await supabase.from('chat_jobs').update({
         status: 'failed',
         response_content: 'Failed to connect to the processing service.',
@@ -90,17 +84,11 @@ serve(async (req) => {
       }).eq('id', job.id);
     });
 
-    // Keep the function alive until N8N responds
-    // But return the job_id to the frontend immediately via a race
-    // Actually we need to wait for N8N since Deno will kill the process otherwise
-    // Use a background approach: respond first, then wait
-    
-    // EdgeRuntime.waitUntil keeps the isolate alive after responding
+    // Keep the function alive until chat-rag responds
     if (typeof (globalThis as any).EdgeRuntime !== 'undefined' && (globalThis as any).EdgeRuntime.waitUntil) {
-      (globalThis as any).EdgeRuntime.waitUntil(n8nFetch);
+      (globalThis as any).EdgeRuntime.waitUntil(ragFetch);
     } else {
-      // Fallback: just await it (function stays alive)
-      await n8nFetch;
+      await ragFetch;
     }
 
     // Return job_id immediately to frontend
