@@ -424,7 +424,7 @@ serve(async (req) => {
     console.log(`context retrieved (${contextType}), length=${context.length}`);
 
     // Synthesize final answer
-    const answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType);
+    const answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
 
     // POST result to callback
     if (callback_url && job_id) {
