@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -55,6 +56,50 @@ async function classifyQuery(message: string): Promise<ClassifyResult> {
   console.log('classifyQuery raw response:', text);
 
   return JSON.parse(text) as ClassifyResult;
+}
+
+function getSourcePriority(filePath: string | null): { rank: number; label: string } {
+  const fp = (filePath || '').toLowerCase();
+  if (fp.includes('zz md_50kft') || fp.includes('recent bids') || fp.includes('bid tab')) {
+    return { rank: 0, label: 'HIGH (bid tab)' };
+  }
+  if (fp.includes('opc') || fp.includes('opinion')) {
+    return { rank: 2, label: 'LOW (OPC)' };
+  }
+  return { rank: 1, label: 'NORMAL' };
+}
+
+async function retrieveAggregate(projectName: string | null): Promise<string> {
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  );
+
+  let query = supabase.from('project_data').select('*');
+  if (projectName) {
+    query = query.ilike('project_name', `%${projectName}%`);
+  }
+  const { data, error } = await query.order('date', { ascending: false }).limit(200);
+  if (error) throw new Error(`project_data query failed: ${error.message}`);
+
+  const rows = (data || []).map(r => {
+    const priority = getSourcePriority(r.source_file_path);
+    return {
+      project_name: r.project_name,
+      category: r.category,
+      metric_name: r.metric_name,
+      value: r.value,
+      unit: r.unit,
+      date: r.date,
+      source_file_name: r.source_file_name,
+      source_priority: priority.label,
+      _rank: priority.rank,
+    };
+  });
+
+  rows.sort((a, b) => a._rank - b._rank);
+
+  return JSON.stringify(rows.map(({ _rank, ...rest }) => rest));
 }
 
 serve(async (req) => {
