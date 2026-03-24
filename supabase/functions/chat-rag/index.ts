@@ -18,7 +18,7 @@ DOCUMENT_SEARCH — specific document content, contracts, proposals, surveys
 
 HYBRID — needs both structured data and documents (e.g. "full status update for X project")
 
-CLARIFY — too ambiguous, especially any "due diligence cost" or "DD cost" question without specified scope
+CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
 
 Return: { "query_type": "...", "project_name": "name or null", "clarify_question": "question to ask user or null", "reasoning": "one sentence" }`;
 
