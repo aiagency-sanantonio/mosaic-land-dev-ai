@@ -1,46 +1,61 @@
 
 
-## Update `retrieveAggregate` to fall back to document search
+## Add data currency flags to `retrieveAggregate`
 
 ### What changes
 
-**File: `supabase/functions/chat-rag/index.ts`**
+**File: `supabase/functions/chat-rag/index.ts`**, lines 104–121
 
-1. **Change `retrieveAggregate` signature** — add `message`, `userId`, and `threadId` parameters so it can call `retrieveDocuments` as a fallback.
+Add a `data_currency_flag` field to each row in the mapping step, computed from the `date` field:
 
-2. **Add fallback logic** — after querying `project_data`, if `rows.length === 0`, log a message and return `await retrieveDocuments(message, projectName, userId, threadId)` instead of an empty JSON array.
+- `null` date → `"⚠️ No date available — cannot assess data currency"`
+- Older than 730 days → `"⚠️ Data is over 2 years old — recommend getting fresh bids"`
+- 365–730 days old → `"⚠️ Data is 1-2 years old"`
+- Otherwise → `null` (no flag)
 
-3. **Update call sites** — pass `message`, `userId`, `threadId` to `retrieveAggregate` at both call sites (line ~370 for AGGREGATE and line ~380 for HYBRID).
+The flag is included in the JSON output passed to the synthesizer, so it naturally appears in the context the LLM uses to compose the final answer.
 
-### Updated function signature
+### Code
 
-```typescript
-async function retrieveAggregate(
-  projectName: string | null,
-  message: string,
-  userId: string,
-  threadId: string
-): Promise<string>
-```
-
-### Fallback insertion (after the query, before mapping rows)
+Replace the row mapping block (lines 104–121) with:
 
 ```typescript
-if (!data || data.length === 0) {
-  console.log('retrieveAggregate: no structured data found, falling back to document search');
-  return retrieveDocuments(message, projectName, userId, threadId);
-}
+const now = new Date();
+
+const rows = (data || []).map(r => {
+  const priority = getSourcePriority(r.source_file_path);
+
+  let data_currency_flag: string | null = null;
+  if (!r.date) {
+    data_currency_flag = '⚠️ No date available — cannot assess data currency';
+  } else {
+    const ageMs = now.getTime() - new Date(r.date).getTime();
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    if (ageDays > 730) {
+      data_currency_flag = '⚠️ Data is over 2 years old — recommend getting fresh bids';
+    } else if (ageDays > 365) {
+      data_currency_flag = '⚠️ Data is 1-2 years old';
+    }
+  }
+
+  return {
+    project_name: r.project_name,
+    category: r.category,
+    metric_name: r.metric_name,
+    value: r.value,
+    unit: r.unit,
+    date: r.date,
+    source_file_name: r.source_file_name,
+    source_priority: priority.label,
+    data_currency_flag,
+    _rank: priority.rank,
+  };
+});
+
+rows.sort((a, b) => a._rank - b._rank);
+
+return JSON.stringify(rows.map(({ _rank, ...rest }) => rest));
 ```
 
-### Call site updates
-
-```typescript
-// AGGREGATE
-context = await retrieveAggregate(project_name, message, userId, threadId);
-
-// HYBRID
-retrieveAggregate(project_name, message, userId, threadId),
-```
-
-When the fallback triggers, `contextType` remains "Structured Cost Data" at the AGGREGATE call site, but the synthesizer will see document content and adapt its answer accordingly. For HYBRID, the parallel call already merges with document results.
+No other files or call sites need changes — the flags flow through the existing `context` string into `synthesizeAnswer`, and the system prompt already instructs the model to "flag data older than 2 years."
 
