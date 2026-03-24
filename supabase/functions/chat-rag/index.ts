@@ -355,7 +355,7 @@ serve(async (req) => {
         .select('display_name, role_title, preferred_projects')
         .eq('user_id', userId)
         .maybeSingle(),
-      classifyQuery(message),
+      classifyQuery(message, chatHistory || ''),
     ]);
 
     console.log('classification:', JSON.stringify(classification));
