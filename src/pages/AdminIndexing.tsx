@@ -511,6 +511,50 @@ export default function AdminIndexing() {
         </Card>
       </div>
 
+      {/* ZZ MD_50KFT Scanner */}
+      <Card className="mb-3">
+        <CardHeader className="py-4">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Database className="h-4 w-4" /> ZZ MD_50KFT Scanner
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 pb-4">
+          <Button
+            onClick={async () => {
+              setZzScanning(true);
+              setZzResult(null);
+              try {
+                const { data, error } = await supabase.functions.invoke('scan-zz-folder', { body: {} });
+                if (error) throw error;
+                setZzResult(
+                  `✅ Scan complete\n\nTotal entries found: ${data.total_entries_found}\nFiles registered: ${data.total_registered}\nFolders skipped: ${data.skipped_folders}\nZip/oversize skipped: ${data.skipped_zip_or_oversize}\n\nFiles:\n${(data.file_names || []).join('\n')}`
+                );
+                toast.success(`Registered ${data.total_registered} files`);
+                fetchRealStats();
+              } catch (err: any) {
+                setZzResult(`❌ Error: ${err.message || 'Unknown error'}`);
+                toast.error('ZZ folder scan failed');
+              } finally {
+                setZzScanning(false);
+              }
+            }}
+            disabled={zzScanning}
+            size="sm"
+            className="gap-2 mb-3"
+          >
+            {zzScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            {zzScanning ? 'Scanning...' : 'Scan & Register ZZ Folder'}
+          </Button>
+          {zzResult && (
+            <textarea
+              readOnly
+              value={zzResult}
+              className="w-full h-48 text-xs font-mono bg-muted border border-border rounded-md p-3 text-foreground resize-y"
+            />
+          )}
+        </CardContent>
+      </Card>
+
       {/* Detail Sections */}
       <div className="space-y-3">
         {/* Indexing Details */}
