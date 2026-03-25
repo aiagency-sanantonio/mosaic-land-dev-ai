@@ -641,7 +641,7 @@ export default function AdminIndexing() {
                       setZzExtracting(true);
                       try {
                         const { data, error } = await supabase.functions.invoke('extract-structured-data', {
-                          body: { force: false, batch_size: 10 },
+                          body: { force: false, batch_size: 35, project_filter: 'ZZ MD_50KFT' },
                         });
                         if (error) throw error;
                         toast.success(`Extraction complete: ${data?.processed ?? 0} processed`);
