@@ -197,6 +197,7 @@ export default function AdminIndexing() {
       fetchActivity();
       fetchExtractionProgress();
       fetchOcrEligible();
+      fetchZzIndexedCount();
     }
   }, [user, fetchKillSwitchStatus, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible, fetchZzIndexedCount]);
 
