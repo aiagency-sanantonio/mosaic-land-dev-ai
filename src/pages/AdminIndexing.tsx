@@ -47,6 +47,8 @@ export default function AdminIndexing() {
   const [realStats, setRealStats] = useState<RealStats>({ success: 0, skipped: 0, failed: 0, totalDropbox: 0, remaining: 0 });
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [loadingJob, setLoadingJob] = useState(true);
+  const [zzScanning, setZzScanning] = useState(false);
+  const [zzResult, setZzResult] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [extractionRunning, setExtractionRunning] = useState(false);
   const [extractResult, setExtractResult] = useState<{ processed: number; failed: number; remaining: number; totals: { metrics: number; permits: number; dd_items: number } } | null>(null);
