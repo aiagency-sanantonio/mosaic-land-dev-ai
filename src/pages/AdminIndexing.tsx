@@ -79,6 +79,13 @@ export default function AdminIndexing() {
   const [showIndexingDetails, setShowIndexingDetails] = useState(false);
   const [showOcrDetails, setShowOcrDetails] = useState(false);
   const [showExtractionDetails, setShowExtractionDetails] = useState(false);
+  const [showZzDetails, setShowZzDetails] = useState(false);
+
+  // ZZ Indexing state
+  const [zzIndexing, setZzIndexing] = useState(false);
+  const [zzExtracting, setZzExtracting] = useState(false);
+  const [zzIndexedCount, setZzIndexedCount] = useState(0);
+  const zzPollingRef = useRef(false);
 
   useEffect(() => {
     if (!loading && !user) navigate('/auth');
@@ -157,6 +164,15 @@ export default function AdminIndexing() {
     setOcrFailed(failedRes.count ?? 0);
   }, []);
 
+  const fetchZzIndexedCount = useCallback(async () => {
+    const { count, error } = await supabase
+      .from('indexing_status')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'success')
+      .ilike('file_path', '%ZZ MD_50KFT%');
+    if (!error) setZzIndexedCount(count ?? 0);
+  }, []);
+
   const fetchActivity = useCallback(async () => {
     const { data, error } = await supabase
       .from('indexing_status')
@@ -181,8 +197,19 @@ export default function AdminIndexing() {
       fetchActivity();
       fetchExtractionProgress();
       fetchOcrEligible();
+      fetchZzIndexedCount();
     }
-  }, [user, fetchKillSwitchStatus, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible]);
+  }, [user, fetchKillSwitchStatus, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible, fetchZzIndexedCount]);
+
+  // ZZ polling every 10s when either ZZ button is active
+  useEffect(() => {
+    zzPollingRef.current = zzIndexing || zzExtracting;
+    if (!zzPollingRef.current) return;
+    const interval = setInterval(() => {
+      if (zzPollingRef.current) fetchZzIndexedCount();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [zzIndexing, zzExtracting, fetchZzIndexedCount]);
 
   useEffect(() => {
     if (!job || job.status !== 'running') return;
@@ -557,6 +584,89 @@ export default function AdminIndexing() {
 
       {/* Detail Sections */}
       <div className="space-y-3">
+        {/* ZZ MD_50KFT Indexing */}
+        <Collapsible open={showZzDetails} onOpenChange={setShowZzDetails}>
+          <Card>
+            <CollapsibleTrigger asChild>
+              <CardHeader className="cursor-pointer hover:bg-muted/30 transition-colors py-4">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Database className="h-4 w-4" /> ZZ MD_50KFT Indexing
+                  </CardTitle>
+                  <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showZzDetails ? 'rotate-180' : ''}`} />
+                </div>
+              </CardHeader>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <CardContent className="pt-0 pb-4">
+                <p className="text-xs text-muted-foreground mb-3">
+                  Index and extract cost data from ZZ MD_50KFT files
+                </p>
+                <div className="mb-4 p-3 bg-muted/50 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-medium text-foreground">{zzIndexedCount.toLocaleString()}</span>
+                    <span className="text-xs text-muted-foreground">ZZ files indexed successfully</span>
+                    {(zzIndexing || zzExtracting) && (
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground ml-auto">
+                        <RefreshCw className="h-3 w-3 animate-spin" /> Auto-refreshing
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={async () => {
+                      setZzIndexing(true);
+                      try {
+                        const { data, error } = await supabase.functions.invoke('batch-index', { body: {} });
+                        if (error) throw error;
+                        toast.success('ZZ indexing triggered successfully');
+                        fetchZzIndexedCount();
+                        fetchRealStats();
+                      } catch (err: any) {
+                        toast.error(`Indexing failed: ${err.message || 'Unknown error'}`);
+                      } finally {
+                        setZzIndexing(false);
+                      }
+                    }}
+                    disabled={zzIndexing || killSwitchActive}
+                    size="sm"
+                    className="gap-2"
+                  >
+                    {zzIndexing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                    {zzIndexing ? 'Indexing...' : 'Index ZZ Files'}
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      setZzExtracting(true);
+                      try {
+                        const { data, error } = await supabase.functions.invoke('extract-structured-data', {
+                          body: { force: false, batch_size: 10 },
+                        });
+                        if (error) throw error;
+                        toast.success(`Extraction complete: ${data?.processed ?? 0} processed`);
+                        fetchExtractionProgress();
+                      } catch (err: any) {
+                        toast.error(`Extraction failed: ${err.message || 'Unknown error'}`);
+                      } finally {
+                        setZzExtracting(false);
+                      }
+                    }}
+                    disabled={zzExtracting || killSwitchActive}
+                    variant="secondary"
+                    size="sm"
+                    className="gap-2"
+                  >
+                    {zzExtracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+                    {zzExtracting ? 'Extracting...' : 'Extract ZZ Cost Data'}
+                  </Button>
+                </div>
+              </CardContent>
+            </CollapsibleContent>
+          </Card>
+        </Collapsible>
+
         {/* Indexing Details */}
         <Collapsible open={showIndexingDetails} onOpenChange={setShowIndexingDetails}>
           <Card>
