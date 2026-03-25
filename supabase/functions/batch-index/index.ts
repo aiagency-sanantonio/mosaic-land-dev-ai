@@ -297,11 +297,27 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 /** Core batch processing logic — shared between browser and cron paths */
 async function processBatch(supabase: ReturnType<typeof createClient>, openaiApiKey: string, dropboxToken: string) {
-  const { data: unindexedFiles, error: rpcError } = await supabase.rpc('get_unindexed_dropbox_files', {
+  // Priority pass: fetch unindexed files from ZZ MD_50KFT first
+  const { data: priorityFiles, error: priorityError } = await supabase.rpc('get_unindexed_dropbox_files', {
+    p_path_prefix: '/ZZ MD_50KFT',
     p_limit: BATCH_SIZE,
   });
+  if (priorityError) throw priorityError;
 
-  if (rpcError) throw rpcError;
+  let unindexedFiles = priorityFiles ?? [];
+
+  // Fill remaining slots with normal unindexed files if priority didn't fill the batch
+  if (unindexedFiles.length < BATCH_SIZE) {
+    const { data: normalFiles, error: rpcError } = await supabase.rpc('get_unindexed_dropbox_files', {
+      p_limit: BATCH_SIZE - unindexedFiles.length,
+    });
+    if (rpcError) throw rpcError;
+
+    // Deduplicate in case any overlap
+    const existingPaths = new Set(unindexedFiles.map((f: { file_path: string }) => f.file_path));
+    const extras = (normalFiles ?? []).filter((f: { file_path: string }) => !existingPaths.has(f.file_path));
+    unindexedFiles = [...unindexedFiles, ...extras];
+  }
 
   if (!unindexedFiles || unindexedFiles.length === 0) {
     return { processed: 0, skipped: 0, failed: 0, remaining: 0, errors: [], activity: [], message: 'All files have been indexed!' };
