@@ -164,6 +164,15 @@ export default function AdminIndexing() {
     setOcrFailed(failedRes.count ?? 0);
   }, []);
 
+  const fetchZzIndexedCount = useCallback(async () => {
+    const { count, error } = await supabase
+      .from('indexing_status')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'success')
+      .ilike('file_path', '%ZZ MD_50KFT%');
+    if (!error) setZzIndexedCount(count ?? 0);
+  }, []);
+
   const fetchActivity = useCallback(async () => {
     const { data, error } = await supabase
       .from('indexing_status')
