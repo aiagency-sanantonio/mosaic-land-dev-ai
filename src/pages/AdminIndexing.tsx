@@ -79,6 +79,13 @@ export default function AdminIndexing() {
   const [showIndexingDetails, setShowIndexingDetails] = useState(false);
   const [showOcrDetails, setShowOcrDetails] = useState(false);
   const [showExtractionDetails, setShowExtractionDetails] = useState(false);
+  const [showZzDetails, setShowZzDetails] = useState(false);
+
+  // ZZ Indexing state
+  const [zzIndexing, setZzIndexing] = useState(false);
+  const [zzExtracting, setZzExtracting] = useState(false);
+  const [zzIndexedCount, setZzIndexedCount] = useState(0);
+  const zzPollingRef = useRef(false);
 
   useEffect(() => {
     if (!loading && !user) navigate('/auth');
