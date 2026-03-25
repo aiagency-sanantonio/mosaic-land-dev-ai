@@ -222,8 +222,7 @@ export default function AdminIndexing() {
   }, [job?.status, fetchLatestJob, fetchRealStats, fetchActivity]);
 
   const handleResumeProcessing = async () => {
-    if (!killSwitchId) return;
-    const { error } = await supabase.from('indexing_jobs').delete().eq('id', killSwitchId);
+    const { error } = await supabase.from('indexing_jobs').delete().eq('status', 'stopped');
     if (error) {
       toast.error('Failed to resume processing');
       return;
