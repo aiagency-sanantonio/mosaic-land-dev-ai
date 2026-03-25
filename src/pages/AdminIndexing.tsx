@@ -198,7 +198,17 @@ export default function AdminIndexing() {
       fetchExtractionProgress();
       fetchOcrEligible();
     }
-  }, [user, fetchKillSwitchStatus, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible]);
+  }, [user, fetchKillSwitchStatus, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible, fetchZzIndexedCount]);
+
+  // ZZ polling every 10s when either ZZ button is active
+  useEffect(() => {
+    zzPollingRef.current = zzIndexing || zzExtracting;
+    if (!zzPollingRef.current) return;
+    const interval = setInterval(() => {
+      if (zzPollingRef.current) fetchZzIndexedCount();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [zzIndexing, zzExtracting, fetchZzIndexedCount]);
 
   useEffect(() => {
     if (!job || job.status !== 'running') return;
