@@ -24,6 +24,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
+  file_name?: string | null;
 }
 
 export function useChatThreads() {
