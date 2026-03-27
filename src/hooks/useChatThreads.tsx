@@ -321,9 +321,32 @@ export function useChatThreads() {
               }
             });
 
+          // Polling fallback every 3s in case Realtime doesn't fire
+          const pollInterval = setInterval(async () => {
+            const { data: polledJob } = await supabase
+              .from('chat_jobs')
+              .select('status, response_content')
+              .eq('id', jobId)
+              .single();
+
+            if (polledJob && (polledJob.status === 'completed' || polledJob.status === 'failed')) {
+              console.log('Poll detected job completion:', polledJob.status);
+              clearInterval(pollInterval);
+              clearTimeout(timeout);
+              supabase.removeChannel(channel);
+              if (threadId) {
+                await fetchMessages(threadId);
+              }
+              setSendingMessage(false);
+              await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
+              fetchThreads();
+            }
+          }, 3000);
+
           // Timeout fallback
           const timeout = setTimeout(async () => {
             console.warn('Job timed out:', jobId);
+            clearInterval(pollInterval);
             supabase.removeChannel(channel);
             const { data: assistantMessage } = await supabase
               .from('messages')
