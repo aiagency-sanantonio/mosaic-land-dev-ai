@@ -270,6 +270,21 @@ export function useChatThreads() {
           // Subscribe to Realtime updates for this job
           const jobId = data.job_id;
           const timeoutMs = 10 * 60 * 1000; // 10 minutes
+          let resolved = false;
+
+          const handleJobDone = async () => {
+            if (resolved) return;
+            resolved = true;
+            if (threadId) {
+              await fetchMessages(threadId);
+            }
+            setSendingMessage(false);
+            supabase.removeChannel(channel);
+            clearTimeout(timeout);
+            clearInterval(pollInterval);
+            await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
+            fetchThreads();
+          };
 
           const channel = supabase
             .channel(`job-${jobId}`)
@@ -284,39 +299,20 @@ export function useChatThreads() {
               async (payload) => {
                 const job = payload.new as { status: string; response_content: string | null };
                 console.log('Job update received:', job.status);
-
                 if (job.status === 'completed' || job.status === 'failed') {
-                  // The assistant message was already inserted by chat-response-webhook,
-                  // so just refetch messages
-                  if (threadId) {
-                    await fetchMessages(threadId);
-                  }
-                  setSendingMessage(false);
-                  supabase.removeChannel(channel);
-                  clearTimeout(timeout);
-                  await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
-                  fetchThreads();
+                  await handleJobDone();
                 }
               }
             )
             .subscribe(async (status) => {
               if (status === 'SUBSCRIBED') {
-                // Race condition fix: check if job already completed before subscription was active
                 const { data: existingJob } = await supabase
                   .from('chat_jobs')
                   .select('status, response_content')
                   .eq('id', jobId)
                   .single();
-
                 if (existingJob && (existingJob.status === 'completed' || existingJob.status === 'failed')) {
-                  if (threadId) {
-                    await fetchMessages(threadId);
-                  }
-                  setSendingMessage(false);
-                  supabase.removeChannel(channel);
-                  clearTimeout(timeout);
-                  await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
-                  fetchThreads();
+                  await handleJobDone();
                 }
               }
             });
