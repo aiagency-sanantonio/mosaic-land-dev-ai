@@ -1,4 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { Buffer } from "node:buffer";
+import pdfParse from "npm:pdf-parse@1.1.1/lib/pdf-parse.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -27,17 +29,16 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Extract text based on file type
-    const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
-    let extractedText = "";
-
     const arrayBuffer = await file.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
+    const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+
+    let extractedText = "";
 
     if (ext === "txt") {
       extractedText = new TextDecoder("utf-8").decode(bytes);
     } else if (ext === "pdf") {
-      extractedText = extractTextFromPdf(bytes);
+      extractedText = await extractPdfWithFallback(bytes, fileName);
     } else if (ext === "docx") {
       extractedText = await extractTextFromDocx(bytes);
     } else if (ext === "xlsx") {
@@ -46,11 +47,12 @@ Deno.serve(async (req) => {
       extractedText = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
     }
 
-    const normalizedExtractedText = extractedText.trim();
-    if (!normalizedExtractedText || looksLikeBinaryPdf(normalizedExtractedText)) {
-      extractedText = `[Uploaded file: ${fileName}] The document text could not be cleanly extracted from this file format. Please analyze based on any readable text available and note extraction limitations.`;
+    // Final quality check
+    const trimmed = extractedText.trim();
+    if (!trimmed || trimmed.length < 20) {
+      extractedText = `[Uploaded file: ${fileName}] The document text could not be extracted from this file format. Please analyze based on any readable text available and note extraction limitations.`;
     } else {
-      extractedText = normalizedExtractedText;
+      extractedText = trimmed;
     }
 
     // Truncate
@@ -69,7 +71,6 @@ Deno.serve(async (req) => {
       contentType: file.type || "application/octet-stream",
     });
 
-    // Insert into user_uploads
     const { data, error } = await supabase
       .from("user_uploads")
       .insert({
@@ -109,52 +110,92 @@ Deno.serve(async (req) => {
 });
 
 /**
- * Basic PDF text extraction — pulls text from stream objects.
- * Not a full PDF parser but handles most text-based PDFs.
+ * Two-stage PDF extraction:
+ * 1. Try native text extraction with pdf-parse
+ * 2. If quality is poor (scanned PDF), fall back to Vision AI OCR
  */
-function extractTextFromPdf(bytes: Uint8Array): string {
-  const raw = new TextDecoder("latin1").decode(bytes);
-  const textParts: string[] = [];
+async function extractPdfWithFallback(bytes: Uint8Array, fileName: string): Promise<string> {
+  // Stage 1: Native extraction
+  try {
+    const data = await pdfParse(Buffer.from(bytes));
+    const text = data.text || "";
+    const letterCount = (text.match(/[a-zA-Z]/g) || []).length;
 
-  // Extract text between BT and ET operators (text objects)
-  const btEtRegex = /BT\s([\s\S]*?)ET/g;
-  let match;
-  while ((match = btEtRegex.exec(raw)) !== null) {
-    const block = match[1];
-    // Extract text from Tj and TJ operators
-    const tjRegex = /\(([^)]*)\)\s*Tj/g;
-    let tjMatch;
-    while ((tjMatch = tjRegex.exec(block)) !== null) {
-      textParts.push(tjMatch[1]);
+    console.log(`PDF native extraction: ${text.length} chars, ${letterCount} letters for ${fileName}`);
+
+    if (text.length > 200 && letterCount > 50) {
+      return text;
     }
-    // TJ arrays
-    const tjArrayRegex = /\[([^\]]*)\]\s*TJ/g;
-    let arrMatch;
-    while ((arrMatch = tjArrayRegex.exec(block)) !== null) {
-      const inner = arrMatch[1];
-      const strRegex = /\(([^)]*)\)/g;
-      let strMatch;
-      while ((strMatch = strRegex.exec(inner)) !== null) {
-        textParts.push(strMatch[1]);
-      }
-    }
+
+    console.log("Native extraction quality poor, attempting Vision OCR fallback...");
+  } catch (err) {
+    console.error("pdf-parse failed:", err);
   }
 
-  if (textParts.length === 0) {
-    // Fallback: try to find any readable text sequences
-    const readable = raw.replace(/[^\x20-\x7E\n\r\t]/g, " ").replace(/\s{3,}/g, " ").trim();
-    return readable.slice(0, MAX_TEXT_LENGTH);
+  // Stage 2: Vision AI OCR fallback via Lovable AI Gateway
+  try {
+    return await extractPdfWithVisionAI(bytes, fileName);
+  } catch (err) {
+    console.error("Vision OCR fallback failed:", err);
+    return `[Uploaded file: ${fileName}] PDF text extraction failed. The document may be image-based or encrypted.`;
   }
-
-  return textParts.join(" ").replace(/\\n/g, "\n").replace(/\\\(/g, "(").replace(/\\\)/g, ")");
 }
 
-function looksLikeBinaryPdf(text: string): boolean {
-  const sample = text.slice(0, 4000);
-  const pdfMarkers = ['%PDF-', 'endobj', 'stream', 'endstream'];
-  const markerCount = pdfMarkers.filter((marker) => sample.includes(marker)).length;
-  const weirdCharMatches = sample.match(/[^\x09\x0A\x0D\x20-\x7E]/g) || [];
-  return markerCount >= 2 || weirdCharMatches.length > sample.length * 0.08;
+/**
+ * Send PDF directly to Gemini via Lovable AI Gateway for OCR extraction
+ */
+async function extractPdfWithVisionAI(bytes: Uint8Array, fileName: string): Promise<string> {
+  const apiKey = Deno.env.get("LOVABLE_API_KEY");
+  if (!apiKey) {
+    throw new Error("LOVABLE_API_KEY not configured");
+  }
+
+  // Convert PDF bytes to base64
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64Pdf = btoa(binary);
+
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Extract ALL text content from this PDF document verbatim. Preserve the document structure, headings, paragraphs, lists, and tables as closely as possible. Return only the extracted text, no commentary.",
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:application/pdf;base64,${base64Pdf}`,
+              },
+            },
+          ],
+        },
+      ],
+      max_tokens: 16000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Vision API error ${response.status}: ${errText}`);
+  }
+
+  const result = await response.json();
+  const extracted = result.choices?.[0]?.message?.content || "";
+
+  console.log(`Vision OCR extracted ${extracted.length} chars for ${fileName}`);
+  return extracted;
 }
 
 /**
@@ -162,7 +203,6 @@ function looksLikeBinaryPdf(text: string): boolean {
  */
 async function extractTextFromDocx(bytes: Uint8Array): Promise<string> {
   try {
-    // DOCX is a ZIP containing word/document.xml
     const entries = await unzipEntries(bytes);
     const docEntry = entries.find((e) => e.name === "word/document.xml");
     if (!docEntry) return "[Could not extract DOCX content]";
