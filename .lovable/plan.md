@@ -1,34 +1,37 @@
 
 
-## Add File Attachment Indicator to User Messages
+## Persist Uploaded Document Context Across Follow-up Messages
 
-**What you'll see**: A small chip showing the uploaded file name (with a paperclip icon) displayed just above the user's message bubble, similar to how messaging apps show attachments.
+**Problem**: When you upload a file and ask a question, the extracted text is sent to the AI. But on the next message (without a new upload), no document context is sent — so the bot has no idea what file you're talking about.
+
+**Solution**: Before sending each message, check the `user_uploads` table for any previous uploads in the current thread and include their extracted text in the AI request.
 
 ### Plan
 
-1. **Track file name per message** (`src/hooks/useChatThreads.tsx`)
-   - Add `file_name?: string` to the `Message` interface
-   - When inserting the user message into the DB and local state, include `file.name` if a file was attached
-   - Check if the `chat_messages` table already has a `file_name` column; if not, add one via migration
+1. **Fetch thread uploads on every message** (`src/hooks/useChatThreads.tsx`)
+   - In `sendMessage`, after resolving any new upload, also query `user_uploads` for all uploads linked to the current `threadId`
+   - Combine extracted text from all thread uploads (capped to prevent token overflow)
+   - Pass combined text as `uploaded_document` to `chat-webhook`, even when no new file is attached
 
-2. **Add migration** (if needed)
-   - Add nullable `file_name` column to `chat_messages` table
+2. **No backend changes needed** — the `chat-webhook` and `chat-rag` functions already handle `uploaded_document` correctly; they just need to receive it
 
-3. **Update ChatMessage component** (`src/components/chat/ChatMessage.tsx`)
-   - Add `fileName?: string` to `ChatMessageProps`
-   - For user messages with a `fileName`, render a small attachment chip above the message text:
-     ```
-     [📎 proposal.pdf]
-     "What is this contract about?"
-     ```
-   - Style: muted background pill with paperclip icon and truncated file name
+### Technical Detail
 
-4. **Pass file name through** (`src/pages/Chat.tsx`)
-   - Pass `fileName={message.file_name}` to each `<ChatMessage>`
+```typescript
+// After resolving the current upload, fetch ALL thread uploads
+const { data: threadUploads } = await supabase
+  .from('user_uploads')
+  .select('extracted_text, file_name')
+  .eq('thread_id', threadId)
+  .not('extracted_text', 'is', null);
 
-### Technical Details
+if (threadUploads?.length) {
+  uploadedDocument = threadUploads
+    .map(u => `[${u.file_name}]\n${u.extracted_text}`)
+    .join('\n\n---\n\n')
+    .slice(0, 50000); // cap to prevent token overflow
+}
+```
 
-- The attachment chip will use the existing `Paperclip` icon from lucide-react (already imported in ChatInput)
-- Styled as a small `inline-flex` pill with `bg-white/20` (on user bubble) with truncated text
-- The `sendMessage` function already has access to `file.name` — just need to persist it alongside the message
+This way, every message in the thread will carry the full document context from any previously uploaded files.
 
