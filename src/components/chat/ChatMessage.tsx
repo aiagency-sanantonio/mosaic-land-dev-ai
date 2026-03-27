@@ -1,4 +1,4 @@
-import { User, Bot } from 'lucide-react';
+import { User, Bot, Paperclip } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -8,6 +8,7 @@ interface ChatMessageProps {
   role: 'user' | 'assistant';
   content: string;
   isNew?: boolean;
+  fileName?: string | null;
 }
 
 const markdownComponents: Components = {
@@ -80,7 +81,7 @@ const markdownComponents: Components = {
   pre: ({ children }) => <>{children}</>,
 };
 
-export function ChatMessage({ role, content, isNew = false }: ChatMessageProps) {
+export function ChatMessage({ role, content, isNew = false, fileName }: ChatMessageProps) {
   const isUser = role === 'user';
 
   return (
@@ -107,7 +108,15 @@ export function ChatMessage({ role, content, isNew = false }: ChatMessageProps) 
         )}
       >
         {isUser ? (
-          <p className="text-sm leading-relaxed whitespace-pre-wrap">{content}</p>
+          <div>
+            {fileName && (
+              <div className="flex items-center gap-1.5 text-xs text-primary-foreground/80 bg-white/15 px-2 py-1 rounded-md mb-1.5 w-fit">
+                <Paperclip className="h-3 w-3 shrink-0" />
+                <span className="truncate max-w-[200px]">{fileName}</span>
+              </div>
+            )}
+            <p className="text-sm leading-relaxed whitespace-pre-wrap">{content}</p>
+          </div>
         ) : (
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
             {content}

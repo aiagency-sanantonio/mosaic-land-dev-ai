@@ -24,6 +24,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
+  file_name?: string | null;
 }
 
 export function useChatThreads() {
@@ -185,7 +186,7 @@ export function useChatThreads() {
 
     const { data: userMessage, error: userError } = await supabase
       .from('messages')
-      .insert({ thread_id: threadId, user_id: user.id, role: 'user', content })
+      .insert({ thread_id: threadId, user_id: user.id, role: 'user', content, file_name: file?.name || null })
       .select()
       .single();
 
