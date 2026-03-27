@@ -1,93 +1,83 @@
 
-Problem:
-The bad answer is not happening because the backend lacks Grace Gardens bid data. I confirmed the structured cost table does contain verified bid rows, including the March 12, 2025 total_cost = 5,696,759.30 from `2025-03-12_Grace Gardens Unit 2 Bid Comparison #2.pdf`. The failure is happening in the final LLM synthesis step inside `supabase/functions/chat-rag/index.ts`.
+Root cause I found:
+- The backend is retrieving the Grace Gardens bid rows correctly. I verified the structured data contains the March 12, 2025 bid of $5,696,759.30 and about 20 verified bid rows within the top 500 retrieved records.
+- The failure is happening after retrieval, inside `supabase/functions/chat-rag/index.ts`, during answer synthesis.
+- The current “defensive retry” is not actually catching this bad response. The returned text says “I don't have verified bid tabulations...” but the detector only looks for a limited set of phrases like `bid data`, `contractor bids`, and `verified bid`. It does not reliably match “verified bid tabulations for Grace Gardens in the system.”
+- Because that regex does not fire, the retry and deterministic fallback never run.
+- There is also a deeper design issue: the current solution still trusts the model to obey instructions, even though this is exactly the path that has already failed repeatedly.
 
-What I found:
-1. `classifyQuery` is working correctly:
-   - The question was classified as `AGGREGATE`
-   - `project_name` was correctly identified as `Grace Gardens`
+What I will change:
+1. Make Grace Gardens-style bid answers deterministic before the model writes anything
+- In `retrieveAggregate`, extract verified bid rows and build a structured bid summary object:
+  - most recent verified bid
+  - up to 5 recent verified bid records
+  - source file names
+  - dates
+  - Dropbox links
+- Only include rows with meaningful bid metrics (`total_cost`, `bid_amount`, maybe `estimated_cost`) in the primary summary so subtotals and stray line items do not confuse the answer.
 
-2. `retrieveAggregate` is also returning data:
-   - It queries `project_data`
-   - Grace Gardens bid rows exist
-   - The code already builds a `VERIFIED BID DATA` section
+2. Add a hard short-circuit for bid questions when verified bids exist
+- In the AGGREGATE flow, if the user is clearly asking for recent bids / bid totals and verified bid rows exist:
+  - return a formatted response directly from code
+  - do not send that question to the model at all
+- This removes the model from the critical path for the exact scenario that is failing.
 
-3. The incorrect answer was generated after retrieval:
-   - The stored `chat_jobs.response_content` contains the hallucinated “I don’t have any verified bid data...” response
-   - That means the model saw context but still ignored or failed to follow it
+3. Keep the model only for commentary, not for the core figure
+- For bid questions with verified rows, the code-generated answer will always lead with:
+  - `$5,696,759.30`
+  - date: March 12, 2025
+  - source file
+- Optional supplementary narrative can still be added later, but the lead answer and figures will be deterministic.
 
-Why this is happening:
-The current implementation relies on the model to correctly interpret a large JSON blob embedded in the prompt:
-```text
-=== VERIFIED BID DATA (USE THIS FIRST) ===
-[ ...JSON array... ]
-```
-That is brittle. Even with the new system rule, the model can still miss it when:
-- the JSON is long or dense
-- the most important row is buried among many records
-- the answering model decides to generalize from older/non-bid context
-- the prompt doesn’t force a structured extraction of the verified bid summary before freeform answering
+4. Strengthen fallback detection anyway
+- Expand the contradiction detection to catch broader phrasings:
+  - `verified bid tabulations`
+  - `bid tabulations for`
+  - `no bids in the system`
+  - `no contractor bids available`
+  - `unable to locate bid tabulations`
+- If synthesis is still used anywhere and contradicts the context, it should always trigger retry/fallback.
 
-Recommended fix:
-Make `retrieveAggregate` produce a much more explicit, human-readable bid summary before the raw JSON. Do not rely on raw JSON alone.
-
-Implementation plan:
-1. Update `retrieveAggregate` in `supabase/functions/chat-rag/index.ts`
-   - Sort verified bid rows by effective date descending
-   - Build a compact “MOST RECENT VERIFIED BID SNAPSHOT” section at the top
-   - Include top bid figures in plain text, especially:
-     - most recent total cost
-     - source file
-     - date
-     - any additional recent bid amounts
-   - Keep raw JSON below as supporting detail, not the primary signal
-
-2. Strengthen prompt formatting in `buildSystemPrompt` / `TERRACHAT_SYSTEM_PROMPT`
-   - Keep the critical rule
-   - Add a stricter instruction like:
-     - “If MOST RECENT VERIFIED BID SNAPSHOT is present, quote that section verbatim before any interpretation.”
-   - Explicitly forbid fallback language about missing bid data when verified rows are present
-
-3. Add defensive synthesis handling
-   - After generating the answer, detect a contradiction:
-     - if context contains `VERIFIED BID DATA`
-     - and answer says “I don’t have bid data”, “no verified bid data”, or similar
-   - Then retry synthesis once with a stricter system addendum, or short-circuit to a templated response based on the extracted top bid row
-
-4. Optional hardening
-   - Add a helper to extract/format the top verified bid rows deterministically from structured data
-   - This avoids trusting the LLM to parse large JSON correctly
-   - This is the safest fix for cost/bid questions
-
-Technical details:
-Proposed context shape:
-```text
-=== MOST RECENT VERIFIED BID SNAPSHOT ===
-Project: Grace Gardens
-Most recent verified bid total: $5,696,759.30
-Date: 2025-03-12
-Source: 2025-03-12_Grace Gardens Unit 2 Bid Comparison #2.pdf
-
-Other verified bid records:
-- 2024-01-01 | Bid Tabulation Results - Grace Gardens Unit 1.pdf | total_cost | $3,386,197.50
-- 2024-01-01 | CO-00674 - Bid Results.pdf | bid_amount | $4,972,090.00
-```
-
-Then below that:
-```text
-=== VERIFIED BID DATA (USE THIS FIRST) ===
-[raw JSON here]
-```
-
-Expected outcome:
-The assistant will stop saying Grace Gardens has no bid data because the most important figure will be surfaced deterministically before the model writes the answer.
+5. Add explicit debug logging
+- Log:
+  - verified bid row count
+  - whether deterministic bid mode was used
+  - whether retry fired
+  - whether fallback fired
+  - top bid row chosen
+- This will make the next failure, if any, immediately diagnosable from logs instead of guessing.
 
 Files to update:
 - `supabase/functions/chat-rag/index.ts`
 
-Validation after implementation:
-- Ask: “What are the most recent bid totals for Grace Gardens?”
-- Confirm the response leads with `$5,696,759.30` from March 2025
-- Confirm it cites the correct bid comparison file
-- Confirm it does not say bid data is missing
+Implementation shape:
+```text
+classify question
+  -> retrieveAggregate()
+      -> collect verified bid rows
+      -> build deterministic bid summary
+  -> if question asks for recent bid totals AND verified bid summary exists
+      -> return code-built answer directly
+  -> else
+      -> use LLM synthesis
+      -> if contradiction detected
+          -> retry once
+          -> else deterministic fallback
+```
 
+Why this should fix it:
+- Right now the system has the right data but still asks the model to interpret it.
+- The reliable fix is to stop asking the model to decide whether bids exist when the code can already prove they do.
+- This turns the most important part of the answer from “prompt-dependent” into “data-driven.”
+
+Validation after implementation:
+- Ask: “What are the recent bid totals for Grace Gardens?”
+- Confirm the first sentence contains `$5,696,759.30` and March 2025.
+- Confirm the source file `2025-03-12_Grace Gardens Unit 2 Bid Comparison #2.pdf` is cited.
+- Confirm the response does not say bids are unavailable.
+- Confirm logs show deterministic bid mode was used.
+- Also test one non-bid aggregate question to make sure normal synthesis still works.
+
+Technical notes:
+- I also found a separate UI warning in `src/components/chat/ChatMessage.tsx` involving refs/markdown components, but that is not the cause of this Grace Gardens failure.
+- The async job pipeline is working correctly: `chat-webhook` creates the job, `chat-rag` returns 200, and `chat-response-webhook` saves the bad answer. So the problem is not transport, polling, or job completion.
