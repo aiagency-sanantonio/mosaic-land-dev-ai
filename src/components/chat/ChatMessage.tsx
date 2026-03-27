@@ -1,4 +1,4 @@
-import { User, Bot } from 'lucide-react';
+import { User, Bot, Paperclip } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -8,6 +8,7 @@ interface ChatMessageProps {
   role: 'user' | 'assistant';
   content: string;
   isNew?: boolean;
+  fileName?: string | null;
 }
 
 const markdownComponents: Components = {
