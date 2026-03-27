@@ -233,17 +233,19 @@ export function useChatThreads() {
 
     if (webhookMode === 'edge-function') {
       try {
-        // Fetch extracted text if an upload is attached
+        // Fetch extracted text from ALL uploads in this thread (not just the current one)
         let uploadedDocument: string | undefined;
-        if (resolvedUploadId) {
-          const { data: uploadData } = await supabase
-            .from('user_uploads')
-            .select('extracted_text')
-            .eq('id', resolvedUploadId)
-            .single();
-          if (uploadData?.extracted_text) {
-            uploadedDocument = uploadData.extracted_text;
-          }
+        const { data: threadUploads } = await supabase
+          .from('user_uploads')
+          .select('extracted_text, file_name')
+          .eq('thread_id', threadId)
+          .not('extracted_text', 'is', null);
+
+        if (threadUploads?.length) {
+          uploadedDocument = threadUploads
+            .map(u => `[${u.file_name}]\n${u.extracted_text}`)
+            .join('\n\n---\n\n')
+            .slice(0, 50000);
         }
 
         const { data, error } = await supabase.functions.invoke('chat-webhook', {
