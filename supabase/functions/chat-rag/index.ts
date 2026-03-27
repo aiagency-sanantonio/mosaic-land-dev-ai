@@ -254,6 +254,8 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
       description: r.description,
       issued_date: r.issued_date,
       expiration_date: r.expiration_date,
+      source_file_name: r.source_file_name,
+      dropbox_url: buildDropboxUrl(r.source_file_path),
     };
 
     if (!r.expiration_date) {
