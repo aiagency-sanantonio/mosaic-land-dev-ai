@@ -41,12 +41,16 @@ Deno.serve(async (req) => {
     } else if (ext === "docx") {
       extractedText = await extractTextFromDocx(bytes);
     } else if (ext === "xlsx") {
-      extractedText = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-      // For XLSX (ZIP-based XML), try to pull shared strings
       extractedText = await extractTextFromXlsx(bytes);
     } else {
-      // Fallback: try UTF-8 decode
       extractedText = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    }
+
+    const normalizedExtractedText = extractedText.trim();
+    if (!normalizedExtractedText || looksLikeBinaryPdf(normalizedExtractedText)) {
+      extractedText = `[Uploaded file: ${fileName}] The document text could not be cleanly extracted from this file format. Please analyze based on any readable text available and note extraction limitations.`;
+    } else {
+      extractedText = normalizedExtractedText;
     }
 
     // Truncate
