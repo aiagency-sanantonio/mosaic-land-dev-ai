@@ -62,3 +62,6 @@ verify_jwt = false
 
 [functions.scan-zz-folder]
 verify_jwt = false
+
+[functions.process-upload]
+verify_jwt = false
