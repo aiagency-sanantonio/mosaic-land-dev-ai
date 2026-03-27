@@ -445,7 +445,7 @@ serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { threadId, userId, message, chatHistory, job_id, callback_url } = body;
+    const { threadId, userId, message, chatHistory, job_id, callback_url, uploaded_document } = body;
 
     console.log('chat-rag received:', JSON.stringify({ threadId, userId, message, job_id, callback_url }));
 
@@ -533,6 +533,12 @@ serve(async (req) => {
       if (docResult.status === 'fulfilled') parts.push(`## Retrieved Documents\n${docResult.value}`);
       context = parts.join('\n\n');
       contextType = 'Combined Data';
+    }
+
+    // Prepend uploaded document to context if present
+    if (uploaded_document) {
+      context = `=== USER UPLOADED DOCUMENT ===\n${uploaded_document}\n=== END UPLOADED DOCUMENT ===\n\n${context}`;
+      systemAddendum += '\n\nIf a USER UPLOADED DOCUMENT is present in the context, treat it as the primary source for answering the question. The user has explicitly provided this document for analysis. Reference it directly in your answer.';
     }
 
     console.log(`context retrieved (${contextType}), length=${context.length}`);
