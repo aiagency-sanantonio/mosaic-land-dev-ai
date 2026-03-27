@@ -489,9 +489,10 @@ serve(async (req) => {
     }
 
     const { query_type, project_name, clarify_question } = classification;
+    const hasUploadedDocument = typeof uploaded_document === 'string' && uploaded_document.trim().length > 0;
 
     // CLARIFY — return the clarify question directly, no retrieval
-    if (query_type === 'CLARIFY') {
+    if (query_type === 'CLARIFY' && !hasUploadedDocument) {
       const response = clarify_question || 'Could you please provide more details about your question?';
 
       if (callback_url && job_id) {
@@ -512,7 +513,11 @@ serve(async (req) => {
     let context = '';
     let contextType = 'Retrieved Documents';
 
-    if (query_type === 'AGGREGATE') {
+    if (hasUploadedDocument) {
+      context = `=== USER UPLOADED DOCUMENT ===\n${uploaded_document}\n=== END UPLOADED DOCUMENT ===`;
+      contextType = 'User Uploaded Document';
+      systemAddendum += '\n\nA USER UPLOADED DOCUMENT is present in the context. Treat it as the primary source for answering the question. The user has explicitly provided this document for analysis. Reference it directly in your answer.';
+    } else if (query_type === 'AGGREGATE') {
       context = await retrieveAggregate(project_name, message, userId, threadId);
       contextType = 'Structured Cost Data';
     } else if (query_type === 'STATUS_LOOKUP') {
@@ -533,12 +538,6 @@ serve(async (req) => {
       if (docResult.status === 'fulfilled') parts.push(`## Retrieved Documents\n${docResult.value}`);
       context = parts.join('\n\n');
       contextType = 'Combined Data';
-    }
-
-    // Prepend uploaded document to context if present
-    if (uploaded_document) {
-      context = `=== USER UPLOADED DOCUMENT ===\n${uploaded_document}\n=== END UPLOADED DOCUMENT ===\n\n${context}`;
-      systemAddendum += '\n\nIf a USER UPLOADED DOCUMENT is present in the context, treat it as the primary source for answering the question. The user has explicitly provided this document for analysis. Reference it directly in your answer.';
     }
 
     console.log(`context retrieved (${contextType}), length=${context.length}`);
