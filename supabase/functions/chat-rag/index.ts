@@ -85,17 +85,20 @@ function extractDateFromFilename(fileName: string | null): Date | null {
   return null;
 }
 
+function buildDropboxUrl(filePath: string | null): string | null {
+  if (!filePath) return null;
+  const encoded = filePath.split('/').map(segment => encodeURIComponent(segment)).join('/');
+  return `https://www.dropbox.com/home${encoded}`;
+}
+
 function getSourcePriority(filePath: string | null): { rank: number; label: string } {
   const fp = (filePath || '').toLowerCase();
-  // Tier 0 — company master cost tracking folder
   if (fp.includes('zz md_50kft') || fp.includes('recent bids') || fp.includes('average cost')) {
     return { rank: 0, label: 'HIGHEST (master cost)' };
   }
-  // Tier 1 — regular bid tabs
   if (fp.includes('bid tab')) {
     return { rank: 1, label: 'HIGH (bid tab)' };
   }
-  // Tier 3 — OPC / opinion of probable cost
   if (fp.includes('opc') || fp.includes('opinion')) {
     return { rank: 3, label: 'LOW (OPC)' };
   }
@@ -165,6 +168,7 @@ async function retrieveAggregate(
       unit: r.unit,
       date: effectiveDate,
       source_file_name: r.source_file_name,
+      dropbox_url: buildDropboxUrl(r.source_file_path),
       source_priority: priority.label,
       data_currency_flag,
       _rank: priority.rank,
@@ -250,6 +254,8 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
       description: r.description,
       issued_date: r.issued_date,
       expiration_date: r.expiration_date,
+      source_file_name: r.source_file_name,
+      dropbox_url: buildDropboxUrl(r.source_file_path),
     };
 
     if (!r.expiration_date) {
@@ -338,9 +344,11 @@ async function callSearchRanked(
 function formatDocs(docs: any[]): string {
   if (docs.length === 0) return 'No relevant documents found.';
   return docs
-    .map((d: any, i: number) =>
-      `[${i + 1}] ${d.file_name || 'Unknown'} (${d.source_type || 'document'}, ${d.document_date || 'no date'})\n${d.content || ''}`
-    )
+    .map((d: any, i: number) => {
+      const dbxUrl = buildDropboxUrl(d.file_path);
+      const linkPart = dbxUrl ? ` | [View in Dropbox](${dbxUrl})` : '';
+      return `[Source ${i + 1}] ${d.file_name || 'Unknown'} (${d.source_type || 'document'}, ${d.document_date || 'no date'})${linkPart}\n${d.content || ''}`;
+    })
     .join('\n\n');
 }
 
