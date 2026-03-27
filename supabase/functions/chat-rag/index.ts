@@ -630,14 +630,23 @@ serve(async (req) => {
     // Synthesize final answer
     let answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
 
-    // Defensive check: if context has verified bid data but answer claims it doesn't exist, retry
+    // Defensive check: if context has verified bid data but answer claims it doesn't exist, retry once, then hard-fallback
     const hasVerifiedBids = context.includes('VERIFIED BID DATA') || context.includes('MOST RECENT VERIFIED BID SNAPSHOT');
-    const claimsMissing = /(?:don'?t have|no|couldn'?t find|not available|unable to find|not have).*(?:bid data|bid tabulation|verified bid)/i.test(answer);
+    const claimsMissing = /(?:don'?t have|do not have|no|couldn'?t find|not available|unable to find|without).{0,80}(?:bid data|contractor bids|bid tabulations|tabulated contractor bids|verified bid)/i.test(answer);
 
     if (hasVerifiedBids && claimsMissing) {
       console.warn('DEFENSIVE RETRY: Answer claims no bid data despite verified bids in context. Retrying with stricter prompt.');
       const retryAddendum = systemAddendum + '\n\nIMPORTANT OVERRIDE: The context DOES contain verified bid data. Your previous attempt incorrectly stated it was missing. You MUST use the MOST RECENT VERIFIED BID SNAPSHOT and VERIFIED BID DATA sections. Quote the dollar amounts directly. Do NOT say bid data is unavailable.';
       answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, retryAddendum);
+
+      const retryStillClaimsMissing = /(?:don'?t have|do not have|no|couldn'?t find|not available|unable to find|without).{0,80}(?:bid data|contractor bids|bid tabulations|tabulated contractor bids|verified bid)/i.test(answer);
+      if (retryStillClaimsMissing) {
+        const deterministicFallback = buildDeterministicBidFallback(context);
+        if (deterministicFallback) {
+          console.warn('DETERMINISTIC FALLBACK: Returning bid snapshot directly because model contradicted verified bid context twice.');
+          answer = deterministicFallback;
+        }
+      }
     }
 
     // POST result to callback
