@@ -679,13 +679,16 @@ serve(async (req) => {
     // Retrieve context based on query type
     let context = '';
     let contextType = 'Retrieved Documents';
+    let bidSummary: BidSummary = { hasBids: false, topBid: null, allBidRows: [] };
 
     if (hasUploadedDocument) {
       context = `=== USER UPLOADED DOCUMENT ===\n${uploaded_document}\n=== END UPLOADED DOCUMENT ===`;
       contextType = 'User Uploaded Document';
       systemAddendum += '\n\nA USER UPLOADED DOCUMENT is present in the context. Treat it as the primary source for answering the question. The user has explicitly provided this document for analysis. Reference it directly in your answer.';
     } else if (query_type === 'AGGREGATE') {
-      context = await retrieveAggregate(project_name, message, userId, threadId);
+      const result = await retrieveAggregate(project_name, message, userId, threadId);
+      context = result.context;
+      bidSummary = result.bidSummary;
       contextType = 'Structured Cost Data';
     } else if (query_type === 'STATUS_LOOKUP') {
       context = await retrieveStatus(project_name, message);
@@ -701,7 +704,10 @@ serve(async (req) => {
       ]);
 
       const parts: string[] = [];
-      if (aggResult.status === 'fulfilled') parts.push(`## Structured Cost Data\n${aggResult.value}`);
+      if (aggResult.status === 'fulfilled') {
+        parts.push(`## Structured Cost Data\n${aggResult.value.context}`);
+        bidSummary = aggResult.value.bidSummary;
+      }
       if (docResult.status === 'fulfilled') parts.push(`## Retrieved Documents\n${docResult.value}`);
       context = parts.join('\n\n');
       contextType = 'Combined Data';
@@ -709,24 +715,41 @@ serve(async (req) => {
 
     console.log(`context retrieved (${contextType}), length=${context.length}`);
 
-    // Synthesize final answer
-    let answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
+    // ============================================================
+    // DETERMINISTIC SHORT-CIRCUIT: If user asks about bids and we
+    // have verified bid data, return a code-built answer directly.
+    // The LLM is NOT involved — this is 100% data-driven.
+    // ============================================================
+    const bidQuestion = isBidRelatedQuestion(message);
+    console.log(`bid_question=${bidQuestion}, has_verified_bids=${bidSummary.hasBids}, top_bid=${bidSummary.topBid?.value ?? 'none'}`);
 
-    // Defensive check: if context has verified bid data but answer claims it doesn't exist, retry once, then hard-fallback
-    const hasVerifiedBids = context.includes('VERIFIED BID DATA') || context.includes('MOST RECENT VERIFIED BID SNAPSHOT');
-    const claimsMissing = /(?:don'?t have|do not have|no|couldn'?t find|not available|unable to find|without).{0,80}(?:bid data|contractor bids|bid tabulations|tabulated contractor bids|verified bid)/i.test(answer);
+    let answer: string;
 
-    if (hasVerifiedBids && claimsMissing) {
-      console.warn('DEFENSIVE RETRY: Answer claims no bid data despite verified bids in context. Retrying with stricter prompt.');
-      const retryAddendum = systemAddendum + '\n\nIMPORTANT OVERRIDE: The context DOES contain verified bid data. Your previous attempt incorrectly stated it was missing. You MUST use the MOST RECENT VERIFIED BID SNAPSHOT and VERIFIED BID DATA sections. Quote the dollar amounts directly. Do NOT say bid data is unavailable.';
-      answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, retryAddendum);
+    if (bidQuestion && bidSummary.hasBids && bidSummary.topBid) {
+      console.log('DETERMINISTIC BID MODE: Bypassing LLM entirely. Returning code-built bid response.');
+      answer = buildDeterministicBidResponse(bidSummary, project_name);
+    } else {
+      // Normal LLM synthesis path
+      answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
 
-      const retryStillClaimsMissing = /(?:don'?t have|do not have|no|couldn'?t find|not available|unable to find|without).{0,80}(?:bid data|contractor bids|bid tabulations|tabulated contractor bids|verified bid)/i.test(answer);
-      if (retryStillClaimsMissing) {
-        const deterministicFallback = buildDeterministicBidFallback(context);
-        if (deterministicFallback) {
-          console.warn('DETERMINISTIC FALLBACK: Returning bid snapshot directly because model contradicted verified bid context twice.');
-          answer = deterministicFallback;
+      // Defensive check: if context has verified bid data but answer claims it doesn't exist
+      const hasVerifiedBids = context.includes('VERIFIED BID DATA') || context.includes('MOST RECENT VERIFIED BID SNAPSHOT');
+      const claimsMissing = /(?:don[\u2019']?t have|do not have|no |couldn[\u2019']?t find|not available|unable to (?:find|locate)|without|lack).{0,120}(?:bid data|contractor bids?|bid tabulation|tabulated contractor bids|verified bid|bid information|bid total|bid result|bid comparison)/i.test(answer);
+
+      if (hasVerifiedBids && claimsMissing) {
+        console.warn('DEFENSIVE RETRY: Answer claims no bid data despite verified bids in context. Retrying with stricter prompt.');
+        const retryAddendum = systemAddendum + '\n\nIMPORTANT OVERRIDE: The context DOES contain verified bid data. Your previous attempt incorrectly stated it was missing. You MUST use the MOST RECENT VERIFIED BID SNAPSHOT and VERIFIED BID DATA sections. Quote the dollar amounts directly. Do NOT say bid data is unavailable.';
+        answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, retryAddendum);
+
+        const retryStillClaimsMissing = /(?:don[\u2019']?t have|do not have|no |couldn[\u2019']?t find|not available|unable to (?:find|locate)|without|lack).{0,120}(?:bid data|contractor bids?|bid tabulation|tabulated contractor bids|verified bid|bid information|bid total|bid result|bid comparison)/i.test(answer);
+        if (retryStillClaimsMissing) {
+          console.warn('DETERMINISTIC FALLBACK: Model contradicted verified bid context twice. Using code-built response.');
+          if (bidSummary.hasBids && bidSummary.topBid) {
+            answer = buildDeterministicBidResponse(bidSummary, project_name);
+          } else {
+            const fallback = buildDeterministicBidFallback(context);
+            if (fallback) answer = fallback;
+          }
         }
       }
     }
