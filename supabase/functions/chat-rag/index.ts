@@ -719,6 +719,16 @@ serve(async (req) => {
     let contextType = 'Retrieved Documents';
     let bidSummary: BidSummary = { hasBids: false, topBid: null, allBidRows: [] };
 
+    // For AGGREGATE or HYBRID queries, run dedicated bid retrieval in parallel
+    const bidQuestion = isBidRelatedQuestion(message);
+    const needsBidCheck = bidQuestion && (query_type === 'AGGREGATE' || query_type === 'HYBRID') && !hasUploadedDocument;
+
+    if (needsBidCheck) {
+      // Run dedicated bid retrieval FIRST (or in parallel with aggregate)
+      bidSummary = await retrieveVerifiedBids(project_name);
+      console.log(`dedicated bid retrieval: hasBids=${bidSummary.hasBids}, topBid=${bidSummary.topBid?.value ?? 'none'}, rows=${bidSummary.allBidRows.length}`);
+    }
+
     if (hasUploadedDocument) {
       context = `=== USER UPLOADED DOCUMENT ===\n${uploaded_document}\n=== END UPLOADED DOCUMENT ===`;
       contextType = 'User Uploaded Document';
@@ -726,7 +736,6 @@ serve(async (req) => {
     } else if (query_type === 'AGGREGATE') {
       const result = await retrieveAggregate(project_name, message, userId, threadId);
       context = result.context;
-      bidSummary = result.bidSummary;
       contextType = 'Structured Cost Data';
     } else if (query_type === 'STATUS_LOOKUP') {
       context = await retrieveStatus(project_name, message);
@@ -744,7 +753,6 @@ serve(async (req) => {
       const parts: string[] = [];
       if (aggResult.status === 'fulfilled') {
         parts.push(`## Structured Cost Data\n${aggResult.value.context}`);
-        bidSummary = aggResult.value.bidSummary;
       }
       if (docResult.status === 'fulfilled') parts.push(`## Retrieved Documents\n${docResult.value}`);
       context = parts.join('\n\n');
