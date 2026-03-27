@@ -217,10 +217,10 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
 
   const lowerMsg = message.toLowerCase();
   const wantsExpired = /\b(show expired|expired permits|historical|all permits|full history|past permits|every permit)\b/.test(lowerMsg);
+  const now = new Date();
 
   if (!wantsExpired) {
-    // Default: only future permits (not yet expired)
-    const today = new Date().toISOString().split('T')[0];
+    const today = now.toISOString().split('T')[0];
     query = query.gte('expiration_date', today);
   }
 
@@ -236,7 +236,6 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
 
   if (error) throw new Error(`permits_tracking query failed: ${error.message}`);
 
-  const now = new Date();
   const sections: Record<string, any[]> = {
     '🚨 CRITICAL — expiring within 30 days': [],
     '⚠️ WARNING — expiring 31-90 days': [],
