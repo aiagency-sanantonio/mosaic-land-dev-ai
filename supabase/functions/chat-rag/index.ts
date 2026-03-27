@@ -209,6 +209,44 @@ async function retrieveAggregate(
   return parts.join('\n\n');
 }
 
+function buildBidSnapshot(bidRows: any[], projectName: string | null): string {
+  // Sort by date descending, putting rows with dates first
+  const sorted = [...bidRows].sort((a, b) => {
+    const dateA = a.date ? new Date(String(a.date).replace(' (from filename)', '')).getTime() : 0;
+    const dateB = b.date ? new Date(String(b.date).replace(' (from filename)', '')).getTime() : 0;
+    return dateB - dateA;
+  });
+
+  const mostRecent = sorted[0];
+  const formatValue = (v: number) => v.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+  const lines: string[] = [
+    '=== MOST RECENT VERIFIED BID SNAPSHOT ===',
+    `Project: ${mostRecent.project_name || projectName || 'Unknown'}`,
+    `Most recent verified bid total: ${formatValue(mostRecent.value)}`,
+    `Metric: ${mostRecent.metric_name}`,
+    `Date: ${mostRecent.date || 'unknown'}`,
+    `Source: ${mostRecent.source_file_name || 'unknown'}`,
+  ];
+
+  if (mostRecent.dropbox_url) {
+    lines.push(`Link: [View in Dropbox](${mostRecent.dropbox_url})`);
+  }
+
+  // Add other verified bid records
+  if (sorted.length > 1) {
+    lines.push('');
+    lines.push('Other verified bid records:');
+    for (let i = 1; i < sorted.length && i <= 10; i++) {
+      const r = sorted[i];
+      lines.push(`- ${r.date || 'no date'} | ${r.source_file_name || 'unknown'} | ${r.metric_name} | ${formatValue(r.value)}`);
+    }
+  }
+
+  lines.push('=== END SNAPSHOT ===');
+  return lines.join('\n');
+}
+
 async function retrieveStatus(projectName: string | null, message: string): Promise<string> {
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
