@@ -1,52 +1,34 @@
 
 
-## Diagnosis: Realtime Race Condition
+## Add File Attachment Indicator to User Messages
 
-The chatbot spins indefinitely because of a **race condition** between the Realtime subscription setup and the backend response.
+**What you'll see**: A small chip showing the uploaded file name (with a paperclip icon) displayed just above the user's message bubble, similar to how messaging apps show attachments.
 
-### Timeline of events:
-1. Frontend calls `chat-webhook` (04:37:54Z)
-2. `chat-webhook` creates job, triggers `chat-rag`, returns `job_id` (04:37:54Z)
-3. `chat-rag` classifies as CLARIFY, posts response to `chat-response-webhook` (04:37:55Z)
-4. `chat-response-webhook` UPDATEs `chat_jobs` to `completed` (04:37:55Z)
-5. Frontend receives `job_id` from step 2, **now** sets up Realtime subscription (04:37:56Z+)
-6. The UPDATE event already fired — subscription misses it entirely
+### Plan
 
-The job completes in ~1 second, but the frontend only starts listening *after* getting the webhook response. The Realtime channel needs time to connect and subscribe, so it misses the UPDATE.
+1. **Track file name per message** (`src/hooks/useChatThreads.tsx`)
+   - Add `file_name?: string` to the `Message` interface
+   - When inserting the user message into the DB and local state, include `file.name` if a file was attached
+   - Check if the `chat_messages` table already has a `file_name` column; if not, add one via migration
 
-### Fix
+2. **Add migration** (if needed)
+   - Add nullable `file_name` column to `chat_messages` table
 
-**File: `src/hooks/useChatThreads.tsx`** — in the `sendMessage` function (lines 228-261)
+3. **Update ChatMessage component** (`src/components/chat/ChatMessage.tsx`)
+   - Add `fileName?: string` to `ChatMessageProps`
+   - For user messages with a `fileName`, render a small attachment chip above the message text:
+     ```
+     [📎 proposal.pdf]
+     "What is this contract about?"
+     ```
+   - Style: muted background pill with paperclip icon and truncated file name
 
-Add a **polling fallback** after subscribing to Realtime. Once the channel subscribes, immediately check if the job is already completed. This handles the race condition where the job finishes before the subscription is active.
+4. **Pass file name through** (`src/pages/Chat.tsx`)
+   - Pass `fileName={message.file_name}` to each `<ChatMessage>`
 
-```typescript
-// After .subscribe(), add an immediate check:
-const channel = supabase
-  .channel(`job-${jobId}`)
-  .on('postgres_changes', { ... }, async (payload) => { ... })
-  .subscribe(async (status) => {
-    if (status === 'SUBSCRIBED') {
-      // Check if job already completed before we subscribed
-      const { data: job } = await supabase
-        .from('chat_jobs')
-        .select('status, response_content')
-        .eq('id', jobId)
-        .single();
-      
-      if (job && (job.status === 'completed' || job.status === 'failed')) {
-        if (threadId) await fetchMessages(threadId);
-        setSendingMessage(false);
-        supabase.removeChannel(channel);
-        clearTimeout(timeout);
-        await supabase.from('chat_threads')
-          .update({ updated_at: new Date().toISOString() })
-          .eq('id', threadId);
-        fetchThreads();
-      }
-    }
-  });
-```
+### Technical Details
 
-This ensures that even if the job completes before the subscription is active, the frontend will detect it immediately upon subscribing. No other files need to change.
+- The attachment chip will use the existing `Paperclip` icon from lucide-react (already imported in ChatInput)
+- Styled as a small `inline-flex` pill with `bg-white/20` (on user bubble) with truncated text
+- The `sendMessage` function already has access to `file.name` — just need to persist it alongside the message
 
