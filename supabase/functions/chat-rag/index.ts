@@ -122,7 +122,7 @@ async function retrieveAggregate(
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   );
 
-  let query = supabase.from('project_data').select('*');
+  let query = supabase.from('project_data').select('project_name, category, metric_name, value, unit, date, source_file_name, source_file_path, confidence');
   if (projectName) {
     query = query.or(`project_name.ilike.%${projectName}%,source_file_name.ilike.%${projectName}%`);
   }
