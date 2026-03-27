@@ -253,6 +253,42 @@ function buildBidSnapshot(bidRows: any[], projectName: string | null): string {
   return lines.join('\n');
 }
 
+function buildDeterministicBidFallback(context: string): string | null {
+  const snapshotMatch = context.match(/=== MOST RECENT VERIFIED BID SNAPSHOT ===\n([\s\S]*?)\n=== END SNAPSHOT ===/);
+  if (!snapshotMatch) return null;
+
+  const snapshot = snapshotMatch[1];
+  const project = snapshot.match(/^Project:\s*(.+)$/m)?.[1]?.trim() || 'the project';
+  const total = snapshot.match(/^Most recent verified bid total:\s*(.+)$/m)?.[1]?.trim();
+  const metric = snapshot.match(/^Metric:\s*(.+)$/m)?.[1]?.trim();
+  const date = snapshot.match(/^Date:\s*(.+)$/m)?.[1]?.trim();
+  const source = snapshot.match(/^Source:\s*(.+)$/m)?.[1]?.trim();
+  const link = snapshot.match(/^Link:\s*(.+)$/m)?.[1]?.trim();
+
+  if (!total) return null;
+
+  const lines = [
+    `The most recent verified contractor bid for ${project} is ${total}${date ? ` (${date})` : ''}.`,
+  ];
+
+  if (metric) lines.push(`This figure comes from the ${metric} record.`);
+  if (source) {
+    lines.push(link ? `📄 [${source}]${link.replace(/^\[View in Dropbox\]\((.+)\)$/, '($1)')}` : `📄 ${source}`);
+  }
+
+  const otherLines = snapshot
+    .split('\n')
+    .filter((line) => line.startsWith('- '))
+    .slice(0, 5);
+
+  if (otherLines.length > 0) {
+    lines.push('', 'Other verified bid records:');
+    lines.push(...otherLines);
+  }
+
+  return lines.join('\n');
+}
+
 async function retrieveStatus(projectName: string | null, message: string): Promise<string> {
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
