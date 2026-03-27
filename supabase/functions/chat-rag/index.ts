@@ -762,40 +762,30 @@ serve(async (req) => {
     console.log(`context retrieved (${contextType}), length=${context.length}`);
 
     // ============================================================
-    // DETERMINISTIC SHORT-CIRCUIT: If user asks about bids and we
-    // have verified bid data, return a code-built answer directly.
-    // The LLM is NOT involved — this is 100% data-driven.
+    // DETERMINISTIC SHORT-CIRCUIT: If dedicated bid retrieval found
+    // verified bids, return a code-built answer. LLM not involved.
     // ============================================================
-    const bidQuestion = isBidRelatedQuestion(message);
     console.log(`bid_question=${bidQuestion}, has_verified_bids=${bidSummary.hasBids}, top_bid=${bidSummary.topBid?.value ?? 'none'}`);
 
     let answer: string;
 
-    if (bidQuestion && bidSummary.hasBids && bidSummary.topBid) {
-      console.log('DETERMINISTIC BID MODE: Bypassing LLM entirely. Returning code-built bid response.');
+    if (bidSummary.hasBids && bidSummary.topBid) {
+      console.log(`DETERMINISTIC BID MODE: Bypassing LLM. top_bid=${bidSummary.topBid.value}, source=${bidSummary.topBid.source}`);
       answer = buildDeterministicBidResponse(bidSummary, project_name);
     } else {
       // Normal LLM synthesis path
       answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
 
-      // Defensive check: if context has verified bid data but answer claims it doesn't exist
-      const hasVerifiedBids = context.includes('VERIFIED BID DATA') || context.includes('MOST RECENT VERIFIED BID SNAPSHOT');
+      // Defensive check: if answer claims no bids but we might have missed them
       const claimsMissing = /(?:don[\u2019']?t have|do not have|no |couldn[\u2019']?t find|not available|unable to (?:find|locate)|without|lack).{0,120}(?:bid data|contractor bids?|bid tabulation|tabulated contractor bids|verified bid|bid information|bid total|bid result|bid comparison)/i.test(answer);
 
-      if (hasVerifiedBids && claimsMissing) {
-        console.warn('DEFENSIVE RETRY: Answer claims no bid data despite verified bids in context. Retrying with stricter prompt.');
-        const retryAddendum = systemAddendum + '\n\nIMPORTANT OVERRIDE: The context DOES contain verified bid data. Your previous attempt incorrectly stated it was missing. You MUST use the MOST RECENT VERIFIED BID SNAPSHOT and VERIFIED BID DATA sections. Quote the dollar amounts directly. Do NOT say bid data is unavailable.';
-        answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, retryAddendum);
-
-        const retryStillClaimsMissing = /(?:don[\u2019']?t have|do not have|no |couldn[\u2019']?t find|not available|unable to (?:find|locate)|without|lack).{0,120}(?:bid data|contractor bids?|bid tabulation|tabulated contractor bids|verified bid|bid information|bid total|bid result|bid comparison)/i.test(answer);
-        if (retryStillClaimsMissing) {
-          console.warn('DETERMINISTIC FALLBACK: Model contradicted verified bid context twice. Using code-built response.');
-          if (bidSummary.hasBids && bidSummary.topBid) {
-            answer = buildDeterministicBidResponse(bidSummary, project_name);
-          } else {
-            const fallback = buildDeterministicBidFallback(context);
-            if (fallback) answer = fallback;
-          }
+      if (bidQuestion && claimsMissing && !bidSummary.hasBids) {
+        // Last resort: try dedicated bid retrieval even if we didn't before
+        console.warn('DEFENSIVE: LLM claims no bids. Running late dedicated bid retrieval as fallback.');
+        const lateBidSummary = await retrieveVerifiedBids(project_name);
+        if (lateBidSummary.hasBids && lateBidSummary.topBid) {
+          console.warn(`DEFENSIVE OVERRIDE: Found ${lateBidSummary.allBidRows.length} bid rows via late retrieval. Using deterministic response.`);
+          answer = buildDeterministicBidResponse(lateBidSummary, project_name);
         }
       }
     }
