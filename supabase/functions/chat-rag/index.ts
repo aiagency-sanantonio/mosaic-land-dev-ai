@@ -445,7 +445,7 @@ serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { threadId, userId, message, chatHistory, job_id, callback_url } = body;
+    const { threadId, userId, message, chatHistory, job_id, callback_url, uploaded_document } = body;
 
     console.log('chat-rag received:', JSON.stringify({ threadId, userId, message, job_id, callback_url }));
 
