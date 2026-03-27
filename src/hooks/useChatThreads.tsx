@@ -174,7 +174,7 @@ export function useChatThreads() {
     }
   };
 
-  const sendMessage = async (content: string, webhookMode?: string) => {
+  const sendMessage = async (content: string, webhookMode?: string, file?: File) => {
     if (!user) return;
     let threadId = currentThreadId;
     if (!threadId) {
@@ -196,6 +196,32 @@ export function useChatThreads() {
     }
 
     setMessages((prev) => [...prev, userMessage as Message]);
+
+    // Upload file if provided
+    let uploadedFilePath: string | undefined;
+    if (file) {
+      const fileExt = file.name.split('.').pop();
+      const filePath = `${user.id}/${threadId}/${Date.now()}_${file.name}`;
+      const { error: uploadError } = await supabase.storage
+        .from('user-uploads')
+        .upload(filePath, file);
+
+      if (uploadError) {
+        console.error('File upload error:', uploadError);
+        toast.error('Failed to upload file');
+      } else {
+        uploadedFilePath = filePath;
+        await supabase.from('user_uploads').insert({
+          user_id: user.id,
+          thread_id: threadId,
+          file_name: file.name,
+          file_path: filePath,
+          file_size_bytes: file.size,
+          status: 'uploaded',
+        });
+      }
+    }
+
     setSendingMessage(true);
 
     if (messages.length === 0) {
@@ -210,6 +236,7 @@ export function useChatThreads() {
             threadId, userId: user.id, message: content,
             messages: [...messages, userMessage].map(m => ({ role: m.role, content: m.content })),
             chatHistory: [...messages, userMessage].map(m => `${m.role}: ${m.content}`).join('\n'),
+            ...(uploadedFilePath ? { uploadedFilePath } : {}),
           },
         });
 
