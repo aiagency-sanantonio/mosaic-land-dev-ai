@@ -81,7 +81,7 @@ const markdownComponents: Components = {
   pre: ({ children }) => <>{children}</>,
 };
 
-export function ChatMessage({ role, content, isNew = false }: ChatMessageProps) {
+export function ChatMessage({ role, content, isNew = false, fileName }: ChatMessageProps) {
   const isUser = role === 'user';
 
   return (
