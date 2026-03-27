@@ -111,12 +111,61 @@ function getSourcePriority(filePath: string | null): { rank: number; label: stri
   return { rank: 2, label: 'NORMAL' };
 }
 
+interface BidSummary {
+  hasBids: boolean;
+  topBid: { value: number; metric: string; date: string | null; source: string | null; dropboxUrl: string | null } | null;
+  allBidRows: any[];
+}
+
+function isBidRelatedQuestion(message: string): boolean {
+  const lowerMsg = message.toLowerCase();
+  return /\b(bid|bids|bid total|bid amount|bid comparison|bid tab|contractor bid|bid result|bid tabulation)\b/.test(lowerMsg);
+}
+
+function buildDeterministicBidResponse(summary: BidSummary, projectName: string | null): string {
+  if (!summary.hasBids || !summary.topBid) return '';
+
+  const formatCurrency = (v: number) => '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const top = summary.topBid;
+  const projLabel = projectName || 'the project';
+
+  const lines: string[] = [];
+  lines.push(`## Verified Bid Data for ${projLabel}\n`);
+  lines.push(`**Most recent verified bid total: ${formatCurrency(top.value)}**`);
+  if (top.date) lines.push(`- **Date:** ${top.date}`);
+  if (top.metric) lines.push(`- **Metric:** ${top.metric}`);
+  if (top.source) {
+    const link = top.dropboxUrl ? `📄 [${top.source}](${top.dropboxUrl})` : `📄 ${top.source}`;
+    lines.push(`- **Source:** ${link}`);
+  }
+
+  // Add other bid records
+  const others = summary.allBidRows.slice(1, 10);
+  if (others.length > 0) {
+    lines.push('');
+    lines.push('### Other Verified Bid Records');
+    lines.push('| Date | Source | Metric | Amount |');
+    lines.push('|------|--------|--------|--------|');
+    for (const r of others) {
+      const date = r.date || 'No date';
+      const src = r.source_file_name || 'Unknown';
+      const srcCell = r.dropbox_url ? `[${src}](${r.dropbox_url})` : src;
+      const metric = r.metric_name || '';
+      const val = formatCurrency(r.value);
+      lines.push(`| ${date} | ${srcCell} | ${metric} | ${val} |`);
+    }
+  }
+
+  lines.push('\n*This data comes from verified bid tabulation documents in the system.*');
+  return lines.join('\n');
+}
+
 async function retrieveAggregate(
   projectName: string | null,
   message: string,
   userId: string,
   threadId: string
-): Promise<string> {
+): Promise<{ context: string; bidSummary: BidSummary }> {
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -131,7 +180,8 @@ async function retrieveAggregate(
 
   if (!data || data.length === 0) {
     console.log('retrieveAggregate: no structured data found, falling back to document search');
-    return retrieveDocuments(message, projectName, userId, threadId);
+    const docContext = await retrieveDocuments(message, projectName, userId, threadId);
+    return { context: docContext, bidSummary: { hasBids: false, topBid: null, allBidRows: [] } };
   }
 
   const now = new Date();
@@ -197,22 +247,54 @@ async function retrieveAggregate(
     }
   }
 
+  // Build bid summary for deterministic short-circuit
+  // Only consider significant bid metrics for the top-line summary
+  const significantMetrics = ['total_cost', 'bid_amount', 'estimated_cost', 'contract_amount', 'base_bid'];
+  const significantBidRows = verifiedBidRows.filter(r =>
+    significantMetrics.some(m => r.metric_name?.toLowerCase()?.includes(m.replace('_', ' ')) || r.metric_name?.toLowerCase()?.includes(m))
+  );
+
+  // Sort significant bids by date descending
+  const sortedSignificant = [...significantBidRows].sort((a, b) => {
+    const dateA = a.date ? new Date(String(a.date).replace(' (from filename)', '')).getTime() : 0;
+    const dateB = b.date ? new Date(String(b.date).replace(' (from filename)', '')).getTime() : 0;
+    return dateB - dateA;
+  });
+
+  // Fall back to all verified bid rows if no significant metrics found
+  const bestBidRows = sortedSignificant.length > 0 ? sortedSignificant : [...verifiedBidRows].sort((a, b) => {
+    const dateA = a.date ? new Date(String(a.date).replace(' (from filename)', '')).getTime() : 0;
+    const dateB = b.date ? new Date(String(b.date).replace(' (from filename)', '')).getTime() : 0;
+    return dateB - dateA;
+  });
+
+  const bidSummary: BidSummary = {
+    hasBids: verifiedBidRows.length > 0,
+    topBid: bestBidRows.length > 0 ? {
+      value: bestBidRows[0].value,
+      metric: bestBidRows[0].metric_name,
+      date: bestBidRows[0].date,
+      source: bestBidRows[0].source_file_name,
+      dropboxUrl: bestBidRows[0].dropbox_url,
+    } : null,
+    allBidRows: bestBidRows,
+  };
+
+  console.log(`retrieveAggregate: verified_bid_rows=${verifiedBidRows.length}, significant_bid_rows=${sortedSignificant.length}, top_bid_value=${bidSummary.topBid?.value ?? 'none'}`);
+
   const strip = (r: typeof rows) => r.map(({ _rank, ...rest }) => rest);
   const parts: string[] = [];
 
   if (verifiedBidRows.length > 0) {
-    // Build human-readable snapshot of most recent verified bids
     const snapshot = buildBidSnapshot(verifiedBidRows, projectName);
     parts.push(snapshot);
-    // Limit JSON to top 30 rows to avoid token overflow
     parts.push(`=== VERIFIED BID DATA (USE THIS FIRST) ===\n${JSON.stringify(strip(verifiedBidRows.slice(0, 30)))}`);
   }
   if (otherRows.length > 0) {
-    // Limit to top 50 other rows
     parts.push(`=== OTHER COST DATA (USE ONLY IF NO BID DATA AVAILABLE) ===\n${JSON.stringify(strip(otherRows.slice(0, 50)))}`);
   }
 
-  return parts.join('\n\n');
+  return { context: parts.join('\n\n'), bidSummary };
 }
 
 function buildBidSnapshot(bidRows: any[], projectName: string | null): string {
