@@ -173,7 +173,31 @@ async function retrieveAggregate(
 
   rows.sort((a, b) => a._rank - b._rank);
 
-  return JSON.stringify(rows.map(({ _rank, ...rest }) => rest));
+  // Split into verified bid data vs other cost data
+  const bidKeywords = ['bid tab', 'bid tabulation', 'bid comparison', 'bid results', 'bid proposal', 'recent bids'];
+  const verifiedBidRows: typeof rows = [];
+  const otherRows: typeof rows = [];
+
+  for (const row of rows) {
+    const fn = (row.source_file_name || '').toLowerCase();
+    if (bidKeywords.some(kw => fn.includes(kw))) {
+      verifiedBidRows.push(row);
+    } else {
+      otherRows.push(row);
+    }
+  }
+
+  const strip = (r: typeof rows) => r.map(({ _rank, ...rest }) => rest);
+  const parts: string[] = [];
+
+  if (verifiedBidRows.length > 0) {
+    parts.push(`=== VERIFIED BID DATA (USE THIS FIRST) ===\n${JSON.stringify(strip(verifiedBidRows))}`);
+  }
+  if (otherRows.length > 0) {
+    parts.push(`=== OTHER COST DATA (USE ONLY IF NO BID DATA AVAILABLE) ===\n${JSON.stringify(strip(otherRows))}`);
+  }
+
+  return parts.join('\n\n');
 }
 
 async function retrieveStatus(projectName: string | null, message: string): Promise<string> {
