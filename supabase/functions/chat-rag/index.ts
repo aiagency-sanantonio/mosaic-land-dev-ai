@@ -535,6 +535,12 @@ serve(async (req) => {
       contextType = 'Combined Data';
     }
 
+    // Prepend uploaded document to context if present
+    if (uploaded_document) {
+      context = `=== USER UPLOADED DOCUMENT ===\n${uploaded_document}\n=== END UPLOADED DOCUMENT ===\n\n${context}`;
+      systemAddendum += '\n\nIf a USER UPLOADED DOCUMENT is present in the context, treat it as the primary source for answering the question. The user has explicitly provided this document for analysis. Reference it directly in your answer.';
+    }
+
     console.log(`context retrieved (${contextType}), length=${context.length}`);
 
     // Synthesize final answer
