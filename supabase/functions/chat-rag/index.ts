@@ -118,9 +118,9 @@ async function retrieveAggregate(
 
   let query = supabase.from('project_data').select('*');
   if (projectName) {
-    query = query.ilike('project_name', `%${projectName}%`);
+    query = query.or(`project_name.ilike.%${projectName}%,source_file_name.ilike.%${projectName}%`);
   }
-  const { data, error } = await query.order('date', { ascending: false }).limit(200);
+  const { data, error } = await query.order('date', { ascending: false }).limit(500);
   if (error) throw new Error(`project_data query failed: ${error.message}`);
 
   if (!data || data.length === 0) {
