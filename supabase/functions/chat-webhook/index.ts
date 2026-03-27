@@ -28,7 +28,7 @@ serve(async (req) => {
         thread_id: threadId,
         user_id: userId,
         status: 'pending',
-        request_payload: { message, messages, chatHistory },
+        request_payload: { message, messages, chatHistory, ...(uploaded_document ? { uploaded_document } : {}) },
       })
       .select()
       .single();
