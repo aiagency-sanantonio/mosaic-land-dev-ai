@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const TERRACHAT_SYSTEM_PROMPT = `You are TerraChat, the AI assistant for Mosaic Land Development — a Texas land development company managing 30+ active residential projects. Be specific, always cite sources (file name, source type, date). For costs: show the source tier (bid tab vs OPC) and flag data older than 2 years. For permits: highlight EXPIRED and CRITICAL urgency prominently. If data is incomplete or conflicting, say so explicitly. Do not fabricate numbers. Texas context: MUDs, PIDs, TIRZs, TxDOT, TCEQ, TPDES, plat bonds.`;
+const TERRACHAT_SYSTEM_PROMPT = `You are TerraChat, the AI assistant for Mosaic Land Development — a Texas land development company managing 30+ active residential projects. Be specific, always cite sources (file name, source type, date). For costs: show the source tier (bid tab vs OPC) and flag data older than 2 years. For permits: highlight EXPIRED and CRITICAL urgency prominently. If data is incomplete or conflicting, say so explicitly. Do not fabricate numbers. Texas context: MUDs, PIDs, TIRZs, TxDOT, TCEQ, TPDES, plat bonds. When answering cost questions, ALWAYS prioritize records under VERIFIED BID DATA over OTHER COST DATA. If verified bid data exists for a project, lead your answer with those figures and only reference other cost data as supplementary context.`;
 
 const CLASSIFY_SYSTEM_PROMPT = `Classify the question into exactly one type. Return ONLY valid JSON — no markdown:
 
@@ -173,7 +173,31 @@ async function retrieveAggregate(
 
   rows.sort((a, b) => a._rank - b._rank);
 
-  return JSON.stringify(rows.map(({ _rank, ...rest }) => rest));
+  // Split into verified bid data vs other cost data
+  const bidKeywords = ['bid tab', 'bid tabulation', 'bid comparison', 'bid results', 'bid proposal', 'recent bids'];
+  const verifiedBidRows: typeof rows = [];
+  const otherRows: typeof rows = [];
+
+  for (const row of rows) {
+    const fn = (row.source_file_name || '').toLowerCase();
+    if (bidKeywords.some(kw => fn.includes(kw))) {
+      verifiedBidRows.push(row);
+    } else {
+      otherRows.push(row);
+    }
+  }
+
+  const strip = (r: typeof rows) => r.map(({ _rank, ...rest }) => rest);
+  const parts: string[] = [];
+
+  if (verifiedBidRows.length > 0) {
+    parts.push(`=== VERIFIED BID DATA (USE THIS FIRST) ===\n${JSON.stringify(strip(verifiedBidRows))}`);
+  }
+  if (otherRows.length > 0) {
+    parts.push(`=== OTHER COST DATA (USE ONLY IF NO BID DATA AVAILABLE) ===\n${JSON.stringify(strip(otherRows))}`);
+  }
+
+  return parts.join('\n\n');
 }
 
 async function retrieveStatus(projectName: string | null, message: string): Promise<string> {
