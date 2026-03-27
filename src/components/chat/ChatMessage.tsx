@@ -108,7 +108,15 @@ export function ChatMessage({ role, content, isNew = false, fileName }: ChatMess
         )}
       >
         {isUser ? (
-          <p className="text-sm leading-relaxed whitespace-pre-wrap">{content}</p>
+          <div>
+            {fileName && (
+              <div className="flex items-center gap-1.5 text-xs text-primary-foreground/80 bg-white/15 px-2 py-1 rounded-md mb-1.5 w-fit">
+                <Paperclip className="h-3 w-3 shrink-0" />
+                <span className="truncate max-w-[200px]">{fileName}</span>
+              </div>
+            )}
+            <p className="text-sm leading-relaxed whitespace-pre-wrap">{content}</p>
+          </div>
         ) : (
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
             {content}

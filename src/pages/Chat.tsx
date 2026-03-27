@@ -117,11 +117,12 @@ export default function Chat() {
             ) : (
               <div className="p-4 space-y-4 pb-8">
                 {messages.map((message, index) => (
-                  <ChatMessage
+                    <ChatMessage
                     key={message.id}
                     role={message.role}
                     content={message.content}
                     isNew={index === messages.length - 1}
+                    fileName={message.file_name}
                   />
                 ))}
                 {sendingMessage && (
