@@ -85,17 +85,20 @@ function extractDateFromFilename(fileName: string | null): Date | null {
   return null;
 }
 
+function buildDropboxUrl(filePath: string | null): string | null {
+  if (!filePath) return null;
+  const encoded = filePath.split('/').map(segment => encodeURIComponent(segment)).join('/');
+  return `https://www.dropbox.com/home${encoded}`;
+}
+
 function getSourcePriority(filePath: string | null): { rank: number; label: string } {
   const fp = (filePath || '').toLowerCase();
-  // Tier 0 — company master cost tracking folder
   if (fp.includes('zz md_50kft') || fp.includes('recent bids') || fp.includes('average cost')) {
     return { rank: 0, label: 'HIGHEST (master cost)' };
   }
-  // Tier 1 — regular bid tabs
   if (fp.includes('bid tab')) {
     return { rank: 1, label: 'HIGH (bid tab)' };
   }
-  // Tier 3 — OPC / opinion of probable cost
   if (fp.includes('opc') || fp.includes('opinion')) {
     return { rank: 3, label: 'LOW (OPC)' };
   }
