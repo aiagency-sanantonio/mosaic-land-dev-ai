@@ -47,8 +47,8 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSendMessage = (content: string) => {
-    sendMessage(content, 'edge-function');
+  const handleSendMessage = (content: string, file?: File) => {
+    sendMessage(content, 'edge-function', file);
   };
 
   const confirmDeleteChat = () => {

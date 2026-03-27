@@ -174,7 +174,7 @@ export function useChatThreads() {
     }
   };
 
-  const sendMessage = async (content: string, webhookMode?: string) => {
+  const sendMessage = async (content: string, webhookMode?: string, file?: File) => {
     if (!user) return;
     let threadId = currentThreadId;
     if (!threadId) {
