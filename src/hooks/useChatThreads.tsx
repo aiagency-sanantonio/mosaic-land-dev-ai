@@ -174,7 +174,7 @@ export function useChatThreads() {
     }
   };
 
-  const sendMessage = async (content: string, webhookMode?: string, file?: File) => {
+  const sendMessage = async (content: string, webhookMode?: string, file?: File, uploadId?: string) => {
     if (!user) return;
     let threadId = currentThreadId;
     if (!threadId) {
@@ -231,12 +231,26 @@ export function useChatThreads() {
 
     if (webhookMode === 'edge-function') {
       try {
+        // Fetch extracted text if an upload is attached
+        let uploadedDocument: string | undefined;
+        if (uploadId) {
+          const { data: uploadData } = await supabase
+            .from('user_uploads')
+            .select('extracted_text')
+            .eq('id', uploadId)
+            .single();
+          if (uploadData?.extracted_text) {
+            uploadedDocument = uploadData.extracted_text;
+          }
+        }
+
         const { data, error } = await supabase.functions.invoke('chat-webhook', {
           body: {
             threadId, userId: user.id, message: content,
             messages: [...messages, userMessage].map(m => ({ role: m.role, content: m.content })),
             chatHistory: [...messages, userMessage].map(m => `${m.role}: ${m.content}`).join('\n'),
             ...(uploadedFilePath ? { uploadedFilePath } : {}),
+            ...(uploadedDocument ? { uploaded_document: uploadedDocument } : {}),
           },
         });
 
