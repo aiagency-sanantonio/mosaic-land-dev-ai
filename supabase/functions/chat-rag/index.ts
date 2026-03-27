@@ -168,6 +168,7 @@ async function retrieveAggregate(
       unit: r.unit,
       date: effectiveDate,
       source_file_name: r.source_file_name,
+      dropbox_url: buildDropboxUrl(r.source_file_path),
       source_priority: priority.label,
       data_currency_flag,
       _rank: priority.rank,
