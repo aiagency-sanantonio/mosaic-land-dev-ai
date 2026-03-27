@@ -197,28 +197,29 @@ export function useChatThreads() {
 
     setMessages((prev) => [...prev, userMessage as Message]);
 
-    // Upload file if provided
-    let uploadedFilePath: string | undefined;
-    if (file) {
-      const fileExt = file.name.split('.').pop();
-      const filePath = `${user.id}/${threadId}/${Date.now()}_${file.name}`;
-      const { error: uploadError } = await supabase.storage
-        .from('user-uploads')
-        .upload(filePath, file);
+    // Process file upload first so extracted text can be added to chat context
+    let resolvedUploadId = uploadId;
+    if (file && !resolvedUploadId) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('user_id', user.id);
+        formData.append('thread_id', threadId);
+        formData.append('file_name', file.name);
 
-      if (uploadError) {
-        console.error('File upload error:', uploadError);
-        toast.error('Failed to upload file');
-      } else {
-        uploadedFilePath = filePath;
-        await supabase.from('user_uploads').insert({
-          user_id: user.id,
-          thread_id: threadId,
-          file_name: file.name,
-          file_path: filePath,
-          file_size_bytes: file.size,
-          status: 'uploaded',
+        const { data: uploadResponse, error: uploadError } = await supabase.functions.invoke('process-upload', {
+          body: formData,
         });
+
+        if (uploadError || !uploadResponse?.upload_id) {
+          console.error('File processing error:', uploadError || uploadResponse);
+          toast.error('Failed to process file');
+        } else {
+          resolvedUploadId = uploadResponse.upload_id as string;
+        }
+      } catch (error) {
+        console.error('File processing error:', error);
+        toast.error('Failed to process file');
       }
     }
 
@@ -233,11 +234,11 @@ export function useChatThreads() {
       try {
         // Fetch extracted text if an upload is attached
         let uploadedDocument: string | undefined;
-        if (uploadId) {
+        if (resolvedUploadId) {
           const { data: uploadData } = await supabase
             .from('user_uploads')
             .select('extracted_text')
-            .eq('id', uploadId)
+            .eq('id', resolvedUploadId)
             .single();
           if (uploadData?.extracted_text) {
             uploadedDocument = uploadData.extracted_text;
@@ -249,7 +250,6 @@ export function useChatThreads() {
             threadId, userId: user.id, message: content,
             messages: [...messages, userMessage].map(m => ({ role: m.role, content: m.content })),
             chatHistory: [...messages, userMessage].map(m => `${m.role}: ${m.content}`).join('\n'),
-            ...(uploadedFilePath ? { uploadedFilePath } : {}),
             ...(uploadedDocument ? { uploaded_document: uploadedDocument } : {}),
           },
         });
