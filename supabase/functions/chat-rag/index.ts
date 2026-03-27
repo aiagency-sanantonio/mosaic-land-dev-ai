@@ -204,10 +204,12 @@ async function retrieveAggregate(
     // Build human-readable snapshot of most recent verified bids
     const snapshot = buildBidSnapshot(verifiedBidRows, projectName);
     parts.push(snapshot);
-    parts.push(`=== VERIFIED BID DATA (USE THIS FIRST) ===\n${JSON.stringify(strip(verifiedBidRows))}`);
+    // Limit JSON to top 30 rows to avoid token overflow
+    parts.push(`=== VERIFIED BID DATA (USE THIS FIRST) ===\n${JSON.stringify(strip(verifiedBidRows.slice(0, 30)))}`);
   }
   if (otherRows.length > 0) {
-    parts.push(`=== OTHER COST DATA (USE ONLY IF NO BID DATA AVAILABLE) ===\n${JSON.stringify(strip(otherRows))}`);
+    // Limit to top 50 other rows
+    parts.push(`=== OTHER COST DATA (USE ONLY IF NO BID DATA AVAILABLE) ===\n${JSON.stringify(strip(otherRows.slice(0, 50)))}`);
   }
 
   return parts.join('\n\n');
