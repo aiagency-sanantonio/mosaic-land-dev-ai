@@ -146,6 +146,7 @@ function extractTextFromPdf(bytes: Uint8Array): string {
     return readable.slice(0, MAX_TEXT_LENGTH);
   }
 
+  return textParts.join(" ").replace(/\\n/g, "\n").replace(/\\\(/g, "(").replace(/\\\)/g, ")");
 }
 
 function looksLikeBinaryPdf(text: string): boolean {
@@ -154,6 +155,7 @@ function looksLikeBinaryPdf(text: string): boolean {
   const markerCount = pdfMarkers.filter((marker) => sample.includes(marker)).length;
   const weirdCharMatches = sample.match(/[^\x09\x0A\x0D\x20-\x7E]/g) || [];
   return markerCount >= 2 || weirdCharMatches.length > sample.length * 0.08;
+}
 
 /**
  * DOCX text extraction — unzips and reads document.xml
