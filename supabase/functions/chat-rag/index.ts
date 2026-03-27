@@ -197,6 +197,9 @@ async function retrieveAggregate(
   const parts: string[] = [];
 
   if (verifiedBidRows.length > 0) {
+    // Build human-readable snapshot of most recent verified bids
+    const snapshot = buildBidSnapshot(verifiedBidRows, projectName);
+    parts.push(snapshot);
     parts.push(`=== VERIFIED BID DATA (USE THIS FIRST) ===\n${JSON.stringify(strip(verifiedBidRows))}`);
   }
   if (otherRows.length > 0) {
