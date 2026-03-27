@@ -6,7 +6,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const TERRACHAT_SYSTEM_PROMPT = `CRITICAL RULE: If the context contains a section labeled VERIFIED BID DATA, you MUST lead your response with those exact figures. Never say you do not have bid data or that bid tabulations are unavailable if a VERIFIED BID DATA section exists in the context — that section contains official contractor bids. Quote the specific dollar amounts from that section first. The most recent dates take priority. For Grace Gardens the most recent bid is $5,696,759.30 from March 2025 — always surface the most recent dated record first.
+const TERRACHAT_SYSTEM_PROMPT = `CRITICAL RULE — VERIFIED BID DATA:
+1. If the context contains a section labeled "MOST RECENT VERIFIED BID SNAPSHOT", you MUST quote that section verbatim at the start of your response before any interpretation or commentary.
+2. If the context contains a section labeled "VERIFIED BID DATA", you MUST lead your response with those exact figures. Never say you do not have bid data or that bid tabulations are unavailable if either section exists — they contain official contractor bids.
+3. The most recent dates take priority. Always surface the most recent dated record first.
+4. NEVER use phrases like "I don't have verified bid data", "no bid tabulations available", "I couldn't find bid data" or similar when VERIFIED BID DATA or MOST RECENT VERIFIED BID SNAPSHOT sections are present in the context. This is a hard rule with zero exceptions.
 
 You are TerraChat, the AI assistant for Mosaic Land Development — a Texas land development company managing 30+ active residential projects. Be specific, always cite sources (file name, source type, date). For costs: show the source tier (bid tab vs OPC) and flag data older than 2 years. For permits: highlight EXPIRED and CRITICAL urgency prominently. If data is incomplete or conflicting, say so explicitly. Do not fabricate numbers. Texas context: MUDs, PIDs, TIRZs, TxDOT, TCEQ, TPDES, plat bonds. When answering cost questions, ALWAYS prioritize records under VERIFIED BID DATA over OTHER COST DATA. If verified bid data exists for a project, lead your answer with those figures and only reference other cost data as supplementary context. When citing sources, always include the full clickable markdown link provided in the context. Format source citations as: 📄 filename. Never cite a source without its link. If no link is available, note the filename only.`;
 
@@ -197,6 +201,9 @@ async function retrieveAggregate(
   const parts: string[] = [];
 
   if (verifiedBidRows.length > 0) {
+    // Build human-readable snapshot of most recent verified bids
+    const snapshot = buildBidSnapshot(verifiedBidRows, projectName);
+    parts.push(snapshot);
     parts.push(`=== VERIFIED BID DATA (USE THIS FIRST) ===\n${JSON.stringify(strip(verifiedBidRows))}`);
   }
   if (otherRows.length > 0) {
@@ -204,6 +211,44 @@ async function retrieveAggregate(
   }
 
   return parts.join('\n\n');
+}
+
+function buildBidSnapshot(bidRows: any[], projectName: string | null): string {
+  // Sort by date descending, putting rows with dates first
+  const sorted = [...bidRows].sort((a, b) => {
+    const dateA = a.date ? new Date(String(a.date).replace(' (from filename)', '')).getTime() : 0;
+    const dateB = b.date ? new Date(String(b.date).replace(' (from filename)', '')).getTime() : 0;
+    return dateB - dateA;
+  });
+
+  const mostRecent = sorted[0];
+  const formatValue = (v: number) => v.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+
+  const lines: string[] = [
+    '=== MOST RECENT VERIFIED BID SNAPSHOT ===',
+    `Project: ${mostRecent.project_name || projectName || 'Unknown'}`,
+    `Most recent verified bid total: ${formatValue(mostRecent.value)}`,
+    `Metric: ${mostRecent.metric_name}`,
+    `Date: ${mostRecent.date || 'unknown'}`,
+    `Source: ${mostRecent.source_file_name || 'unknown'}`,
+  ];
+
+  if (mostRecent.dropbox_url) {
+    lines.push(`Link: [View in Dropbox](${mostRecent.dropbox_url})`);
+  }
+
+  // Add other verified bid records
+  if (sorted.length > 1) {
+    lines.push('');
+    lines.push('Other verified bid records:');
+    for (let i = 1; i < sorted.length && i <= 10; i++) {
+      const r = sorted[i];
+      lines.push(`- ${r.date || 'no date'} | ${r.source_file_name || 'unknown'} | ${r.metric_name} | ${formatValue(r.value)}`);
+    }
+  }
+
+  lines.push('=== END SNAPSHOT ===');
+  return lines.join('\n');
 }
 
 async function retrieveStatus(projectName: string | null, message: string): Promise<string> {
@@ -545,7 +590,17 @@ serve(async (req) => {
     console.log(`context retrieved (${contextType}), length=${context.length}`);
 
     // Synthesize final answer
-    const answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
+    let answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
+
+    // Defensive check: if context has verified bid data but answer claims it doesn't exist, retry
+    const hasVerifiedBids = context.includes('VERIFIED BID DATA') || context.includes('MOST RECENT VERIFIED BID SNAPSHOT');
+    const claimsMissing = /(?:don'?t have|no|couldn'?t find|not available|unable to find|not have).*(?:bid data|bid tabulation|verified bid)/i.test(answer);
+
+    if (hasVerifiedBids && claimsMissing) {
+      console.warn('DEFENSIVE RETRY: Answer claims no bid data despite verified bids in context. Retrying with stricter prompt.');
+      const retryAddendum = systemAddendum + '\n\nIMPORTANT OVERRIDE: The context DOES contain verified bid data. Your previous attempt incorrectly stated it was missing. You MUST use the MOST RECENT VERIFIED BID SNAPSHOT and VERIFIED BID DATA sections. Quote the dollar amounts directly. Do NOT say bid data is unavailable.';
+      answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, retryAddendum);
+    }
 
     // POST result to callback
     if (callback_url && job_id) {
