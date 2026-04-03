@@ -7,7 +7,9 @@ import { ChatInput } from '@/components/chat/ChatInput';
 import { EmptyState } from '@/components/chat/EmptyState';
 import { useAuth } from '@/hooks/useAuth';
 import { useChatThreads } from '@/hooks/useChatThreads';
-import { Loader2, MoreHorizontal, Trash2 } from 'lucide-react';
+import { Loader2, MoreHorizontal, Trash2, Share2 } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -58,6 +60,37 @@ export default function Chat() {
     setDeleteDialogOpen(false);
   };
 
+  const handleShare = async () => {
+    if (!currentThreadId || !user) return;
+    try {
+      // Check for existing active share
+      const { data: existing } = await supabase
+        .from('shared_threads')
+        .select('share_token')
+        .eq('thread_id', currentThreadId)
+        .eq('is_active', true)
+        .gt('expires_at', new Date().toISOString())
+        .maybeSingle();
+
+      let token = existing?.share_token;
+      if (!token) {
+        const { data, error } = await supabase
+          .from('shared_threads')
+          .insert({ thread_id: currentThreadId, created_by: user.id })
+          .select('share_token')
+          .single();
+        if (error) throw error;
+        token = data.share_token;
+      }
+
+      const url = `${window.location.origin}/share/${token}`;
+      await navigator.clipboard.writeText(url);
+      toast.success('Link copied — expires in 60 days');
+    } catch (err: any) {
+      toast.error('Failed to create share link');
+    }
+  };
+
   if (authLoading || threadsLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -92,6 +125,10 @@ export default function Chat() {
               </span>
             </div>
             {currentThreadId && (
+              <div className="flex items-center gap-1">
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleShare}>
+                <Share2 className="h-4 w-4" />
+              </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="h-8 w-8">
@@ -108,6 +145,7 @@ export default function Chat() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+              </div>
             )}
           </header>
 
