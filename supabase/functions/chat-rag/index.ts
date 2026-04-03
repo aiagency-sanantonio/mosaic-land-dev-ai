@@ -28,11 +28,14 @@ CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question wi
 
 If the chat history shows the assistant just asked a clarifying question and the user's current message is a short follow-up answer (e.g. "all", "yes", "all of the above", a project name, or a list of components), do NOT return CLARIFY. Instead, combine the original question from chat history with the user's answer and classify the combined intent as AGGREGATE, STATUS_LOOKUP, DOCUMENT_SEARCH, or HYBRID accordingly.
 
-Return: { "query_type": "...", "project_name": "name or null", "clarify_question": "question to ask user or null", "reasoning": "one sentence" }`;
+Return: { "query_type": "...", "project_name": "name or null", "project_names": ["name1", "name2"] or null, "clarify_question": "question to ask user or null", "reasoning": "one sentence" }
+
+If the question mentions two or more projects (e.g. "compare bids for Fischer Ranch and Clearwater"), populate "project_names" with ALL of them and set "project_name" to the first one. If only one project is mentioned, set "project_names" to null.`;
 
 interface ClassifyResult {
   query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY';
   project_name: string | null;
+  project_names: string[] | null;
   clarify_question: string | null;
   reasoning: string;
 }
@@ -154,6 +157,56 @@ function buildDeterministicBidResponse(summary: BidSummary, projectName: string 
       const val = formatCurrency(r.value);
       lines.push(`| ${date} | ${srcCell} | ${metric} | ${val} |`);
     }
+  }
+
+  lines.push('\n*This data comes from verified bid tabulation documents in the system.*');
+  return lines.join('\n');
+}
+
+function buildComparisonBidResponse(summaries: { projectName: string; summary: BidSummary }[]): string {
+  const formatCurrency = (v: number) => '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const valid = summaries.filter(s => s.summary.hasBids && s.summary.topBid);
+
+  if (valid.length === 0) return '';
+
+  const lines: string[] = [];
+  lines.push('## Verified Bid Comparison\n');
+
+  // Side-by-side summary table
+  lines.push('| Project | Most Recent Bid Total | Date | Source |');
+  lines.push('|---------|----------------------|------|--------|');
+  for (const { projectName, summary } of valid) {
+    const top = summary.topBid!;
+    const src = top.source
+      ? (top.dropboxUrl ? `[${top.source}](${top.dropboxUrl})` : top.source)
+      : 'N/A';
+    lines.push(`| **${projectName}** | ${formatCurrency(top.value)} | ${top.date || 'N/A'} | 📄 ${src} |`);
+  }
+
+  // Per-project detail sections
+  for (const { projectName, summary } of valid) {
+    const others = summary.allBidRows.slice(1, 6);
+    if (others.length > 0) {
+      lines.push('');
+      lines.push(`### ${projectName} — Other Bid Records`);
+      lines.push('| Date | Source | Metric | Amount |');
+      lines.push('|------|--------|--------|--------|');
+      for (const r of others) {
+        const date = r.date || 'No date';
+        const src = r.source_file_name || 'Unknown';
+        const srcCell = r.dropbox_url ? `[${src}](${r.dropbox_url})` : src;
+        const metric = r.metric_name || '';
+        const val = formatCurrency(r.value);
+        lines.push(`| ${date} | ${srcCell} | ${metric} | ${val} |`);
+      }
+    }
+  }
+
+  // Note projects with no bids
+  const missing = summaries.filter(s => !s.summary.hasBids);
+  if (missing.length > 0) {
+    lines.push('');
+    lines.push(`> ⚠️ No verified bid data found for: ${missing.map(m => m.projectName).join(', ')}`);
   }
 
   lines.push('\n*This data comes from verified bid tabulation documents in the system.*');
@@ -620,7 +673,7 @@ serve(async (req) => {
       systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
     }
 
-    const { query_type, project_name, clarify_question } = classification;
+    const { query_type, project_name, project_names, clarify_question } = classification;
     const hasUploadedDocument = typeof uploaded_document === 'string' && uploaded_document.trim().length > 0;
 
     // CLARIFY — return the clarify question directly, no retrieval
@@ -645,13 +698,30 @@ serve(async (req) => {
     let context = '';
     let contextType = 'Retrieved Documents';
     let bidSummary: BidSummary = { hasBids: false, topBid: null, allBidRows: [] };
+    let multiProjectBidSummaries: { projectName: string; summary: BidSummary }[] = [];
 
-    // For AGGREGATE or HYBRID queries, run dedicated bid retrieval in parallel
+    // For AGGREGATE, HYBRID, or DOCUMENT_SEARCH queries, run dedicated bid retrieval
     const bidQuestion = isBidRelatedQuestion(message);
     const needsBidCheck = bidQuestion && (query_type === 'AGGREGATE' || query_type === 'HYBRID' || query_type === 'DOCUMENT_SEARCH') && !hasUploadedDocument;
 
-    if (needsBidCheck) {
-      // Run dedicated bid retrieval FIRST (or in parallel with aggregate)
+    // Determine if this is a multi-project bid comparison
+    const isMultiProjectBid = needsBidCheck && project_names && project_names.length > 1;
+
+    if (isMultiProjectBid) {
+      // Parallel bid retrieval for all projects
+      console.log(`multi-project bid retrieval: projects=${JSON.stringify(project_names)}`);
+      const results = await Promise.all(
+        project_names.map(async (pn) => ({
+          projectName: pn,
+          summary: await retrieveVerifiedBids(pn),
+        }))
+      );
+      multiProjectBidSummaries = results;
+      // Set bidSummary to the first project's result for fallback compatibility
+      bidSummary = results[0]?.summary || { hasBids: false, topBid: null, allBidRows: [] };
+      console.log(`multi-project bid results: ${results.map(r => `${r.projectName}=${r.summary.hasBids}(${r.summary.allBidRows.length} rows)`).join(', ')}`);
+    } else if (needsBidCheck) {
+      // Single project bid retrieval
       bidSummary = await retrieveVerifiedBids(project_name);
       console.log(`dedicated bid retrieval: hasBids=${bidSummary.hasBids}, topBid=${bidSummary.topBid?.value ?? 'none'}, rows=${bidSummary.allBidRows.length}`);
     }
@@ -705,7 +775,10 @@ serve(async (req) => {
 
     let answer: string;
 
-    if (bidSummary.hasBids && bidSummary.topBid) {
+    if (isMultiProjectBid && multiProjectBidSummaries.some(s => s.summary.hasBids)) {
+      console.log(`DETERMINISTIC MULTI-PROJECT BID MODE: Bypassing LLM. projects=${multiProjectBidSummaries.map(s => s.projectName).join(', ')}`);
+      answer = buildComparisonBidResponse(multiProjectBidSummaries);
+    } else if (bidSummary.hasBids && bidSummary.topBid) {
       console.log(`DETERMINISTIC BID MODE: Bypassing LLM. top_bid=${bidSummary.topBid.value}, source=${bidSummary.topBid.source}`);
       answer = buildDeterministicBidResponse(bidSummary, project_name);
     } else {
