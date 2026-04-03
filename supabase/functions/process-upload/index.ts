@@ -71,6 +71,18 @@ Deno.serve(async (req) => {
       contentType: file.type || "application/octet-stream",
     });
 
+    // Generate structured summary via fast LLM
+    let extractedSummary: string | null = null;
+    if (extractedText.length >= 50 && !extractedText.startsWith("[Uploaded file:")) {
+      try {
+        extractedSummary = await generateSummary(extractedText, fileName);
+        console.log(`Summary generated: ${extractedSummary?.length ?? 0} chars for ${fileName}`);
+      } catch (summaryErr) {
+        console.error("Summary generation failed, using fallback:", summaryErr);
+        extractedSummary = extractedText.slice(0, 5000);
+      }
+    }
+
     const { data, error } = await supabase
       .from("user_uploads")
       .insert({
@@ -81,6 +93,7 @@ Deno.serve(async (req) => {
         file_size_bytes: bytes.length,
         status: "ready",
         extracted_text: extractedText,
+        extracted_summary: extractedSummary,
       })
       .select("id")
       .single();
