@@ -84,7 +84,7 @@ function extractDateFromFilename(fileName: string | null): Date | null {
     const d = new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`);
     if (!isNaN(d.getTime())) return d;
   }
-  const yymmddMatch = fileName.match(/^(\d{2})(\d{2})(\d{2})/);
+  const yymmddMatch = fileName.match(/^(\d{2})(\d{2})(\d{2})/) || fileName.match(/[_\-](\d{2})(\d{2})(\d{2})(?:\.|_|$)/);
   if (yymmddMatch) {
     const yy = parseInt(yymmddMatch[1]);
     const year = yy >= 50 ? 1900 + yy : 2000 + yy;
