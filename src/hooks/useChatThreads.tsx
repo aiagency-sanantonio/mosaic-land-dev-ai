@@ -237,15 +237,19 @@ export function useChatThreads() {
         let uploadedDocument: string | undefined;
         const { data: threadUploads } = await supabase
           .from('user_uploads')
-          .select('extracted_text, file_name')
+          .select('extracted_summary, extracted_text, file_name')
           .eq('thread_id', threadId)
           .not('extracted_text', 'is', null);
 
         if (threadUploads?.length) {
           uploadedDocument = threadUploads
-            .map(u => `[${u.file_name}]\n${u.extracted_text}`)
+            .map((u: any) => {
+              // Prefer structured summary over raw text
+              const content = u.extracted_summary || (u.extracted_text?.slice(0, 5000) ?? '');
+              return `[${u.file_name}]\n${content}`;
+            })
             .join('\n\n---\n\n')
-            .slice(0, 50000);
+            .slice(0, 30000);
         }
 
         const { data, error } = await supabase.functions.invoke('chat-webhook', {

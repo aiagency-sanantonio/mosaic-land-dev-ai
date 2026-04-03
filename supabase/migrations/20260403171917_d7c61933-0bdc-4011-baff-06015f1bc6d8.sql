@@ -1,0 +1,1 @@
+ALTER TABLE public.user_uploads ADD COLUMN extracted_summary text;
