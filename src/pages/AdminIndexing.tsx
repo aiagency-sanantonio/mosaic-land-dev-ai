@@ -539,6 +539,53 @@ export default function AdminIndexing() {
         </Card>
       </div>
 
+      {/* Dropbox Sync */}
+      <Card className="mb-3">
+        <CardHeader className="py-4">
+          <CardTitle className="text-base flex items-center gap-2">
+            <RefreshCw className="h-4 w-4" /> Dropbox Sync
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 pb-4">
+          <p className="text-xs text-muted-foreground mb-3">
+            Scan /1-Projects recursively and register all files into the inventory
+          </p>
+          <Button
+            onClick={async () => {
+              setDbxSyncing(true);
+              setDbxResult(null);
+              try {
+                const { data, error } = await supabase.functions.invoke('sync-dropbox', { body: {} });
+                if (error) throw error;
+                setDbxResult(
+                  `✅ Sync complete\n\nTotal entries found: ${data.total_entries_found}\nFiles found: ${data.total_files_found}\nFiles registered: ${data.total_registered}\nFolders skipped: ${data.skipped_folders}\nZip/oversize skipped: ${data.skipped_zip_or_oversize}${data.errors?.length ? `\n\nErrors:\n${data.errors.join('\n')}` : ''}`
+                );
+                toast.success(`Synced ${data.total_registered} files`);
+                fetchRealStats();
+              } catch (err: any) {
+                setDbxResult(`❌ Error: ${err.message || 'Unknown error'}`);
+                toast.error('Dropbox sync failed');
+              } finally {
+                setDbxSyncing(false);
+              }
+            }}
+            disabled={dbxSyncing}
+            size="sm"
+            className="gap-2 mb-3"
+          >
+            {dbxSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            {dbxSyncing ? 'Syncing...' : 'Sync Dropbox Now'}
+          </Button>
+          {dbxResult && (
+            <textarea
+              readOnly
+              value={dbxResult}
+              className="w-full h-48 text-xs font-mono bg-muted border border-border rounded-md p-3 text-foreground resize-y"
+            />
+          )}
+        </CardContent>
+      </Card>
+
       {/* ZZ MD_50KFT Scanner */}
       <Card className="mb-3">
         <CardHeader className="py-4">
