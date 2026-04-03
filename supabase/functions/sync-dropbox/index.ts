@@ -129,6 +129,7 @@ serve(async (req) => {
 
     const files = entries.filter((e) => {
       if (e['.tag'] !== 'file') return false;
+      if (e.path_lower.includes('/_archive/')) return false;
       const ext = getExtension(e.name);
       if (ext === 'zip') return false;
       if (e.size && e.size > MAX_FILE_SIZE) return false;
