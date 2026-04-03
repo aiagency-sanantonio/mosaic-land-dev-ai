@@ -252,6 +252,12 @@ async function retrieveVerifiedBids(projectName: string | null): Promise<BidSumm
   console.log(`retrieveVerifiedBids: raw rows returned=${data?.length ?? 0} for project="${projectName}"`);
 
   if (!data || data.length === 0) {
+    // Fallback: strip unit/phase/section suffixes and retry
+    const strippedName = projectName.replace(/\s+(unit|phase|section)\s+\d+.*/i, '');
+    if (strippedName !== projectName) {
+      console.log(`retrieveVerifiedBids: retrying with stripped name="${strippedName}"`);
+      return retrieveVerifiedBids(strippedName);
+    }
     return { hasBids: false, topBid: null, allBidRows: [] };
   }
 
