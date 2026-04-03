@@ -163,6 +163,56 @@ function buildDeterministicBidResponse(summary: BidSummary, projectName: string 
   return lines.join('\n');
 }
 
+function buildComparisonBidResponse(summaries: { projectName: string; summary: BidSummary }[]): string {
+  const formatCurrency = (v: number) => '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const valid = summaries.filter(s => s.summary.hasBids && s.summary.topBid);
+
+  if (valid.length === 0) return '';
+
+  const lines: string[] = [];
+  lines.push('## Verified Bid Comparison\n');
+
+  // Side-by-side summary table
+  lines.push('| Project | Most Recent Bid Total | Date | Source |');
+  lines.push('|---------|----------------------|------|--------|');
+  for (const { projectName, summary } of valid) {
+    const top = summary.topBid!;
+    const src = top.source
+      ? (top.dropboxUrl ? `[${top.source}](${top.dropboxUrl})` : top.source)
+      : 'N/A';
+    lines.push(`| **${projectName}** | ${formatCurrency(top.value)} | ${top.date || 'N/A'} | 📄 ${src} |`);
+  }
+
+  // Per-project detail sections
+  for (const { projectName, summary } of valid) {
+    const others = summary.allBidRows.slice(1, 6);
+    if (others.length > 0) {
+      lines.push('');
+      lines.push(`### ${projectName} — Other Bid Records`);
+      lines.push('| Date | Source | Metric | Amount |');
+      lines.push('|------|--------|--------|--------|');
+      for (const r of others) {
+        const date = r.date || 'No date';
+        const src = r.source_file_name || 'Unknown';
+        const srcCell = r.dropbox_url ? `[${src}](${r.dropbox_url})` : src;
+        const metric = r.metric_name || '';
+        const val = formatCurrency(r.value);
+        lines.push(`| ${date} | ${srcCell} | ${metric} | ${val} |`);
+      }
+    }
+  }
+
+  // Note projects with no bids
+  const missing = summaries.filter(s => !s.summary.hasBids);
+  if (missing.length > 0) {
+    lines.push('');
+    lines.push(`> ⚠️ No verified bid data found for: ${missing.map(m => m.projectName).join(', ')}`);
+  }
+
+  lines.push('\n*This data comes from verified bid tabulation documents in the system.*');
+  return lines.join('\n');
+}
+
 // ============================================================
 // DEDICATED BID RETRIEVAL — queries project_data directly for
 // rows whose source_file_name or source_file_path contain bid
