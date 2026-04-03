@@ -60,6 +60,37 @@ export default function Chat() {
     setDeleteDialogOpen(false);
   };
 
+  const handleShare = async () => {
+    if (!currentThreadId || !user) return;
+    try {
+      // Check for existing active share
+      const { data: existing } = await supabase
+        .from('shared_threads')
+        .select('share_token')
+        .eq('thread_id', currentThreadId)
+        .eq('is_active', true)
+        .gt('expires_at', new Date().toISOString())
+        .maybeSingle();
+
+      let token = existing?.share_token;
+      if (!token) {
+        const { data, error } = await supabase
+          .from('shared_threads')
+          .insert({ thread_id: currentThreadId, created_by: user.id })
+          .select('share_token')
+          .single();
+        if (error) throw error;
+        token = data.share_token;
+      }
+
+      const url = `${window.location.origin}/share/${token}`;
+      await navigator.clipboard.writeText(url);
+      toast.success('Link copied — expires in 60 days');
+    } catch (err: any) {
+      toast.error('Failed to create share link');
+    }
+  };
+
   if (authLoading || threadsLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
