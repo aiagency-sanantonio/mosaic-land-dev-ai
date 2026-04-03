@@ -548,19 +548,52 @@ export default function AdminIndexing() {
         </CardHeader>
         <CardContent className="pt-0 pb-4">
           <p className="text-xs text-muted-foreground mb-3">
-            Scan /1-Projects recursively and register all files into the inventory
+            Scan /1-Projects folder-by-folder and register all files into the inventory
           </p>
           <Button
             onClick={async () => {
               setDbxSyncing(true);
-              setDbxResult(null);
+              setDbxResult('🔍 Discovering project folders...');
               try {
-                const { data, error } = await supabase.functions.invoke('sync-dropbox', { body: {} });
-                if (error) throw error;
-                setDbxResult(
-                  `✅ Sync complete\n\nTotal entries found: ${data.total_entries_found}\nFiles found: ${data.total_files_found}\nFiles registered: ${data.total_registered}\nFolders skipped: ${data.skipped_folders}\nZip/oversize skipped: ${data.skipped_zip_or_oversize}${data.errors?.length ? `\n\nErrors:\n${data.errors.join('\n')}` : ''}`
-                );
-                toast.success(`Synced ${data.total_registered} files`);
+                // Step 1: Discover top-level folders
+                const { data: discovery, error: discError } = await supabase.functions.invoke('sync-dropbox', { body: {} });
+                if (discError) throw discError;
+                if (!discovery?.folders?.length) {
+                  setDbxResult('⚠️ No folders found under /1-Projects');
+                  return;
+                }
+
+                const folders = discovery.folders as { name: string; path: string }[];
+                let totalFound = 0;
+                let totalRegistered = 0;
+                const allErrors: string[] = [];
+                const lines: string[] = [`Found ${folders.length} project folders\n`];
+
+                // Step 2: Process each folder sequentially
+                for (let i = 0; i < folders.length; i++) {
+                  const folder = folders[i];
+                  lines.push(`[${i + 1}/${folders.length}] Processing ${folder.name}...`);
+                  setDbxResult(lines.join('\n'));
+
+                  try {
+                    const { data, error } = await supabase.functions.invoke('sync-dropbox', { body: { folder: folder.path } });
+                    if (error) throw error;
+                    totalFound += data.files_found ?? 0;
+                    totalRegistered += data.registered ?? 0;
+                    if (data.errors?.length) allErrors.push(...data.errors.map((e: string) => `${folder.name}: ${e}`));
+                    lines[lines.length - 1] = `[${i + 1}/${folders.length}] ✓ ${folder.name}: ${data.files_found} files, ${data.registered} registered`;
+                  } catch (folderErr: any) {
+                    allErrors.push(`${folder.name}: ${folderErr.message}`);
+                    lines[lines.length - 1] = `[${i + 1}/${folders.length}] ✗ ${folder.name}: ${folderErr.message}`;
+                  }
+                  setDbxResult(lines.join('\n'));
+                }
+
+                // Step 3: Final summary
+                lines.push(`\n✅ Sync complete\nFolders processed: ${folders.length}\nTotal files found: ${totalFound}\nTotal registered: ${totalRegistered}`);
+                if (allErrors.length) lines.push(`\nErrors (${allErrors.length}):\n${allErrors.join('\n')}`);
+                setDbxResult(lines.join('\n'));
+                toast.success(`Synced ${totalRegistered} files from ${folders.length} folders`);
                 fetchRealStats();
               } catch (err: any) {
                 setDbxResult(`❌ Error: ${err.message || 'Unknown error'}`);
