@@ -346,7 +346,21 @@ export function useChatThreads() {
               }
             });
 
-          // Polling fallback every 3s in case Realtime doesn't fire
+          // Immediate poll to catch jobs that completed before subscription was ready
+          setTimeout(async () => {
+            if (resolved) return;
+            const { data: earlyJob } = await supabase
+              .from('chat_jobs')
+              .select('status, response_content')
+              .eq('id', jobId)
+              .single();
+            if (earlyJob && (earlyJob.status === 'completed' || earlyJob.status === 'failed')) {
+              console.log('Early poll detected job completion:', earlyJob.status);
+              await handleJobDone();
+            }
+          }, 500);
+
+          // Polling fallback every 2s in case Realtime doesn't fire
           const pollInterval = setInterval(async () => {
             if (resolved) { clearInterval(pollInterval); return; }
             const { data: polledJob } = await supabase

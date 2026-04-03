@@ -693,6 +693,10 @@ serve(async (req) => {
 
     console.log(`context retrieved (${contextType}), length=${context.length}`);
 
+    // Log total payload size for debugging
+    const totalPayloadSize = (body.chatHistory || '').length + context.length + message.length;
+    console.log(`total_payload_estimate: chatHistory=${(body.chatHistory || '').length}, context=${context.length}, message=${message.length}, total=${totalPayloadSize}`);
+
     // ============================================================
     // DETERMINISTIC SHORT-CIRCUIT: If dedicated bid retrieval found
     // verified bids, return a code-built answer. LLM not involved.
@@ -705,8 +709,13 @@ serve(async (req) => {
       console.log(`DETERMINISTIC BID MODE: Bypassing LLM. top_bid=${bidSummary.topBid.value}, source=${bidSummary.topBid.source}`);
       answer = buildDeterministicBidResponse(bidSummary, project_name);
     } else {
-      // Normal LLM synthesis path
-      answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
+      // Normal LLM synthesis path — wrapped in try-catch for resilience
+      try {
+        answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
+      } catch (synthError) {
+        console.error('LLM synthesis failed:', synthError);
+        answer = 'I encountered an error while processing your request. This may be due to the size of the documents in this conversation. Please try asking your question in a new chat thread, or with fewer attached documents.';
+      }
 
       // Defensive check: if answer claims no bids but we might have missed them
       const claimsMissing = /(?:don[\u2019']?t have|do not have|no |couldn[\u2019']?t find|not available|unable to (?:find|locate)|without|lack).{0,120}(?:bid data|contractor bids?|bid tabulation|tabulated contractor bids|verified bid|bid information|bid total|bid result|bid comparison)/i.test(answer);
