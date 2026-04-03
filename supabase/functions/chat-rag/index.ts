@@ -775,7 +775,10 @@ serve(async (req) => {
 
     let answer: string;
 
-    if (bidSummary.hasBids && bidSummary.topBid) {
+    if (isMultiProjectBid && multiProjectBidSummaries.some(s => s.summary.hasBids)) {
+      console.log(`DETERMINISTIC MULTI-PROJECT BID MODE: Bypassing LLM. projects=${multiProjectBidSummaries.map(s => s.projectName).join(', ')}`);
+      answer = buildComparisonBidResponse(multiProjectBidSummaries);
+    } else if (bidSummary.hasBids && bidSummary.topBid) {
       console.log(`DETERMINISTIC BID MODE: Bypassing LLM. top_bid=${bidSummary.topBid.value}, source=${bidSummary.topBid.source}`);
       answer = buildDeterministicBidResponse(bidSummary, project_name);
     } else {
