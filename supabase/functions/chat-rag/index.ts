@@ -278,14 +278,18 @@ async function retrieveVerifiedBids(projectName: string | null): Promise<BidSumm
     };
   });
 
+  // Filter out small line-item values that aren't real bid totals
+  const MIN_BID_VALUE = 100000;
+  const topCandidates = rows.filter(r => r.value >= MIN_BID_VALUE);
+
   // Prioritize significant top-line metrics
   const significantMetrics = ['total_cost', 'bid_amount', 'estimated_cost', 'contract_amount', 'base_bid'];
-  const significantRows = rows.filter(r =>
+  const significantRows = (topCandidates.length > 0 ? topCandidates : rows).filter(r =>
     significantMetrics.some(m => (r.metric_name || '').toLowerCase().includes(m.replace('_', ' ')) || (r.metric_name || '').toLowerCase().includes(m))
   );
 
   // Sort by source priority first, then date descending
-  const sortedRows = (significantRows.length > 0 ? significantRows : rows).sort((a, b) => {
+  const sortedRows = (significantRows.length > 0 ? significantRows : (topCandidates.length > 0 ? topCandidates : rows)).sort((a, b) => {
     if (a._rank !== b._rank) return a._rank - b._rank;
     const dateA = a.date ? new Date(String(a.date).replace(' (from filename)', '')).getTime() : 0;
     const dateB = b.date ? new Date(String(b.date).replace(' (from filename)', '')).getTime() : 0;
