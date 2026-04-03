@@ -605,6 +605,44 @@ export type Database = {
         }
         Relationships: []
       }
+      shared_threads: {
+        Row: {
+          created_at: string
+          created_by: string
+          expires_at: string
+          id: string
+          is_active: boolean
+          share_token: string
+          thread_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          expires_at?: string
+          id?: string
+          is_active?: boolean
+          share_token?: string
+          thread_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          expires_at?: string
+          id?: string
+          is_active?: boolean
+          share_token?: string
+          thread_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shared_threads_thread_id_fkey"
+            columns: ["thread_id"]
+            isOneToOne: false
+            referencedRelation: "chat_threads"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_profiles_extended: {
         Row: {
           company_context_summary: string | null
