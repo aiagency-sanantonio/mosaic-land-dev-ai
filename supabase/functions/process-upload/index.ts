@@ -127,6 +127,67 @@ Deno.serve(async (req) => {
  * 1. Try native text extraction with pdf-parse
  * 2. If quality is poor (scanned PDF), fall back to Vision AI OCR
  */
+/**
+ * Generate a structured summary of extracted text using a fast LLM
+ */
+async function generateSummary(text: string, fileName: string): Promise<string> {
+  const apiKey = Deno.env.get("LOVABLE_API_KEY");
+  if (!apiKey) {
+    console.warn("LOVABLE_API_KEY not set, falling back to truncated text");
+    return text.slice(0, 5000);
+  }
+
+  // Send at most 40k chars to the summarizer
+  const inputText = text.length > 40000 ? text.slice(0, 40000) : text;
+
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash-lite",
+      messages: [
+        {
+          role: "system",
+          content: "You are a document summarization assistant. Extract structured summaries that preserve all quantitative data.",
+        },
+        {
+          role: "user",
+          content: `Extract a structured summary of this document (filename: ${fileName}). Include:
+- Document type and title
+- Key parties/entities mentioned
+- All dollar amounts, costs, totals, and financial figures
+- Important dates and deadlines
+- Scope of work or key deliverables
+- Notable terms, conditions, or warnings
+- Any tables of data (preserve the numbers)
+
+Be thorough with numbers and dates. Omit boilerplate, headers, and formatting.
+Keep the summary under 4000 characters.
+
+DOCUMENT TEXT:
+${inputText}`,
+        },
+      ],
+      max_tokens: 4000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Summary API error ${response.status}: ${errText}`);
+  }
+
+  const result = await response.json();
+  const summary = result.choices?.[0]?.message?.content || "";
+  if (!summary || summary.length < 20) {
+    return text.slice(0, 5000);
+  }
+  return summary;
+}
+
 async function extractPdfWithFallback(bytes: Uint8Array, fileName: string): Promise<string> {
   // Stage 1: Native extraction
   try {

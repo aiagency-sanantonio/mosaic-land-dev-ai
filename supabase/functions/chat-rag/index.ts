@@ -657,14 +657,14 @@ serve(async (req) => {
     }
 
     if (hasUploadedDocument) {
-      // Cap uploaded document context to 30,000 chars to prevent LLM token overflow
-      const cappedDoc = uploaded_document.length > 30000
-        ? uploaded_document.slice(0, 30000) + '\n\n[... document truncated due to length ...]'
+      // Cap uploaded document context to 15,000 chars — summaries are ~3-5k so this is generous
+      const cappedDoc = uploaded_document.length > 15000
+        ? uploaded_document.slice(0, 15000) + '\n\n[... document truncated due to length ...]'
         : uploaded_document;
       console.log(`uploaded_document: original_length=${uploaded_document.length}, capped_length=${cappedDoc.length}`);
       context = `=== USER UPLOADED DOCUMENT ===\n${cappedDoc}\n=== END UPLOADED DOCUMENT ===`;
       contextType = 'User Uploaded Document';
-      systemAddendum += '\n\nA USER UPLOADED DOCUMENT is present in the context. Treat it as the primary source for answering the question. The user has explicitly provided this document for analysis. Reference it directly in your answer.';
+      systemAddendum += '\n\nA USER UPLOADED DOCUMENT is present in the context. These are pre-processed structured summaries of the uploaded documents, containing the key figures, dates, parties, and scope items. Treat them as the primary source for answering the question. Reference them directly in your answer.';
     } else if (query_type === 'AGGREGATE') {
       const result = await retrieveAggregate(project_name, message, userId, threadId);
       context = result.context;
