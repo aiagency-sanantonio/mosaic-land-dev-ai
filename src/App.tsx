@@ -25,6 +25,7 @@ const App = () => (
             <Route path="/auth" element={<Auth />} />
             <Route path="/admin/indexing" element={<AdminIndexing />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/share/:token" element={<SharedThread />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
