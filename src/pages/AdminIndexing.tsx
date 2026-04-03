@@ -49,6 +49,8 @@ export default function AdminIndexing() {
   const [loadingJob, setLoadingJob] = useState(true);
   const [zzScanning, setZzScanning] = useState(false);
   const [zzResult, setZzResult] = useState<string | null>(null);
+  const [dbxSyncing, setDbxSyncing] = useState(false);
+  const [dbxResult, setDbxResult] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [extractionRunning, setExtractionRunning] = useState(false);
   const [extractResult, setExtractResult] = useState<{ processed: number; failed: number; remaining: number; totals: { metrics: number; permits: number; dd_items: number } } | null>(null);
