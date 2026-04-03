@@ -278,13 +278,39 @@ export function useChatThreads() {
           const handleJobDone = async () => {
             if (resolved) return;
             resolved = true;
-            if (threadId) {
-              await fetchMessages(threadId);
-            }
-            setSendingMessage(false);
             supabase.removeChannel(channel);
             clearTimeout(timeout);
             clearInterval(pollInterval);
+
+            if (threadId) {
+              await fetchMessages(threadId);
+            }
+
+            // Check if the job failed — if so, ensure the user sees an error message
+            const { data: finishedJob } = await supabase
+              .from('chat_jobs')
+              .select('status, response_content')
+              .eq('id', jobId)
+              .single();
+
+            if (finishedJob?.status === 'failed') {
+              const errorContent = finishedJob.response_content || 'I encountered an issue processing your request. Please try again.';
+              // Insert error message into DB so it persists across refreshes
+              const { data: errorMsg } = await supabase
+                .from('messages')
+                .insert({ thread_id: threadId!, user_id: user!.id, role: 'assistant', content: errorContent })
+                .select()
+                .single();
+              if (errorMsg) {
+                setMessages((prev) => {
+                  // Avoid duplicates if fetchMessages already picked it up
+                  if (prev.some(m => m.id === (errorMsg as Message).id)) return prev;
+                  return [...prev, errorMsg as Message];
+                });
+              }
+            }
+
+            setSendingMessage(false);
             await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
             fetchThreads();
           };
@@ -320,7 +346,21 @@ export function useChatThreads() {
               }
             });
 
-          // Polling fallback every 3s in case Realtime doesn't fire
+          // Immediate poll to catch jobs that completed before subscription was ready
+          setTimeout(async () => {
+            if (resolved) return;
+            const { data: earlyJob } = await supabase
+              .from('chat_jobs')
+              .select('status, response_content')
+              .eq('id', jobId)
+              .single();
+            if (earlyJob && (earlyJob.status === 'completed' || earlyJob.status === 'failed')) {
+              console.log('Early poll detected job completion:', earlyJob.status);
+              await handleJobDone();
+            }
+          }, 500);
+
+          // Polling fallback every 2s in case Realtime doesn't fire
           const pollInterval = setInterval(async () => {
             if (resolved) { clearInterval(pollInterval); return; }
             const { data: polledJob } = await supabase
@@ -333,7 +373,7 @@ export function useChatThreads() {
               console.log('Poll detected job completion:', polledJob.status);
               await handleJobDone();
             }
-          }, 3000);
+          }, 2000);
 
           // Timeout fallback
           const timeout = setTimeout(async () => {
