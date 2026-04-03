@@ -145,6 +145,7 @@ export default function Chat() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+              </div>
             )}
           </header>
 
