@@ -132,9 +132,31 @@ function buildDeterministicBidResponse(summary: BidSummary, projectName: string 
   const top = summary.topBid;
   const projLabel = projectName || 'the project';
 
+  // Group allBidRows by source_file_name to detect bid tabulations
+  const bySource: Record<string, any[]> = {};
+  for (const r of summary.allBidRows) {
+    const key = r.source_file_name || '_unknown_';
+    if (!bySource[key]) bySource[key] = [];
+    bySource[key].push(r);
+  }
+
+  // Check if the top bid's source file is a multi-contractor bid tabulation
+  const topSourceRows = bySource[top.source || '_unknown_'] || [];
+  const isBidTab = topSourceRows.length >= 3;
+
   const lines: string[] = [];
   lines.push(`## Verified Bid Data for ${projLabel}\n`);
-  lines.push(`**Most recent verified bid total: ${formatCurrency(top.value)}**`);
+
+  if (isBidTab) {
+    const values = topSourceRows.map((r: any) => r.value as number);
+    const minVal = Math.min(...values);
+    const maxVal = Math.max(...values);
+    const count = topSourceRows.length;
+    lines.push(`**Apparent low bid: ${formatCurrency(minVal)} (lowest of ${count} contractor bids ranging up to ${formatCurrency(maxVal)})**`);
+  } else {
+    lines.push(`**Most recent verified bid total: ${formatCurrency(top.value)}**`);
+  }
+
   if (top.date) lines.push(`- **Date:** ${top.date}`);
   if (top.metric) lines.push(`- **Metric:** ${top.metric}`);
   if (top.source) {
@@ -142,14 +164,26 @@ function buildDeterministicBidResponse(summary: BidSummary, projectName: string 
     lines.push(`- **Source:** ${link}`);
   }
 
-  // Add other bid records
-  const others = summary.allBidRows.slice(1, 10);
-  if (others.length > 0) {
+  // Show individual bids from the tabulation
+  if (isBidTab) {
+    const sorted = [...topSourceRows].sort((a, b) => a.value - b.value);
+    lines.push('');
+    lines.push('### Contractor Bids');
+    lines.push('| # | Amount |');
+    lines.push('|---|--------|');
+    sorted.forEach((r: any, i: number) => {
+      lines.push(`| ${i + 1} | ${formatCurrency(r.value)} |`);
+    });
+  }
+
+  // Add other bid records from different source files
+  const otherRows = summary.allBidRows.filter(r => (r.source_file_name || '_unknown_') !== (top.source || '_unknown_')).slice(0, 10);
+  if (otherRows.length > 0) {
     lines.push('');
     lines.push('### Other Verified Bid Records');
     lines.push('| Date | Source | Metric | Amount |');
     lines.push('|------|--------|--------|--------|');
-    for (const r of others) {
+    for (const r of otherRows) {
       const date = r.date || 'No date';
       const src = r.source_file_name || 'Unknown';
       const srcCell = r.dropbox_url ? `[${src}](${r.dropbox_url})` : src;
