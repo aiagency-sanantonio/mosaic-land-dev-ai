@@ -278,13 +278,39 @@ export function useChatThreads() {
           const handleJobDone = async () => {
             if (resolved) return;
             resolved = true;
-            if (threadId) {
-              await fetchMessages(threadId);
-            }
-            setSendingMessage(false);
             supabase.removeChannel(channel);
             clearTimeout(timeout);
             clearInterval(pollInterval);
+
+            if (threadId) {
+              await fetchMessages(threadId);
+            }
+
+            // Check if the job failed — if so, ensure the user sees an error message
+            const { data: finishedJob } = await supabase
+              .from('chat_jobs')
+              .select('status, response_content')
+              .eq('id', jobId)
+              .single();
+
+            if (finishedJob?.status === 'failed') {
+              const errorContent = finishedJob.response_content || 'I encountered an issue processing your request. Please try again.';
+              // Insert error message into DB so it persists across refreshes
+              const { data: errorMsg } = await supabase
+                .from('messages')
+                .insert({ thread_id: threadId!, user_id: user!.id, role: 'assistant', content: errorContent })
+                .select()
+                .single();
+              if (errorMsg) {
+                setMessages((prev) => {
+                  // Avoid duplicates if fetchMessages already picked it up
+                  if (prev.some(m => m.id === (errorMsg as Message).id)) return prev;
+                  return [...prev, errorMsg as Message];
+                });
+              }
+            }
+
+            setSendingMessage(false);
             await supabase.from('chat_threads').update({ updated_at: new Date().toISOString() }).eq('id', threadId);
             fetchThreads();
           };
