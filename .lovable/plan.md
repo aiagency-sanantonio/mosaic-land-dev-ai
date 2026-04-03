@@ -1,83 +1,67 @@
 
-Issue rephrased:
-The system is not failing in the UI and it is not failing because the bid data is missing. It is failing because `chat-rag` is still deciding “no verified bids” before the deterministic response logic can run.
 
-Do I know what the issue is?
-Yes.
+## Root Cause Analysis
 
-What the logs prove:
-- Classification is correct: `AGGREGATE`, project = `Grace Gardens`
-- The database does contain Grace Gardens bid rows, including the 2025-03-12 bid comparison record
-- But `chat-rag` logs show:
-  - `retrieveAggregate: verified_bid_rows=0`
-  - `bid_question=true, has_verified_bids=false`
-- That means the LLM is not the primary bug anymore. The retrieval/refinement layer is incorrectly producing zero verified bids, so the deterministic bid path never activates.
+There are **two distinct bugs** here:
 
-What is actually wrong:
-- `retrieveAggregate()` does one broad `project_data` fetch, limits it, then tries to infer “verified bid rows” afterward
-- The verified-bid detection is too fragile because it depends on post-processing heuristics instead of a dedicated bid retrieval path
-- Right now the critical logic is in the wrong place: bid existence is being inferred after a generic aggregate query instead of being fetched directly and deterministically
+### Bug 1: "Frozen" / response never renders until refresh
 
-Yes, this needs a refactor.
+**What happens:** When a `chat-rag` call fails (crashes, times out, etc.), `chat-webhook` catches the error and updates `chat_jobs` to `status='failed'` with `response_content='Processing service returned an error'`. However, **no message is ever inserted into the `messages` table**. 
 
-Implementation plan:
-1. Refactor bid retrieval into its own dedicated helper inside `supabase/functions/chat-rag/index.ts`
-- Add a `retrieveVerifiedBids(projectName)` path separate from the generic aggregate fetch
-- Query specifically for bid-like records using multiple signals, not just filename heuristics:
-  - `source_file_name`
-  - `source_file_path`
-  - `metric_name`
-  - priority folders like `Recent Bids` / `Bid Tab`
-- Pull bid rows first, before any generic “other cost” retrieval
+The frontend's `handleJobDone` callback fires correctly (via Realtime or polling), calls `fetchMessages()`, and sets `sendingMessage=false`. But since no assistant message exists in the DB, the user sees... nothing. The spinner disappears but no response appears. It looks "frozen."
 
-2. Stop using “broad fetch + split later” for bid questions
-- For bid-related questions:
-  - run dedicated verified-bid retrieval first
-  - build the summary directly from that result
-- Only fetch general cost rows as secondary context if needed
+There's also a race condition: if `chat-rag` errors very quickly (1-3 seconds as shown in logs), the `chat_jobs` row may already be set to `failed` before the Realtime channel finishes subscribing. The existing "immediate poll on subscribe" should catch this, but there are edge cases where it misses.
 
-3. Make the deterministic response depend only on the dedicated bid query
-- If verified bid rows are found, always return a code-built response immediately
-- Do not let normal synthesis answer first
-- This guarantees Grace Gardens uses the March 2025 bid instead of soft-cost fallback text
+**The fix:** In `handleJobDone`, after fetching messages, check if the job `status === 'failed'` and if so, insert/display the error message from `response_content` so the user always sees feedback.
 
-4. Harden the matching logic
-- Use a reusable bid-signal matcher that checks:
-  - `bid`, `bid tab`, `bid comparison`, `bid results`, `recent bids`
-  - path-based evidence, not just filename
-  - significant metrics like `total_cost`, `bid_amount`, `estimated_cost`
-- Sort by effective date descending and choose the most recent valid top-line bid
+### Bug 2: Second document upload crashes chat-rag
 
-5. Add explicit debug logging at each gate
-- Log:
-  - project filter used
-  - dedicated bid query row count
-  - top bid selected
-  - whether deterministic mode executed
-  - whether fallback-to-other-costs executed
-- This will make the next failure instantly diagnosable
+**What happens:** The user's second message in the same thread (with a new document attached) causes `chat-rag` to fail. The DB confirms this: job `3e91bf55` (the second document question) has `status: failed` after only 3.5 seconds.
 
-Files to update:
-- `supabase/functions/chat-rag/index.ts`
+The likely cause is the `uploaded_document` concatenation logic. When a second document is uploaded, `sendMessage` fetches ALL previous uploads' extracted text, concatenates them (up to 50,000 chars), and sends that entire payload along with the full chat history. This combined payload (previous conversation + two documents' extracted text + system prompt) likely exceeds the LLM's input token limit or causes `chat-rag` to error during processing.
 
-Technical details:
-```text
-current flow
-classify -> generic aggregate query -> heuristic bid split -> often false zero -> LLM says no bids
+**The fix:** Add error handling in `chat-rag` for oversized payloads, and truncate the uploaded document context more aggressively when multiple documents are present.
 
-refactored flow
-classify -> dedicated verified bid query -> deterministic bid response
-                                 \-> optional generic aggregate query for supplementary context
-```
+---
 
-Why this should fix it:
-- The current system is still trying to “detect” bids indirectly
-- The reliable fix is to fetch bids directly with a bid-specific retrieval path
-- That removes the fragile step that is currently producing `verified_bid_rows=0` even when the records exist
+## Implementation Plan
 
-Validation after implementation:
-- Ask: “What are the recent bid totals for Grace Gardens?”
-- Confirm response leads with the March 12, 2025 verified bid total
-- Confirm the bid comparison source file is cited
-- Confirm logs show nonzero dedicated bid rows and deterministic mode used
-- Also test one non-bid aggregate question to ensure normal aggregate answers still work
+### File 1: `src/hooks/useChatThreads.tsx`
+
+**Change 1 — Show failed job responses to the user:**
+- In `handleJobDone`, after `fetchMessages(threadId)`, query the job's final status
+- If `status === 'failed'`, insert a visible error message into the messages state (and optionally the DB) so the user sees feedback instead of nothing
+- This prevents the "frozen" appearance
+
+**Change 2 — Strengthen polling for fast failures:**
+- Add an immediate poll right after the channel `.subscribe()` call returns (even before `SUBSCRIBED` status), to catch jobs that fail within milliseconds
+- Reduce initial poll interval from 3s to 2s for the first few checks
+
+### File 2: `supabase/functions/chat-rag/index.ts`
+
+**Change 3 — Handle multi-document context gracefully:**
+- When `uploaded_document` is present and large, cap the total context sent to the LLM more aggressively (e.g., 30,000 chars for uploaded docs, leaving room for system prompt + history)
+- Add a try-catch around the LLM call that produces a meaningful error message instead of crashing
+- Log the total payload size before sending to the LLM for future debugging
+
+### File 3: `supabase/functions/chat-response-webhook/index.ts`
+
+No changes needed — this function is working correctly.
+
+---
+
+## Technical Details
+
+The key data points from investigation:
+- Job `3e91bf55` (second doc) failed in 3.5 seconds — indicates an immediate error, not a timeout
+- Job `e4c9a0d0` (first doc) completed successfully in ~13 seconds — the pipeline works fine for single documents
+- There is also 1 permanently `pending` job (`50bb10ef`) from March 12 — a fire-and-forget that was never resolved, confirming the "never renders" pattern
+- The `handleJobDone` function correctly stops the spinner but never shows failure feedback
+
+## Expected Outcome
+
+After these changes:
+1. When a job fails, the user will see an error message like "I encountered an issue processing your request. Please try again." instead of a frozen screen
+2. Multi-document conversations will work without crashing because the context will be properly capped
+3. Debug logs will show payload sizes for future troubleshooting
+
