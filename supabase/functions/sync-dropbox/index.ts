@@ -99,78 +99,74 @@ serve(async (req) => {
   }
 
   try {
+    const body = await req.json().catch(() => ({}));
+    const folderPath: string | undefined = body.folder;
+
     const accessToken = await getDropboxAccessToken();
 
+    // MODE 1: Discovery — return list of top-level folders
+    if (!folderPath) {
+      const topLevel = await listFolder(accessToken, '/1-Projects', false);
+      const folders = topLevel
+        .filter((e) => e['.tag'] === 'folder')
+        .map((e) => ({ name: e.name, path: e.path_display }));
+
+      return new Response(
+        JSON.stringify({ mode: 'discovery', folders }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // MODE 2: Process a single folder
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    // Step 1: Get top-level folders only
-    const topLevel = await listFolder(accessToken, '/1-Projects', false);
-    const subfolders = topLevel.filter((e) => e['.tag'] === 'folder');
-
-    let totalFilesFound = 0;
-    let totalRegistered = 0;
-    let foldersScanned = 0;
-    const errors: string[] = [];
+    const entries = await listFolder(accessToken, folderPath, true);
     const now = new Date().toISOString();
+    const errors: string[] = [];
 
-    // Step 2: Process each subfolder independently
-    for (const folder of subfolders) {
-      try {
-        const entries = await listFolder(accessToken, folder.path_display, true);
+    const files = entries.filter((e) => {
+      if (e['.tag'] !== 'file') return false;
+      const ext = getExtension(e.name);
+      if (ext === 'zip') return false;
+      if (e.size && e.size > MAX_FILE_SIZE) return false;
+      return true;
+    });
 
-        const files = entries.filter((e) => {
-          if (e['.tag'] !== 'file') return false;
-          const ext = getExtension(e.name);
-          if (ext === 'zip') return false;
-          if (e.size && e.size > MAX_FILE_SIZE) return false;
-          return true;
-        });
+    const records = files.map((f) => ({
+      file_path: f.path_display,
+      file_name: f.name,
+      file_extension: getExtension(f.name),
+      file_size_bytes: f.size ?? null,
+      dropbox_id: f.id,
+      content_hash: f.content_hash ?? null,
+      dropbox_modified_at: f.server_modified ?? null,
+      last_seen_at: now,
+    }));
 
-        totalFilesFound += files.length;
-
-        const records = files.map((f) => ({
-          file_path: f.path_display,
-          file_name: f.name,
-          file_extension: getExtension(f.name),
-          file_size_bytes: f.size ?? null,
-          dropbox_id: f.id,
-          content_hash: f.content_hash ?? null,
-          dropbox_modified_at: f.server_modified ?? null,
-          last_seen_at: now,
-        }));
-
-        // Upsert in batches
-        for (let i = 0; i < records.length; i += BATCH_SIZE) {
-          const batch = records.slice(i, i + BATCH_SIZE);
-          const { error } = await supabase
-            .from('dropbox_files')
-            .upsert(batch, { onConflict: 'file_path', ignoreDuplicates: false });
-          if (error) {
-            errors.push(`${folder.name} batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
-          } else {
-            totalRegistered += batch.length;
-          }
-        }
-
-        foldersScanned++;
-        console.log(`✓ ${folder.name}: ${files.length} files`);
-      } catch (folderErr) {
-        const msg = folderErr instanceof Error ? folderErr.message : String(folderErr);
-        errors.push(`${folder.name}: ${msg}`);
-        console.error(`✗ ${folder.name}: ${msg}`);
+    let registered = 0;
+    for (let i = 0; i < records.length; i += BATCH_SIZE) {
+      const batch = records.slice(i, i + BATCH_SIZE);
+      const { error } = await supabase
+        .from('dropbox_files')
+        .upsert(batch, { onConflict: 'file_path', ignoreDuplicates: false });
+      if (error) {
+        errors.push(`batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+      } else {
+        registered += batch.length;
       }
     }
 
+    console.log(`✓ ${folderPath}: ${files.length} files, ${registered} registered`);
+
     return new Response(
       JSON.stringify({
-        success: errors.length === 0,
-        folders_scanned: foldersScanned,
-        folders_total: subfolders.length,
-        total_files_found: totalFilesFound,
-        total_registered: totalRegistered,
+        mode: 'process',
+        folder: folderPath,
+        files_found: files.length,
+        registered,
         errors,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
