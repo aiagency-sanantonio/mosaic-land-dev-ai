@@ -673,7 +673,7 @@ serve(async (req) => {
       systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
     }
 
-    const { query_type, project_name, clarify_question } = classification;
+    const { query_type, project_name, project_names, clarify_question } = classification;
     const hasUploadedDocument = typeof uploaded_document === 'string' && uploaded_document.trim().length > 0;
 
     // CLARIFY — return the clarify question directly, no retrieval
@@ -698,13 +698,30 @@ serve(async (req) => {
     let context = '';
     let contextType = 'Retrieved Documents';
     let bidSummary: BidSummary = { hasBids: false, topBid: null, allBidRows: [] };
+    let multiProjectBidSummaries: { projectName: string; summary: BidSummary }[] = [];
 
-    // For AGGREGATE or HYBRID queries, run dedicated bid retrieval in parallel
+    // For AGGREGATE, HYBRID, or DOCUMENT_SEARCH queries, run dedicated bid retrieval
     const bidQuestion = isBidRelatedQuestion(message);
     const needsBidCheck = bidQuestion && (query_type === 'AGGREGATE' || query_type === 'HYBRID' || query_type === 'DOCUMENT_SEARCH') && !hasUploadedDocument;
 
-    if (needsBidCheck) {
-      // Run dedicated bid retrieval FIRST (or in parallel with aggregate)
+    // Determine if this is a multi-project bid comparison
+    const isMultiProjectBid = needsBidCheck && project_names && project_names.length > 1;
+
+    if (isMultiProjectBid) {
+      // Parallel bid retrieval for all projects
+      console.log(`multi-project bid retrieval: projects=${JSON.stringify(project_names)}`);
+      const results = await Promise.all(
+        project_names.map(async (pn) => ({
+          projectName: pn,
+          summary: await retrieveVerifiedBids(pn),
+        }))
+      );
+      multiProjectBidSummaries = results;
+      // Set bidSummary to the first project's result for fallback compatibility
+      bidSummary = results[0]?.summary || { hasBids: false, topBid: null, allBidRows: [] };
+      console.log(`multi-project bid results: ${results.map(r => `${r.projectName}=${r.summary.hasBids}(${r.summary.allBidRows.length} rows)`).join(', ')}`);
+    } else if (needsBidCheck) {
+      // Single project bid retrieval
       bidSummary = await retrieveVerifiedBids(project_name);
       console.log(`dedicated bid retrieval: hasBids=${bidSummary.hasBids}, topBid=${bidSummary.topBid?.value ?? 'none'}, rows=${bidSummary.allBidRows.length}`);
     }
