@@ -1,67 +1,75 @@
 
 
-## Root Cause Analysis
+## Problem
 
-There are **two distinct bugs** here:
+Currently, uploaded documents are sent as raw extracted text (up to 30,000 chars) directly to the LLM. This is wasteful — much of that text is boilerplate, headers, formatting artifacts, or low-value content. The LLM gets a large but noisy context window, which dilutes the important information and leaves no room for additional documents.
 
-### Bug 1: "Frozen" / response never renders until refresh
+## Solution: Pre-Summarization Pipeline
 
-**What happens:** When a `chat-rag` call fails (crashes, times out, etc.), `chat-webhook` catches the error and updates `chat_jobs` to `status='failed'` with `response_content='Processing service returned an error'`. However, **no message is ever inserted into the `messages` table**. 
+Instead of sending raw text, **summarize each uploaded document at upload time** using a fast, cheap model, then send the structured summary to the chat LLM. This gives the bot a denser, higher-quality understanding of the document in a fraction of the token budget.
 
-The frontend's `handleJobDone` callback fires correctly (via Realtime or polling), calls `fetchMessages()`, and sets `sendingMessage=false`. But since no assistant message exists in the DB, the user sees... nothing. The spinner disappears but no response appears. It looks "frozen."
+### How it works
 
-There's also a race condition: if `chat-rag` errors very quickly (1-3 seconds as shown in logs), the `chat_jobs` row may already be set to `failed` before the Realtime channel finishes subscribing. The existing "immediate poll on subscribe" should catch this, but there are edge cases where it misses.
+```text
+Current flow:
+  Upload → Extract text (50k chars) → Store raw text → Send raw text to chat LLM (30k cap)
 
-**The fix:** In `handleJobDone`, after fetching messages, check if the job `status === 'failed'` and if so, insert/display the error message from `response_content` so the user always sees feedback.
+New flow:
+  Upload → Extract text (50k chars) → Summarize via fast LLM → Store BOTH raw + summary
+  Chat → Send summary (3-5k chars) to chat LLM + raw text available on demand
+```
 
-### Bug 2: Second document upload crashes chat-rag
+### Implementation
 
-**What happens:** The user's second message in the same thread (with a new document attached) causes `chat-rag` to fail. The DB confirms this: job `3e91bf55` (the second document question) has `status: failed` after only 3.5 seconds.
+#### File 1: `supabase/functions/process-upload/index.ts`
 
-The likely cause is the `uploaded_document` concatenation logic. When a second document is uploaded, `sendMessage` fetches ALL previous uploads' extracted text, concatenates them (up to 50,000 chars), and sends that entire payload along with the full chat history. This combined payload (previous conversation + two documents' extracted text + system prompt) likely exceeds the LLM's input token limit or causes `chat-rag` to error during processing.
+- After text extraction, call the Lovable AI gateway (Gemini 2.5 Flash Lite — cheapest/fastest) with a structured summarization prompt
+- The prompt will instruct the model to extract: key figures, dates, parties, scope items, totals, and notable terms — organized by category
+- Store the summary in a new `extracted_summary` column alongside the existing `extracted_text`
+- If summarization fails, fall back to the first 5,000 chars of raw text as the summary
 
-**The fix:** Add error handling in `chat-rag` for oversized payloads, and truncate the uploaded document context more aggressively when multiple documents are present.
+#### File 2: Database migration
 
----
+- Add `extracted_summary TEXT` column to `user_uploads` table (nullable, no breaking change)
 
-## Implementation Plan
+#### File 3: `src/hooks/useChatThreads.tsx`
 
-### File 1: `src/hooks/useChatThreads.tsx`
+- When building `uploadedDocument`, prefer `extracted_summary` over `extracted_text`
+- If summary is available, use it (much smaller); if not, fall back to raw text with existing 30k cap
+- This change alone cuts the uploaded document context from ~30k to ~3-5k per document, allowing multiple documents to fit comfortably
 
-**Change 1 — Show failed job responses to the user:**
-- In `handleJobDone`, after `fetchMessages(threadId)`, query the job's final status
-- If `status === 'failed'`, insert a visible error message into the messages state (and optionally the DB) so the user sees feedback instead of nothing
-- This prevents the "frozen" appearance
+#### File 4: `supabase/functions/chat-rag/index.ts`
 
-**Change 2 — Strengthen polling for fast failures:**
-- Add an immediate poll right after the channel `.subscribe()` call returns (even before `SUBSCRIBED` status), to catch jobs that fail within milliseconds
-- Reduce initial poll interval from 3s to 2s for the first few checks
+- Reduce the uploaded document cap from 30k to 15k (summaries will be well under this, but raw fallbacks still get a reasonable budget)
+- Add a system prompt note telling the LLM that document summaries are pre-processed extracts of the key information
 
-### File 2: `supabase/functions/chat-rag/index.ts`
+### Summarization Prompt (used at upload time)
 
-**Change 3 — Handle multi-document context gracefully:**
-- When `uploaded_document` is present and large, cap the total context sent to the LLM more aggressively (e.g., 30,000 chars for uploaded docs, leaving room for system prompt + history)
-- Add a try-catch around the LLM call that produces a meaningful error message instead of crashing
-- Log the total payload size before sending to the LLM for future debugging
+```
+Extract a structured summary of this document. Include:
+- Document type and title
+- Key parties/entities mentioned
+- All dollar amounts, costs, totals, and financial figures
+- Important dates and deadlines
+- Scope of work or key deliverables
+- Notable terms, conditions, or warnings
+- Any tables of data (preserve the numbers)
 
-### File 3: `supabase/functions/chat-response-webhook/index.ts`
+Be thorough with numbers and dates. Omit boilerplate, headers, and formatting.
+Keep the summary under 4000 characters.
+```
 
-No changes needed — this function is working correctly.
+### Why this works
 
----
+- **Better understanding**: A structured summary highlights exactly what matters (costs, dates, parties, scope) instead of burying it in 30k of raw text
+- **No increase in context**: Summaries are ~3-5k chars vs 30k raw — actually a significant decrease
+- **Multi-document support**: With ~4k per doc summary, you can fit 5+ documents in the same budget that previously held one
+- **Raw text preserved**: The original extracted text stays in the DB if ever needed for deep-dive queries later
 
-## Technical Details
+### Technical details
 
-The key data points from investigation:
-- Job `3e91bf55` (second doc) failed in 3.5 seconds — indicates an immediate error, not a timeout
-- Job `e4c9a0d0` (first doc) completed successfully in ~13 seconds — the pipeline works fine for single documents
-- There is also 1 permanently `pending` job (`50bb10ef`) from March 12 — a fire-and-forget that was never resolved, confirming the "never renders" pattern
-- The `handleJobDone` function correctly stops the spinner but never shows failure feedback
-
-## Expected Outcome
-
-After these changes:
-1. When a job fails, the user will see an error message like "I encountered an issue processing your request. Please try again." instead of a frozen screen
-2. Multi-document conversations will work without crashing because the context will be properly capped
-3. Debug logs will show payload sizes for future troubleshooting
+- Model: `google/gemini-2.5-flash-lite` via Lovable AI gateway (fastest, cheapest — ideal for summarization)
+- Summary target: ~3,000-4,000 characters
+- Adds ~2-3 seconds to upload processing time (acceptable since upload already takes several seconds)
+- No changes to existing documents — `extracted_summary` is nullable, old uploads gracefully fall back to raw text
 
