@@ -8,6 +8,7 @@ import Chat from "./pages/Chat";
 import Auth from "./pages/Auth";
 import AdminIndexing from "./pages/AdminIndexing";
 import Settings from "./pages/Settings";
+import SharedThread from "./pages/SharedThread";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
