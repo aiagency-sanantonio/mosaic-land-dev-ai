@@ -108,7 +108,7 @@ serve(async (req) => {
     if (!folderPath) {
       const topLevel = await listFolder(accessToken, '/1-Projects', false);
       const folders = topLevel
-        .filter((e) => e['.tag'] === 'folder')
+        .filter((e) => e['.tag'] === 'folder' && !e.name.toLowerCase().includes('_archived'))
         .map((e) => ({ name: e.name, path: e.path_display }));
 
       return new Response(
