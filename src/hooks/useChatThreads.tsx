@@ -373,7 +373,7 @@ export function useChatThreads() {
               console.log('Poll detected job completion:', polledJob.status);
               await handleJobDone();
             }
-          }, 3000);
+          }, 2000);
 
           // Timeout fallback
           const timeout = setTimeout(async () => {
