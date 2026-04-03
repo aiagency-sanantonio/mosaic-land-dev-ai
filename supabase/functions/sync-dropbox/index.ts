@@ -6,7 +6,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
+const BATCH_SIZE = 500;
 
 async function getDropboxAccessToken(): Promise<string> {
   const refreshToken = Deno.env.get('DROPBOX_REFRESH_TOKEN')!;
@@ -44,7 +45,7 @@ interface DropboxEntry {
   server_modified?: string;
 }
 
-async function listAllFiles(accessToken: string, folderPath: string): Promise<DropboxEntry[]> {
+async function listFolder(accessToken: string, folderPath: string, recursive: boolean): Promise<DropboxEntry[]> {
   const allEntries: DropboxEntry[] = [];
 
   const initialResp = await fetch('https://api.dropboxapi.com/2/files/list_folder', {
@@ -53,7 +54,7 @@ async function listAllFiles(accessToken: string, folderPath: string): Promise<Dr
       'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ path: folderPath, recursive: true }),
+    body: JSON.stringify({ path: folderPath, recursive }),
   });
 
   if (!initialResp.ok) {
@@ -76,7 +77,7 @@ async function listAllFiles(accessToken: string, folderPath: string): Promise<Dr
 
     if (!contResp.ok) {
       const text = await contResp.text();
-      throw new Error(`Dropbox list_folder/continue failed [${contResp.status}]: ${text}`);
+      throw new Error(`list_folder/continue failed [${contResp.status}]: ${text}`);
     }
 
     result = await contResp.json();
@@ -100,62 +101,76 @@ serve(async (req) => {
   try {
     const accessToken = await getDropboxAccessToken();
 
-    const folderPath = '/1-Projects';
-    const allEntries = await listAllFiles(accessToken, folderPath);
-
-    const files = allEntries.filter((e) => {
-      if (e['.tag'] !== 'file') return false;
-      const ext = getExtension(e.name);
-      if (ext === 'zip') return false;
-      if (e.size && e.size > MAX_FILE_SIZE) return false;
-      return true;
-    });
-
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    const now = new Date().toISOString();
-    const records = files.map((f) => ({
-      file_path: f.path_display,
-      file_name: f.name,
-      file_extension: getExtension(f.name),
-      file_size_bytes: f.size ?? null,
-      dropbox_id: f.id,
-      content_hash: f.content_hash ?? null,
-      dropbox_modified_at: f.server_modified ?? null,
-      last_seen_at: now,
-    }));
+    // Step 1: Get top-level folders only
+    const topLevel = await listFolder(accessToken, '/1-Projects', false);
+    const subfolders = topLevel.filter((e) => e['.tag'] === 'folder');
 
-    const BATCH_SIZE = 500;
-    let totalUpserted = 0;
+    let totalFilesFound = 0;
+    let totalRegistered = 0;
+    let foldersScanned = 0;
     const errors: string[] = [];
+    const now = new Date().toISOString();
 
-    for (let i = 0; i < records.length; i += BATCH_SIZE) {
-      const batch = records.slice(i, i + BATCH_SIZE);
-      const { error } = await supabase
-        .from('dropbox_files')
-        .upsert(batch, { onConflict: 'file_path', ignoreDuplicates: false });
-      if (error) {
-        errors.push(`Batch ${i / BATCH_SIZE + 1}: ${error.message}`);
-      } else {
-        totalUpserted += batch.length;
+    // Step 2: Process each subfolder independently
+    for (const folder of subfolders) {
+      try {
+        const entries = await listFolder(accessToken, folder.path_display, true);
+
+        const files = entries.filter((e) => {
+          if (e['.tag'] !== 'file') return false;
+          const ext = getExtension(e.name);
+          if (ext === 'zip') return false;
+          if (e.size && e.size > MAX_FILE_SIZE) return false;
+          return true;
+        });
+
+        totalFilesFound += files.length;
+
+        const records = files.map((f) => ({
+          file_path: f.path_display,
+          file_name: f.name,
+          file_extension: getExtension(f.name),
+          file_size_bytes: f.size ?? null,
+          dropbox_id: f.id,
+          content_hash: f.content_hash ?? null,
+          dropbox_modified_at: f.server_modified ?? null,
+          last_seen_at: now,
+        }));
+
+        // Upsert in batches
+        for (let i = 0; i < records.length; i += BATCH_SIZE) {
+          const batch = records.slice(i, i + BATCH_SIZE);
+          const { error } = await supabase
+            .from('dropbox_files')
+            .upsert(batch, { onConflict: 'file_path', ignoreDuplicates: false });
+          if (error) {
+            errors.push(`${folder.name} batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+          } else {
+            totalRegistered += batch.length;
+          }
+        }
+
+        foldersScanned++;
+        console.log(`✓ ${folder.name}: ${files.length} files`);
+      } catch (folderErr) {
+        const msg = folderErr instanceof Error ? folderErr.message : String(folderErr);
+        errors.push(`${folder.name}: ${msg}`);
+        console.error(`✗ ${folder.name}: ${msg}`);
       }
     }
 
     return new Response(
       JSON.stringify({
         success: errors.length === 0,
-        total_entries_found: allEntries.length,
-        total_files_found: files.length,
-        total_registered: totalUpserted,
-        skipped_folders: allEntries.filter((e) => e['.tag'] === 'folder').length,
-        skipped_zip_or_oversize: allEntries.filter((e) => {
-          if (e['.tag'] !== 'file') return false;
-          const ext = getExtension(e.name);
-          return ext === 'zip' || (e.size && e.size > MAX_FILE_SIZE);
-        }).length,
+        folders_scanned: foldersScanned,
+        folders_total: subfolders.length,
+        total_files_found: totalFilesFound,
+        total_registered: totalRegistered,
         errors,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
