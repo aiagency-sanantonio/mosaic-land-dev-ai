@@ -648,7 +648,7 @@ serve(async (req) => {
 
     // For AGGREGATE or HYBRID queries, run dedicated bid retrieval in parallel
     const bidQuestion = isBidRelatedQuestion(message);
-    const needsBidCheck = bidQuestion && (query_type === 'AGGREGATE' || query_type === 'HYBRID') && !hasUploadedDocument;
+    const needsBidCheck = bidQuestion && (query_type === 'AGGREGATE' || query_type === 'HYBRID' || query_type === 'DOCUMENT_SEARCH') && !hasUploadedDocument;
 
     if (needsBidCheck) {
       // Run dedicated bid retrieval FIRST (or in parallel with aggregate)
