@@ -42,6 +42,17 @@ interface ActivityEntry {
   timestamp: string;
 }
 
+interface KnowledgeEntry {
+  id: string;
+  title: string;
+  content: string;
+  is_active: boolean;
+  tier: string;
+  keywords: string[];
+  created_by: string | null;
+  created_at: string;
+}
+
 export default function AdminIndexing() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
