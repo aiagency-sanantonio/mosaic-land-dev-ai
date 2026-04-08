@@ -643,6 +643,42 @@ export type Database = {
           },
         ]
       }
+      system_knowledge: {
+        Row: {
+          content: string
+          created_at: string
+          created_by: string | null
+          id: string
+          is_active: boolean
+          keywords: string[]
+          tier: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_active?: boolean
+          keywords?: string[]
+          tier?: string
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_active?: boolean
+          keywords?: string[]
+          tier?: string
+          title?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       user_profiles_extended: {
         Row: {
           company_context_summary: string | null
