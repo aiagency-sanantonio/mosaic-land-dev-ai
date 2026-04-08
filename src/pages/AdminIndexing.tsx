@@ -97,6 +97,13 @@ export default function AdminIndexing() {
   const [showOcrDetails, setShowOcrDetails] = useState(false);
   const [showExtractionDetails, setShowExtractionDetails] = useState(false);
   const [showZzDetails, setShowZzDetails] = useState(false);
+  const [showKnowledgeDetails, setShowKnowledgeDetails] = useState(false);
+
+  // Knowledge state
+  const [knowledgeEntries, setKnowledgeEntries] = useState<KnowledgeEntry[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ title: '', content: '', tier: 'always', keywords: '' });
+  const [newForm, setNewForm] = useState({ title: '', content: '', tier: 'always', keywords: '' });
 
   // ZZ Indexing state
   const [zzIndexing, setZzIndexing] = useState(false);
