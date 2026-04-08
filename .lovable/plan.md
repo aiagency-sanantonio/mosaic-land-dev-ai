@@ -1,34 +1,37 @@
 
 
-# Fix: sync-dropbox Edge Function Timeout
+## Plan: Fix System Knowledge Injection for CLARIFY Queries
 
-## Problem
-The `sync-dropbox` function is timing out before completing. The error "Failed to send a request to the Edge Function" confirms the function never returns a response. No logs appear because the function is killed before it can finish. Scanning all subfolders under `/1-Projects` recursively exceeds the Edge Function execution time limit (~150-400s depending on tier).
+### Problem
+When a query is classified as `CLARIFY` (out-of-scope), the edge function short-circuits at line 779 and returns a canned refusal — even when system knowledge entries exist that could answer the question. The injected knowledge never reaches the LLM.
 
-## Solution: Chunked Processing with Client-Side Polling
+### Changes (1 file)
 
-Split the sync into two modes: (1) a "start" call that lists top-level folders and processes them one at a time via sequential invocations from the client, and (2) a per-folder mode where the Edge Function processes a single folder per call.
+**`supabase/functions/chat-rag/index.ts`**
 
-### Changes
+1. **Line 779** — Add `&& !knowledgeText` to the CLARIFY short-circuit condition:
+   ```typescript
+   if (query_type === 'CLARIFY' && !hasUploadedDocument && !knowledgeText) {
+   ```
+   This lets CLARIFY queries fall through to LLM synthesis when system knowledge is available.
 
-**1. Update `supabase/functions/sync-dropbox/index.ts`**
-- Accept an optional `folder` parameter in the request body
-- **No folder provided**: Only list top-level folders under `/1-Projects` (fast, no recursion) and return the folder list
-- **Folder provided**: Recursively scan that single folder, upsert its files, and return results for that folder only
-- This keeps each invocation short enough to avoid timeouts
+2. **After line 861** (after the `HYBRID` else-if block) — Add an else branch for CLARIFY-with-knowledge:
+   ```typescript
+   } else {
+     context = '';
+     contextType = 'General Knowledge';
+   }
+   ```
+   No document retrieval is attempted — the LLM answers using only the system knowledge injected via `systemAddendum`.
 
-**2. Update `src/pages/AdminIndexing.tsx` — Dropbox Sync section**
-- Change the button handler to a multi-step process:
-  1. Call `sync-dropbox` with no folder → get list of subfolders
-  2. Loop through each folder, calling `sync-dropbox` with that folder path
-  3. Update the textarea progressively showing "Processing folder X of Y: FolderName..."
-  4. Accumulate totals across all folders
-  5. Show final summary when complete
-- This gives real-time progress feedback and avoids any single call timing out
+3. **After line 774** — Add a debug log:
+   ```typescript
+   console.log(`systemKnowledge injected: length=${knowledgeText.length}`);
+   ```
 
-### Technical Details
-- Each per-folder call should complete in under 30 seconds even for large folders
-- The client drives the loop, so there's no single long-running Edge Function call
-- Errors in individual folders are collected and shown but don't stop the overall sync
-- The loading spinner and button disabled state persist throughout the full loop
+4. **Deploy** the updated `chat-rag` function.
+
+### What This Does NOT Change
+- All other query types (AGGREGATE, DOCUMENT_SEARCH, HYBRID, STATUS_LOOKUP) continue to work exactly as before with full document retrieval.
+- CLARIFY queries with no system knowledge still short-circuit with the canned refusal (existing behavior preserved).
 
