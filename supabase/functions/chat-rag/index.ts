@@ -712,6 +712,23 @@ async function fetchSystemKnowledge(
   }
 }
 
+// ── "Remember This" command detection ──
+function detectRememberCommand(msg: string): { isRemember: boolean; content: string } {
+  const match = msg.match(/^(?:remember this:|remember that:|save this:|save this knowledge:)\s*(.+)/is);
+  if (match && match[1].trim().length > 0) {
+    return { isRemember: true, content: match[1].trim() };
+  }
+  return { isRemember: false, content: '' };
+}
+
+function extractTitle(content: string): string {
+  const max = 60;
+  if (content.length <= max) return content;
+  const trimmed = content.slice(0, max);
+  const lastSpace = trimmed.lastIndexOf(' ');
+  return (lastSpace > 20 ? trimmed.slice(0, lastSpace) : trimmed) + '…';
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -722,6 +739,46 @@ serve(async (req) => {
     const { threadId, userId, message, chatHistory, job_id, callback_url, uploaded_document } = body;
 
     console.log('chat-rag received:', JSON.stringify({ threadId, userId, message, job_id, callback_url }));
+
+    // ── Early intercept: "Remember This" command ──
+    const { isRemember, content: rememberContent } = detectRememberCommand(message);
+    if (isRemember) {
+      console.log('REMEMBER command detected, saving to system_knowledge');
+      const supabaseAdmin = createClient(
+        Deno.env.get('SUPABASE_URL')!,
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      );
+
+      const title = extractTitle(rememberContent);
+      const tier = 'always';
+      const keywords: string[] = [];
+
+      const { error: insertErr } = await supabaseAdmin.from('system_knowledge').insert({
+        title,
+        content: rememberContent,
+        tier,
+        keywords,
+        is_active: true,
+        created_by: userId || null,
+      });
+
+      const confirmationMsg = insertErr
+        ? `I tried to save that knowledge but hit an error: ${insertErr.message}`
+        : `✅ Got it — I've saved that knowledge and will use it in future conversations.\n\n**Title:** ${title}\n**Tier:** ${tier}`;
+
+      if (callback_url && job_id) {
+        await fetch(callback_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id, response: confirmationMsg }),
+        });
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, response: confirmationMsg }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     // Fetch user profile and classify in parallel
     const supabase = createClient(
