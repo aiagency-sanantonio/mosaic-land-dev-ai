@@ -5,6 +5,9 @@ import { unzipSync, strFromU8 } from "https://esm.sh/fflate@0.8.2";
 import pdfParse from "npm:pdf-parse@1.1.1/lib/pdf-parse.js";
 import { Buffer } from "node:buffer";
 
+// Declare EdgeRuntime for Supabase/Deno Deploy waitUntil support
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
