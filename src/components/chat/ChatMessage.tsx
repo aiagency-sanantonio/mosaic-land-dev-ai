@@ -1,14 +1,20 @@
-import { User, Bot, Paperclip } from 'lucide-react';
+import { useState } from 'react';
+import { User, Bot, Paperclip, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
+import { useAuth } from '@/hooks/useAuth';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from 'sonner';
 
 interface ChatMessageProps {
   role: 'user' | 'assistant';
   content: string;
   isNew?: boolean;
   fileName?: string | null;
+  messageId?: string;
+  threadId?: string;
 }
 
 const markdownComponents: Components = {
@@ -81,13 +87,34 @@ const markdownComponents: Components = {
   pre: ({ children }) => <>{children}</>,
 };
 
-export function ChatMessage({ role, content, isNew = false, fileName }: ChatMessageProps) {
+export function ChatMessage({ role, content, isNew = false, fileName, messageId, threadId }: ChatMessageProps) {
   const isUser = role === 'user';
+  const { user } = useAuth();
+  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleFeedback = async (rating: 'up' | 'down') => {
+    if (!messageId || !user || submitting || feedback) return;
+    setSubmitting(true);
+    const { error } = await supabase.from('answer_feedback').insert({
+      message_id: messageId,
+      thread_id: threadId ?? null,
+      user_id: user.id,
+      rating,
+    });
+    setSubmitting(false);
+    if (error) {
+      toast.error('Failed to submit feedback');
+    } else {
+      setFeedback(rating);
+      toast.success('Thanks for your feedback!');
+    }
+  };
 
   return (
     <div
       className={cn(
-        'flex gap-3 max-w-4xl mx-auto',
+        'group flex gap-3 max-w-4xl mx-auto',
         isUser ? 'flex-row-reverse' : 'flex-row',
         isNew && 'animate-slide-up'
       )}
@@ -121,6 +148,34 @@ export function ChatMessage({ role, content, isNew = false, fileName }: ChatMess
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
             {content}
           </ReactMarkdown>
+        )}
+
+        {!isUser && messageId && (
+          <div className={cn(
+            'flex gap-1 mt-1.5 transition-opacity',
+            feedback ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          )}>
+            <button
+              onClick={() => handleFeedback('up')}
+              disabled={submitting || feedback !== null}
+              className={cn(
+                'p-1 rounded hover:bg-muted/60 transition-colors disabled:cursor-default',
+                feedback === 'up' ? 'text-green-600' : 'text-muted-foreground'
+              )}
+            >
+              <ThumbsUp className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => handleFeedback('down')}
+              disabled={submitting || feedback !== null}
+              className={cn(
+                'p-1 rounded hover:bg-muted/60 transition-colors disabled:cursor-default',
+                feedback === 'down' ? 'text-destructive' : 'text-muted-foreground'
+              )}
+            >
+              <ThumbsDown className="h-3.5 w-3.5" />
+            </button>
+          </div>
         )}
       </div>
     </div>
