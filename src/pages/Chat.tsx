@@ -161,6 +161,8 @@ export default function Chat() {
                     content={message.content}
                     isNew={index === messages.length - 1}
                     fileName={message.file_name}
+                    messageId={message.id}
+                    threadId={currentThreadId ?? undefined}
                   />
                 ))}
                 {sendingMessage && (
