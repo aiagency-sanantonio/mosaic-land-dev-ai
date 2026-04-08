@@ -5,6 +5,9 @@ import { unzipSync, strFromU8 } from "https://esm.sh/fflate@0.8.2";
 import pdfParse from "npm:pdf-parse@1.1.1/lib/pdf-parse.js";
 import { Buffer } from "node:buffer";
 
+// Declare EdgeRuntime for Supabase/Deno Deploy waitUntil support
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
@@ -560,26 +563,35 @@ serve(async (req) => {
         await supabase.from('indexing_jobs').update(updatePayload).eq('id', jobId).eq('status', 'running');
 
         // Self-chain: if there's more work and job is still running, trigger next batch
+        let chainPromise: Promise<unknown> | null = null;
         if (!isDone) {
           const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
           const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
           const fnUrl = `${supabaseUrl}/functions/v1/batch-index`;
-          // Fire-and-forget with a small delay to avoid overwhelming
-          setTimeout(() => {
-            fetch(fnUrl, {
+          // Delayed self-chain — EdgeRuntime.waitUntil ensures it completes
+          chainPromise = new Promise<void>(resolve => setTimeout(resolve, 500))
+            .then(() => fetch(fnUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseAnonKey}`,
               },
               body: JSON.stringify({ cron: true }),
-            }).catch(err => console.error('Self-chain fetch failed:', err));
-          }, 500);
+            }))
+            .then(r => r.text())
+            .then(() => console.log('Self-chain triggered successfully'))
+            .catch(err => console.error('Self-chain fetch failed:', err));
         }
 
-        return new Response(JSON.stringify({ jobId, ...result, done: isDone }), {
+        const response = new Response(JSON.stringify({ jobId, ...result, done: isDone }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
+
+        if (chainPromise) {
+          EdgeRuntime.waitUntil(chainPromise);
+        }
+
+        return response;
 
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Unknown error';
