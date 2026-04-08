@@ -563,26 +563,35 @@ serve(async (req) => {
         await supabase.from('indexing_jobs').update(updatePayload).eq('id', jobId).eq('status', 'running');
 
         // Self-chain: if there's more work and job is still running, trigger next batch
+        let chainPromise: Promise<unknown> | null = null;
         if (!isDone) {
           const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
           const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
           const fnUrl = `${supabaseUrl}/functions/v1/batch-index`;
-          // Fire-and-forget with a small delay to avoid overwhelming
-          setTimeout(() => {
-            fetch(fnUrl, {
+          // Delayed self-chain — EdgeRuntime.waitUntil ensures it completes
+          chainPromise = new Promise<void>(resolve => setTimeout(resolve, 500))
+            .then(() => fetch(fnUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseAnonKey}`,
               },
               body: JSON.stringify({ cron: true }),
-            }).catch(err => console.error('Self-chain fetch failed:', err));
-          }, 500);
+            }))
+            .then(r => r.text())
+            .then(() => console.log('Self-chain triggered successfully'))
+            .catch(err => console.error('Self-chain fetch failed:', err));
         }
 
-        return new Response(JSON.stringify({ jobId, ...result, done: isDone }), {
+        const response = new Response(JSON.stringify({ jobId, ...result, done: isDone }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
+
+        if (chainPromise) {
+          EdgeRuntime.waitUntil(chainPromise);
+        }
+
+        return response;
 
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Unknown error';
