@@ -1,48 +1,71 @@
 
 
-## Plan: Add "Remember This" Chat Command
+## Plan: Fix Indexing Self-Chain Reliability
 
-### Overview
-Intercept messages starting with "remember this:" (or similar) in the `chat-rag` edge function. Instead of running the RAG pipeline, insert a new `system_knowledge` entry and return a confirmation message.
+### Problem
 
-### Changes (1 file)
+The indexing loop silently dies because of two issues:
 
-**`supabase/functions/chat-rag/index.ts`**
+1. **`setTimeout` is unreliable in edge functions** (lines 568-577 of `batch-index`). The Deno edge runtime can terminate the function *before* the `setTimeout` callback fires. The `fetch` inside it is fire-and-forget and never awaited — so the self-chain request simply never happens.
 
-1. **Add `detectRememberCommand` helper** (before the `serve` block, ~line 714):
-   - Regex check for patterns: `^(remember this:|remember that:|save this:|save this knowledge:)(.+)`
-   - Case-insensitive, requires a colon delimiter to avoid false positives on conversational phrases like "do you remember this project?"
-   - Returns `{ isRemember: boolean, content: string }`
+2. **The cron safety net only runs once per day** (2:30 AM UTC). So when the self-chain breaks, nothing re-triggers indexing until the next night. The memory notes say "every minute" but the actual cron schedule is `30 2 * * *`.
 
-2. **Add `extractTitle` helper**: Takes the content string and returns the first ~60 characters, trimmed to a word boundary, as the auto-generated title.
+### Fix (2 changes)
 
-3. **Add early intercept** (~line 722, right after parsing the request body, before classification):
-   - Call `detectRememberCommand(message)`
-   - If matched:
-     - Create a service-role Supabase client
-     - Auto-detect project name from content using a simple heuristic (check if any word matches known project names from `project_aliases` table, or skip)
-     - Determine tier: `"contextual"` if project keywords detected, `"always"` otherwise
-     - Insert into `system_knowledge` with `title`, `content`, `tier`, `keywords`, `is_active: true`, `created_by: userId`
-     - Build a confirmation message: "Got it — I've saved that knowledge and will use it in future conversations."
-     - POST confirmation to `callback_url` if present
-     - Return early (skip classification, retrieval, and synthesis entirely)
+#### 1. Replace `setTimeout` with `EdgeRuntime.waitUntil` in `batch-index/index.ts`
 
-### Trigger Phrases (case-insensitive, colon required)
-- `remember this: ...`
-- `remember that: ...`
-- `save this: ...`
-- `save this knowledge: ...`
+Instead of fire-and-forget `setTimeout`, use `EdgeRuntime.waitUntil()` to guarantee the self-chain fetch completes before the runtime shuts down. This is the standard Deno Deploy / Supabase pattern for background work after returning a response.
 
-### Example
-User types: `Remember this: Fischer Ranch is sometimes called Fischer`
-- Title: `"Fischer Ranch is sometimes called Fischer"`
-- Content: `"Fischer Ranch is sometimes called Fischer"`
-- Tier: `"always"`
-- Keywords: `[]`
-- Response: "Got it — I've saved that knowledge and will use it in future conversations."
+**Current code (lines 562-578):**
+```typescript
+if (!isDone) {
+  setTimeout(() => {
+    fetch(fnUrl, { ... }).catch(err => console.error(...));
+  }, 500);
+}
+```
 
-### What This Does NOT Change
-- All existing query classification and RAG retrieval remains untouched
-- No editing or deleting knowledge via chat (admin form still needed)
-- The 800-char injection cap still applies to all system knowledge
+**New approach:**
+- Build the self-chain fetch as a delayed promise
+- Return the HTTP response immediately
+- Use `EdgeRuntime.waitUntil(chainPromise)` to keep the runtime alive until the fetch completes
+
+This means restructuring the serve handler slightly: instead of returning the response at the end, we capture the chain promise and call `waitUntil` before returning.
+
+#### 2. Increase cron frequency from daily to every 5 minutes
+
+Change the `nightly-batch-index` cron job from `30 2 * * *` to `*/5 * * * *`. The batch-index function already exits gracefully when there's no running job ("No running job found, skipping"), so frequent cron hits are harmless when idle. But when a chain breaks, the cron will pick it back up within 5 minutes instead of waiting until the next night.
+
+This requires unscheduling the old job and creating a new one via SQL insert.
+
+### Technical Details
+
+**`supabase/functions/batch-index/index.ts`**:
+- Declare `let chainPromise: Promise<void> | null = null` before the response
+- Replace the `setTimeout` block with:
+  ```typescript
+  if (!isDone) {
+    chainPromise = new Promise<void>(resolve => setTimeout(resolve, 500))
+      .then(() => fetch(fnUrl, { method: 'POST', headers: {...}, body: ... }))
+      .then(r => r.text())
+      .then(() => console.log('Self-chain triggered'))
+      .catch(err => console.error('Self-chain failed:', err));
+  }
+  ```
+- After building the Response object but before returning it, add:
+  ```typescript
+  if (chainPromise) {
+    EdgeRuntime.waitUntil(chainPromise);
+  }
+  ```
+- Add a TypeScript declaration for `EdgeRuntime` at the top of the file
+
+**Cron job update** (via SQL):
+- `SELECT cron.unschedule(7)` to remove the daily job
+- Create new job with `*/5 * * * *` schedule, same HTTP call
+
+### What This Fixes
+- Self-chaining will reliably fire even when the edge runtime wants to shut down
+- If a chain still breaks (network blip, OOM, etc.), the 5-minute cron will restart it automatically
+- No changes to the processing logic, kill switch, or stats tracking
 
