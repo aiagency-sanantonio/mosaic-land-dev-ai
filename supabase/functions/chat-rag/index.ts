@@ -763,7 +763,16 @@ serve(async (req) => {
       systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
     }
 
+    // Append shared team knowledge (already fetched in parallel with message-based matching)
+    // Re-fetch with project_name now that classification is complete
     const { query_type, project_name, project_names, clarify_question } = classification;
+    let knowledgeText = systemKnowledge;
+    if (project_name && !knowledgeText) {
+      knowledgeText = await fetchSystemKnowledge(supabase, message, project_name);
+    }
+    if (knowledgeText) {
+      systemAddendum += knowledgeText;
+    }
     const hasUploadedDocument = typeof uploaded_document === 'string' && uploaded_document.trim().length > 0;
 
     // CLARIFY — return the clarify question directly, no retrieval
