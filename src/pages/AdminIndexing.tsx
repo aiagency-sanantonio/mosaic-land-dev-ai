@@ -232,7 +232,7 @@ export default function AdminIndexing() {
       fetchZzIndexedCount();
       fetchKnowledge();
     }
-  }, [user, fetchKillSwitchStatus, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible, fetchZzIndexedCount]);
+  }, [user, fetchKillSwitchStatus, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible, fetchZzIndexedCount, fetchKnowledge]);
 
   // ZZ polling every 10s when either ZZ button is active
   useEffect(() => {
