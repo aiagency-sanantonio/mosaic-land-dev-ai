@@ -213,6 +213,14 @@ export default function AdminIndexing() {
     }
   }, []);
 
+  const fetchKnowledge = useCallback(async () => {
+    const { data } = await supabase
+      .from('system_knowledge')
+      .select('id, title, content, is_active, tier, keywords, created_by, created_at')
+      .order('created_at', { ascending: true });
+    if (data) setKnowledgeEntries(data as KnowledgeEntry[]);
+  }, []);
+
   useEffect(() => {
     if (user) {
       fetchKillSwitchStatus();
@@ -222,6 +230,7 @@ export default function AdminIndexing() {
       fetchExtractionProgress();
       fetchOcrEligible();
       fetchZzIndexedCount();
+      fetchKnowledge();
     }
   }, [user, fetchKillSwitchStatus, fetchLatestJob, fetchRealStats, fetchActivity, fetchExtractionProgress, fetchOcrEligible, fetchZzIndexedCount]);
 
