@@ -667,6 +667,51 @@ async function synthesizeAnswer(
   return data.content?.[0]?.text || '';
 }
 
+async function fetchSystemKnowledge(
+  supabaseClient: ReturnType<typeof createClient>,
+  message: string,
+  projectName: string | null
+): Promise<string> {
+  try {
+    const { data, error } = await supabaseClient
+      .from('system_knowledge')
+      .select('title, content, tier, keywords')
+      .eq('is_active', true)
+      .order('created_at', { ascending: true });
+
+    if (error || !data || data.length === 0) return '';
+
+    const lowerMessage = message.toLowerCase();
+    const lowerProject = projectName?.toLowerCase() || '';
+
+    const filtered = data.filter((entry: any) => {
+      if (entry.tier === 'reference') return false;
+      if (entry.tier === 'always') return true;
+      if (entry.tier === 'contextual') {
+        const keywords: string[] = entry.keywords || [];
+        return keywords.some((kw: string) => {
+          const lkw = kw.toLowerCase();
+          return lowerMessage.includes(lkw) || (lowerProject && lowerProject.includes(lkw));
+        });
+      }
+      return false;
+    });
+
+    if (filtered.length === 0) return '';
+
+    let result = '\n\n## SHARED TEAM KNOWLEDGE\n' +
+      filtered.map((e: any) => `### ${e.title}\n${e.content}`).join('\n\n');
+
+    if (result.length > 800) {
+      result = result.slice(0, 800) + '\n[...additional knowledge truncated]';
+    }
+
+    return result;
+  } catch (_e) {
+    return '';
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -684,13 +729,14 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    const [profileResult, classification] = await Promise.all([
+    const [profileResult, classification, systemKnowledge] = await Promise.all([
       supabase
         .from('user_profiles_extended')
         .select('display_name, role_title, preferred_projects')
         .eq('user_id', userId)
         .maybeSingle(),
       classifyQuery(message, chatHistory || ''),
+      fetchSystemKnowledge(supabase, message, null),
     ]);
 
     console.log('classification:', JSON.stringify(classification));
@@ -717,7 +763,16 @@ serve(async (req) => {
       systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
     }
 
+    // Append shared team knowledge (already fetched in parallel with message-based matching)
+    // Re-fetch with project_name now that classification is complete
     const { query_type, project_name, project_names, clarify_question } = classification;
+    let knowledgeText = systemKnowledge;
+    if (project_name && !knowledgeText) {
+      knowledgeText = await fetchSystemKnowledge(supabase, message, project_name);
+    }
+    if (knowledgeText) {
+      systemAddendum += knowledgeText;
+    }
     const hasUploadedDocument = typeof uploaded_document === 'string' && uploaded_document.trim().length > 0;
 
     // CLARIFY — return the clarify question directly, no retrieval
