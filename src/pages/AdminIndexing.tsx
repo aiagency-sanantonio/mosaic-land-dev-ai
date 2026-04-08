@@ -696,6 +696,130 @@ export default function AdminIndexing() {
 
       {/* Detail Sections */}
       <div className="space-y-3">
+        {/* Shared AI Knowledge */}
+        <Collapsible open={showKnowledgeDetails} onOpenChange={setShowKnowledgeDetails}>
+          <Card>
+            <CollapsibleTrigger asChild>
+              <CardHeader className="cursor-pointer hover:bg-muted/30 transition-colors py-4">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <BrainCircuit className="h-4 w-4" /> Shared AI Knowledge
+                    <Badge variant="secondary" className="ml-1 text-xs">
+                      {knowledgeEntries.filter(e => e.is_active && e.tier !== 'reference').length} active
+                    </Badge>
+                  </CardTitle>
+                  <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showKnowledgeDetails ? 'rotate-180' : ''}`} />
+                </div>
+              </CardHeader>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <CardContent className="pt-0 pb-4">
+                <p className="text-xs text-muted-foreground mb-4">
+                  <strong>Always</strong> entries inject into every conversation. <strong>Contextual</strong> entries only inject when the query or project matches a keyword. <strong>Reference</strong> entries are never auto-injected but are searchable. Total injected context is capped at 800 characters.
+                </p>
+
+                {/* Entries list */}
+                <div className="space-y-2 mb-4">
+                  {knowledgeEntries.map(entry => (
+                    editingId === entry.id ? (
+                      <div key={entry.id} className="border border-border rounded-lg p-3 space-y-3 bg-muted/30">
+                        <Input value={editForm.title} onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))} placeholder="Title" />
+                        <Textarea value={editForm.content} onChange={e => setEditForm(f => ({ ...f, content: e.target.value }))} placeholder="Content" rows={3} />
+                        <Select value={editForm.tier} onValueChange={v => setEditForm(f => ({ ...f, tier: v }))}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="always">Always inject</SelectItem>
+                            <SelectItem value="contextual">Contextual (keyword match)</SelectItem>
+                            <SelectItem value="reference">Reference only (never auto-inject)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <div className="space-y-1">
+                          <label className="text-xs text-muted-foreground">Keywords (used for contextual matching)</label>
+                          <Input value={editForm.keywords} onChange={e => setEditForm(f => ({ ...f, keywords: e.target.value }))} placeholder="Comma-separated keywords" />
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" className="gap-1" onClick={async () => {
+                            const keywords = editForm.keywords.split(',').map(s => s.trim()).filter(Boolean);
+                            const { error } = await supabase.from('system_knowledge').update({
+                              title: editForm.title, content: editForm.content, tier: editForm.tier, keywords,
+                            }).eq('id', entry.id);
+                            if (error) { toast.error('Failed to save'); return; }
+                            setEditingId(null);
+                            toast.success('Entry updated');
+                            fetchKnowledge();
+                          }}><Save className="h-3 w-3" /> Save</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}><X className="h-3 w-3" /> Cancel</Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={entry.id} className="flex items-center gap-3 py-2 px-3 rounded-lg border border-border hover:bg-muted/30">
+                        <Switch checked={entry.is_active} onCheckedChange={async (checked) => {
+                          await supabase.from('system_knowledge').update({ is_active: checked }).eq('id', entry.id);
+                          fetchKnowledge();
+                        }} />
+                        <span className="font-medium text-sm text-foreground">{entry.title}</span>
+                        <Badge variant="outline" className={`text-xs ${
+                          entry.tier === 'always' ? 'border-green-500/50 text-green-600 bg-green-500/10' :
+                          entry.tier === 'contextual' ? 'border-blue-500/50 text-blue-600 bg-blue-500/10' :
+                          'border-border text-muted-foreground'
+                        }`}>
+                          {entry.tier === 'always' ? 'Always' : entry.tier === 'contextual' ? 'Contextual' : 'Reference'}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground truncate flex-1">{entry.content}</span>
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => {
+                          setEditingId(entry.id);
+                          setEditForm({ title: entry.title, content: entry.content, tier: entry.tier, keywords: (entry.keywords || []).join(', ') });
+                        }}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={async () => {
+                          const { error } = await supabase.from('system_knowledge').delete().eq('id', entry.id);
+                          if (error) { toast.error('Failed to delete'); return; }
+                          toast.success('Entry deleted');
+                          fetchKnowledge();
+                        }}><Trash2 className="h-3.5 w-3.5" /></Button>
+                      </div>
+                    )
+                  ))}
+                  {knowledgeEntries.length === 0 && (
+                    <p className="text-sm text-muted-foreground text-center py-4">No knowledge entries yet.</p>
+                  )}
+                </div>
+
+                {/* Add new entry */}
+                <div className="border border-dashed border-border rounded-lg p-3 space-y-3">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Add New Entry</p>
+                  <Input value={newForm.title} onChange={e => setNewForm(f => ({ ...f, title: e.target.value }))} placeholder="Title" />
+                  <Textarea value={newForm.content} onChange={e => setNewForm(f => ({ ...f, content: e.target.value }))} placeholder="Content" rows={3} />
+                  <Select value={newForm.tier} onValueChange={v => setNewForm(f => ({ ...f, tier: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="always">Always inject</SelectItem>
+                      <SelectItem value="contextual">Contextual (keyword match)</SelectItem>
+                      <SelectItem value="reference">Reference only (never auto-inject)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Keywords (used for contextual matching)</label>
+                    <Input value={newForm.keywords} onChange={e => setNewForm(f => ({ ...f, keywords: e.target.value }))} placeholder="Comma-separated keywords" />
+                  </div>
+                  <Button size="sm" className="gap-1" disabled={!newForm.title.trim() || !newForm.content.trim()} onClick={async () => {
+                    if (!user) return;
+                    const keywords = newForm.keywords.split(',').map(s => s.trim()).filter(Boolean);
+                    const { error } = await supabase.from('system_knowledge').insert({
+                      title: newForm.title, content: newForm.content, tier: newForm.tier, keywords, created_by: user.id,
+                    });
+                    if (error) { toast.error('Failed to add entry'); console.error(error); return; }
+                    setNewForm({ title: '', content: '', tier: 'always', keywords: '' });
+                    toast.success('Entry added');
+                    fetchKnowledge();
+                  }}>
+                    <BrainCircuit className="h-3.5 w-3.5" /> Add to AI Knowledge
+                  </Button>
+                </div>
+              </CardContent>
+            </CollapsibleContent>
+          </Card>
+        </Collapsible>
+
         {/* ZZ MD_50KFT Indexing */}
         <Collapsible open={showZzDetails} onOpenChange={setShowZzDetails}>
           <Card>
