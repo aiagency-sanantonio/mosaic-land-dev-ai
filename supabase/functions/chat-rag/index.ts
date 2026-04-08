@@ -729,13 +729,14 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    const [profileResult, classification] = await Promise.all([
+    const [profileResult, classification, systemKnowledge] = await Promise.all([
       supabase
         .from('user_profiles_extended')
         .select('display_name, role_title, preferred_projects')
         .eq('user_id', userId)
         .maybeSingle(),
       classifyQuery(message, chatHistory || ''),
+      fetchSystemKnowledge(supabase, message, null),
     ]);
 
     console.log('classification:', JSON.stringify(classification));
