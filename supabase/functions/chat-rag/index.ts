@@ -860,6 +860,10 @@ serve(async (req) => {
       if (docResult.status === 'fulfilled') parts.push(`## Retrieved Documents\n${docResult.value}`);
       context = parts.join('\n\n');
       contextType = 'Combined Data';
+    } else {
+      // CLARIFY that fell through due to system knowledge — no retrieval needed
+      context = '';
+      contextType = 'General Knowledge';
     }
 
     console.log(`context retrieved (${contextType}), length=${context.length}`);
