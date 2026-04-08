@@ -772,11 +772,13 @@ serve(async (req) => {
     }
     if (knowledgeText) {
       systemAddendum += knowledgeText;
+      console.log(`systemKnowledge injected: length=${knowledgeText.length}`);
     }
     const hasUploadedDocument = typeof uploaded_document === 'string' && uploaded_document.trim().length > 0;
 
     // CLARIFY — return the clarify question directly, no retrieval
-    if (query_type === 'CLARIFY' && !hasUploadedDocument) {
+    // But if system knowledge was injected, fall through to LLM synthesis
+    if (query_type === 'CLARIFY' && !hasUploadedDocument && !knowledgeText) {
       const response = clarify_question || 'Could you please provide more details about your question?';
 
       if (callback_url && job_id) {
