@@ -720,7 +720,6 @@ function extractPublicUrls(message: string): string[] {
     try {
       const parsed = new URL(url);
       const hostname = parsed.hostname.toLowerCase();
-      // Reject private/local addresses
       if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.internal')) return false;
       if (/^127\./.test(hostname)) return false;
       if (/^10\./.test(hostname)) return false;
@@ -734,6 +733,190 @@ function extractPublicUrls(message: string): string[] {
       return false;
     }
   });
+}
+
+// ── YouTube helpers ──
+function isYouTubeUrl(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    return h === 'youtube.com' || h === 'm.youtube.com' || h === 'youtu.be';
+  } catch { return false; }
+}
+
+function getYouTubeVideoId(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const h = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    if (h === 'youtu.be') return parsed.pathname.slice(1).split('/')[0] || null;
+    if (h === 'youtube.com' || h === 'm.youtube.com') return parsed.searchParams.get('v');
+    return null;
+  } catch { return null; }
+}
+
+async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; segments: { start: number; text: string }[] } | null> {
+  // Try primary free transcript API
+  const apis = [
+    `https://yt.vl.comp.nus.edu.sg/transcript?v=${videoId}`,
+    `https://youtubetranscript.com/?server_vid2=${videoId}`,
+  ];
+
+  for (const apiUrl of apis) {
+    try {
+      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+
+      const contentType = res.headers.get('content-type') || '';
+      let segments: { start: number; text: string }[] = [];
+
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          segments = data.map((s: any) => ({
+            start: parseFloat(s.start || s.offset || 0),
+            text: String(s.text || s.content || ''),
+          }));
+        } else if (data.transcript && Array.isArray(data.transcript)) {
+          segments = data.transcript.map((s: any) => ({
+            start: parseFloat(s.start || s.offset || 0),
+            text: String(s.text || s.content || ''),
+          }));
+        }
+      } else {
+        // XML response from youtubetranscript.com
+        const xml = await res.text();
+        const matches = xml.matchAll(/<text start="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g);
+        for (const m of matches) {
+          segments.push({ start: parseFloat(m[1]), text: m[2].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"') });
+        }
+      }
+
+      if (segments.length > 0) {
+        const fullText = segments.map(s => s.text).join(' ');
+        return { text: fullText, segments };
+      }
+    } catch (e) {
+      console.log(`Transcript API failed for ${apiUrl}:`, e);
+    }
+  }
+
+  return null;
+}
+
+function compressTranscript(segments: { start: number; text: string }[]): string {
+  const FILLER = /\b(um|uh|you know|i mean|like|basically|actually|so yeah|right)\b/gi;
+  const MAX_CHARS = 4000;
+  const TIMESTAMP_INTERVAL = 120; // every 2 minutes
+
+  let lastTimestamp = -999;
+  const lines: string[] = [];
+  let prevText = '';
+
+  for (const seg of segments) {
+    let t = seg.text.trim().replace(FILLER, '').replace(/\s{2,}/g, ' ').trim();
+    if (!t || t.length < 3) continue;
+    // Skip near-duplicate of previous line
+    if (t === prevText) continue;
+
+    // Add timestamp marker periodically
+    if (seg.start - lastTimestamp >= TIMESTAMP_INTERVAL) {
+      const mins = Math.floor(seg.start / 60);
+      const secs = Math.floor(seg.start % 60);
+      lines.push(`[${mins}:${secs.toString().padStart(2, '0')}]`);
+      lastTimestamp = seg.start;
+    }
+
+    lines.push(t);
+    prevText = t;
+  }
+
+  let result = lines.join(' ');
+  if (result.length > MAX_CHARS) {
+    result = result.slice(0, MAX_CHARS) + ' [transcript truncated]';
+  }
+  return result;
+}
+
+async function summarizeTranscriptCheap(opts: {
+  userMessage: string;
+  videoUrl: string;
+  transcript: string;
+}): Promise<string> {
+  const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+
+  const isDetailed = /detail|in[- ]depth|thorough|comprehensive/i.test(opts.userMessage);
+  const maxTokens = isDetailed ? 600 : 350;
+
+  const systemPrompt = `Summarize this YouTube video transcript concisely. Return ONLY:
+## Summary
+1 short paragraph (2-3 sentences max)
+## Key Points
+- 3 to 5 bullet points
+${isDetailed ? '## Timestamps\n- Include notable timestamps if available' : ''}
+Do NOT add filler. Be direct and factual.`;
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: `Video: ${opts.videoUrl}\n\nTranscript:\n${opts.transcript}` }],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Anthropic API error (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  return data.content?.[0]?.text || 'Unable to summarize the video.';
+}
+
+function shouldResearchVideo(message: string): boolean {
+  return /\b(verify|fact[- ]?check|research|claims?|what are people saying|is this true|is this accurate)\b/i.test(message);
+}
+
+async function researchVideoClaimsWithPerplexity(opts: {
+  videoUrl: string;
+  transcriptSummary: string;
+  userMessage: string;
+}): Promise<{ answer: string; sources: string[] }> {
+  const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY');
+  if (!PERPLEXITY_API_KEY) throw new Error('PERPLEXITY_API_KEY is not configured');
+
+  const res = await fetch('https://api.perplexity.ai/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'sonar',
+      temperature: 0.2,
+      messages: [
+        { role: 'system', content: 'Verify the claims from this video summary using web sources. Be concise. List what you can confirm, what you cannot, and any contradictions.' },
+        { role: 'user', content: `Video: ${opts.videoUrl}\n\nSummary of claims:\n${opts.transcriptSummary}\n\nUser request: ${opts.userMessage}` },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Perplexity API error [${res.status}]: ${errText}`);
+  }
+
+  const data = await res.json();
+  return {
+    answer: data.choices?.[0]?.message?.content || 'Unable to verify claims.',
+    sources: data.citations || [],
+  };
 }
 
 async function summarizeUrlWithPerplexity(opts: {
@@ -874,12 +1057,95 @@ serve(async (req) => {
       );
     }
 
-    // ── Early intercept: URL Research ──
+    // ── Early intercept: URL detection (YouTube → VIDEO_SUMMARY, other → URL_RESEARCH) ──
     const detectedUrls = extractPublicUrls(message);
     if (detectedUrls.length > 0) {
       const targetUrl = detectedUrls[0];
-      console.log('URL_RESEARCH mode triggered for:', targetUrl);
 
+      // ── YouTube VIDEO_SUMMARY path ──
+      if (isYouTubeUrl(targetUrl)) {
+        const videoId = getYouTubeVideoId(targetUrl);
+        console.log('VIDEO_SUMMARY mode triggered for:', targetUrl, 'videoId:', videoId);
+
+        let responseText: string;
+        let transcriptUsed = false;
+        let researchEnriched = false;
+        let sources: string[] = [];
+
+        if (!videoId) {
+          responseText = "I couldn't parse a video ID from that YouTube URL. Please check the link and try again.";
+        } else {
+          const transcript = await fetchYouTubeTranscript(videoId);
+
+          if (!transcript) {
+            responseText = "I couldn't access captions/transcript for that video, so I can't reliably summarize it yet.";
+          } else {
+            transcriptUsed = true;
+            const compressed = compressTranscript(transcript.segments);
+            console.log(`VIDEO_SUMMARY: compressed transcript length=${compressed.length}`);
+
+            responseText = await summarizeTranscriptCheap({
+              userMessage: message,
+              videoUrl: targetUrl,
+              transcript: compressed,
+            });
+
+            // Check if user wants verification
+            if (shouldResearchVideo(message)) {
+              try {
+                const research = await researchVideoClaimsWithPerplexity({
+                  videoUrl: targetUrl,
+                  transcriptSummary: responseText,
+                  userMessage: message,
+                });
+                researchEnriched = true;
+                sources = research.sources;
+                responseText += '\n\n## Verification\n' + research.answer;
+                if (sources.length > 0) {
+                  responseText += '\n\n## Sources\n' + sources.map((s, i) => `- [Source ${i + 1}](${s})`).join('\n');
+                }
+                responseText += '\n\n📋 *Based on transcript + web research*';
+              } catch (resErr) {
+                console.error('Perplexity verification failed:', resErr);
+                responseText += '\n\n📋 *Based on video transcript only (verification unavailable)*';
+              }
+            } else {
+              responseText += '\n\n📋 *Based on video transcript only*';
+            }
+          }
+        }
+
+        if (callback_url && job_id) {
+          await fetch(callback_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_id, response: responseText }),
+          });
+        }
+
+        // Log for analytics
+        const supabaseAdmin = createClient(
+          Deno.env.get('SUPABASE_URL')!,
+          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+        );
+        await supabaseAdmin.from('retrieval_logs').insert({
+          thread_id: threadId || null,
+          user_id: userId || null,
+          question: message,
+          query_type: 'VIDEO_SUMMARY',
+          top_sources: [{ video_url: targetUrl, transcript_used: transcriptUsed, research_enriched: researchEnriched }],
+        }).then(({ error }) => {
+          if (error) console.error('Failed to log VIDEO_SUMMARY:', error);
+        });
+
+        return new Response(
+          JSON.stringify({ success: true, query_type: 'VIDEO_SUMMARY' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // ── Non-YouTube URL_RESEARCH path (existing Perplexity flow) ──
+      console.log('URL_RESEARCH mode triggered for:', targetUrl);
       try {
         const research = await summarizeUrlWithPerplexity({
           url: targetUrl,
@@ -900,7 +1166,6 @@ serve(async (req) => {
           });
         }
 
-        // Log for analytics
         const supabaseAdmin = createClient(
           Deno.env.get('SUPABASE_URL')!,
           Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -921,7 +1186,6 @@ serve(async (req) => {
         );
       } catch (urlErr) {
         console.error('URL_RESEARCH failed, falling through to normal pipeline:', urlErr);
-        // Fall through to normal classification if Perplexity fails
       }
     }
 
