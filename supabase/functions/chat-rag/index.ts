@@ -778,7 +778,9 @@ async function summarizeYouTubeWithPerplexity(videoId: string, userMessage: stri
 
   if (isSummaryRequest) {
     // Generic summary mode
-    systemPrompt = `You are a video content analyst. Summarize the YouTube video at the provided URL. Use your web search capabilities to find the video's transcript, description, and any available information about it.
+    systemPrompt = `You are a video content analyst. Summarize the YouTube video at the provided URL using ALL available information from your web search: video description, comments, related articles, blog posts, social media discussions, and any transcript data you can find.
+
+IMPORTANT: Do NOT say you "cannot access the video" or "need the transcript." Use whatever information your search returns — titles, descriptions, comments, reviews, discussions about the video. There is always SOME information available.
 
 Format your response EXACTLY as:
 
@@ -791,14 +793,20 @@ Format your response EXACTLY as:
 - [Key point 3]
 ${isDetailed ? '- [Key point 4]\n- [Key point 5]\n\n## Details\n[Additional detail paragraph if relevant]' : ''}
 
-Be factual and specific. If you truly cannot find any information about this video, respond with exactly: NO_VIDEO_INFO`;
+Be factual and specific. Only respond with exactly NO_VIDEO_INFO if you find literally zero search results mentioning this video.`;
     userPrompt = `Summarize this YouTube video: ${videoUrl}`;
     console.log('VIDEO_SUMMARY: generic summary mode');
   } else {
     // Specific question mode
-    systemPrompt = `You are a video content analyst. Answer the user's specific question about a YouTube video. Use your web search capabilities to find the video's transcript, content, and any available information to answer accurately.
+    systemPrompt = `You are a video content analyst. Answer the user's specific question about a YouTube video using ALL available information from your web search: video description, comments, related articles, blog posts, social media discussions, forums, and any transcript data you can find.
 
-Be specific, cite the video content where possible, and stay focused on answering their question. Do not provide a generic summary unless asked. If you truly cannot find any information about this video, respond with exactly: NO_VIDEO_INFO`;
+CRITICAL RULES:
+- Do NOT say you "cannot access the video", "cannot provide a detailed analysis", or "need the transcript"
+- Do NOT hedge or apologize about limited information — just answer with what you find
+- Use video descriptions, comment sections, related discussions, reviews, and any web content about the video
+- If you find partial information, share what you found confidently
+- Stay focused on answering their specific question — do not give a generic summary
+- Only respond with exactly NO_VIDEO_INFO if you find literally zero search results mentioning this video`;
     userPrompt = `Regarding this YouTube video (${videoUrl}): ${strippedMessage}`;
     console.log(`VIDEO_SUMMARY: specific question mode — "${strippedMessage}"`);
   }
@@ -836,6 +844,24 @@ Be specific, cite the video content where possible, and stay focused on answerin
       return null;
     }
 
+    // Detect refusal/hedging responses and treat them as failures
+    const refusalPatterns = [
+      'cannot provide a detailed',
+      'I cannot provide',
+      'do not contain the actual transcript',
+      'I don\'t have access to',
+      'I cannot access',
+      'search results do not contain',
+      'unable to access the video',
+      'I would need the full transcript',
+      'I would need access to',
+    ];
+    const isRefusal = refusalPatterns.some(p => content.toLowerCase().includes(p.toLowerCase()));
+    if (isRefusal) {
+      console.log('VIDEO_SUMMARY: detected refusal/hedging in response, returning null');
+      return null;
+    }
+
     console.log(`VIDEO_SUMMARY: got response from Perplexity (${content.length} chars, ${citations.length} citations)`);
     return { summary: content, sources: citations };
   } catch (e) {
@@ -845,7 +871,7 @@ Be specific, cite the video content where possible, and stay focused on answerin
 }
 
 function shouldResearchVideo(message: string): boolean {
-  return /\b(verify|fact[- ]?check|research|claims?|what are people saying|is this true|is this accurate)\b/i.test(message);
+  return /\b(verify|verifiable|fact[- ]?check|research|claims?|what are people saying|is this true|is this accurate|is this real|are these real|is this correct|are these correct)\b/i.test(message);
 }
 
 async function researchVideoClaimsWithPerplexity(opts: {
