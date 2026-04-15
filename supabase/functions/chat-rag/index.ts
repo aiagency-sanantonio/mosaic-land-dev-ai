@@ -761,9 +761,24 @@ async function summarizeYouTubeWithPerplexity(videoId: string, userMessage: stri
   }
 
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+  // Strip the URL from the user message to get the actual question text
+  const strippedMessage = userMessage
+    .replace(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)[^\s]+/gi, '')
+    .trim();
+
+  // Detect if user is asking a specific question vs just sharing a link / asking for summary
+  const isSummaryRequest = !strippedMessage ||
+    /^(summarize|summary|sum up|recap|overview|what'?s this|check this|watch this)/i.test(strippedMessage);
+
   const isDetailed = /detail|in[- ]depth|thorough|comprehensive/i.test(userMessage);
 
-  const systemPrompt = `You are a video content analyst. Summarize the YouTube video at the provided URL. Use your web search capabilities to find the video's transcript, description, and any available information about it.
+  let systemPrompt: string;
+  let userPrompt: string;
+
+  if (isSummaryRequest) {
+    // Generic summary mode
+    systemPrompt = `You are a video content analyst. Summarize the YouTube video at the provided URL. Use your web search capabilities to find the video's transcript, description, and any available information about it.
 
 Format your response EXACTLY as:
 
@@ -777,9 +792,19 @@ Format your response EXACTLY as:
 ${isDetailed ? '- [Key point 4]\n- [Key point 5]\n\n## Details\n[Additional detail paragraph if relevant]' : ''}
 
 Be factual and specific. If you truly cannot find any information about this video, respond with exactly: NO_VIDEO_INFO`;
+    userPrompt = `Summarize this YouTube video: ${videoUrl}`;
+    console.log('VIDEO_SUMMARY: generic summary mode');
+  } else {
+    // Specific question mode
+    systemPrompt = `You are a video content analyst. Answer the user's specific question about a YouTube video. Use your web search capabilities to find the video's transcript, content, and any available information to answer accurately.
+
+Be specific, cite the video content where possible, and stay focused on answering their question. Do not provide a generic summary unless asked. If you truly cannot find any information about this video, respond with exactly: NO_VIDEO_INFO`;
+    userPrompt = `Regarding this YouTube video (${videoUrl}): ${strippedMessage}`;
+    console.log(`VIDEO_SUMMARY: specific question mode — "${strippedMessage}"`);
+  }
 
   try {
-    console.log('VIDEO_SUMMARY: calling Perplexity sonar to summarize video directly...');
+    console.log('VIDEO_SUMMARY: calling Perplexity sonar...');
     const res = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
@@ -790,7 +815,7 @@ Be factual and specific. If you truly cannot find any information about this vid
         model: 'sonar',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Summarize this YouTube video: ${videoUrl}` },
+          { role: 'user', content: userPrompt },
         ],
         temperature: 0.1,
       }),
@@ -811,10 +836,10 @@ Be factual and specific. If you truly cannot find any information about this vid
       return null;
     }
 
-    console.log(`VIDEO_SUMMARY: got summary from Perplexity (${content.length} chars, ${citations.length} citations)`);
+    console.log(`VIDEO_SUMMARY: got response from Perplexity (${content.length} chars, ${citations.length} citations)`);
     return { summary: content, sources: citations };
   } catch (e) {
-    console.log('VIDEO_SUMMARY: Perplexity summarization failed:', e instanceof Error ? e.message : e);
+    console.log('VIDEO_SUMMARY: Perplexity call failed:', e instanceof Error ? e.message : e);
     return null;
   }
 }
