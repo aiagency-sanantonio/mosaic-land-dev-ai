@@ -899,9 +899,6 @@ function parseVttTranscript(vtt: string): { start: number; text: string }[] {
   return segments;
 }
 
-  return null;
-}
-
 function compressTranscript(segments: { start: number; text: string }[]): string {
   const FILLER = /\b(um|uh|you know|i mean|like|basically|actually|so yeah|right)\b/gi;
   const MAX_CHARS = 4000;
