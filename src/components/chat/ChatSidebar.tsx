@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, MessageSquare, Trash2, LogOut, Mountain, FolderPlus, ChevronRight, FolderOpen, Pencil, Settings } from 'lucide-react';
+import { Plus, MessageSquare, Trash2, LogOut, Mountain, FolderPlus, ChevronRight, FolderOpen, Pencil, Settings, Link2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
@@ -164,6 +164,10 @@ export function ChatSidebar({
           <Button onClick={onNewThread} variant="outline" className="w-full justify-start gap-2 bg-sidebar-accent border-sidebar-border text-sidebar-foreground hover:bg-sidebar-primary hover:text-sidebar-primary-foreground">
             <Plus className="h-4 w-4" />
             {!isCollapsed && 'New Chat'}
+          </Button>
+          <Button onClick={() => navigate('/web-links')} variant="ghost" size="sm" className="w-full justify-start gap-2 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent">
+            <Link2 className="h-4 w-4" />
+            {!isCollapsed && 'Web Links'}
           </Button>
           {!isCollapsed && (
             showNewFolder ? (
