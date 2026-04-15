@@ -54,7 +54,18 @@ interface ClassifyResult {
   reasoning: string;
 }
 
-async function classifyQuery(message: string, chatHistory: string = ''): Promise<ClassifyResult> {
+function extractJsonObject(text: string): string {
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('No JSON object found in classifier response');
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  throw new Error('Unterminated JSON object in classifier response');
+}
+
+
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
 
