@@ -768,49 +768,56 @@ function parseTranscriptXml(xml: string): { start: number; text: string }[] {
 async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; segments: { start: number; text: string }[] } | null> {
   const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
-  // Method 1: YouTube InnerTube API (most reliable from server-side)
-  try {
-    console.log('VIDEO_SUMMARY: trying InnerTube player API...');
-    const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
-      body: JSON.stringify({
-        context: {
-          client: { hl: 'en', gl: 'US', clientName: 'WEB', clientVersion: '2.20240313.05.00' }
-        },
-        videoId,
-      }),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (playerRes.ok) {
-      const playerData = await playerRes.json();
-      const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-      if (Array.isArray(tracks) && tracks.length > 0) {
-        // Prefer English, fall back to first
-        const enTrack = tracks.find((t: any) => t.languageCode === 'en') || tracks[0];
-        if (enTrack?.baseUrl) {
-          let captionUrl = enTrack.baseUrl;
-          if (!captionUrl.includes('fmt=')) captionUrl += '&fmt=srv3';
-          console.log(`VIDEO_SUMMARY: found caption track (${enTrack.languageCode}), fetching XML...`);
-          const xmlRes = await fetch(captionUrl, {
-            headers: { 'User-Agent': UA },
-            signal: AbortSignal.timeout(8000),
-          });
-          if (xmlRes.ok) {
-            const xml = await xmlRes.text();
-            const segments = parseTranscriptXml(xml);
-            if (segments.length > 0) {
-              console.log(`VIDEO_SUMMARY: got ${segments.length} segments via InnerTube`);
-              return { text: segments.map(s => s.text).join(' '), segments };
+  // Method 1: YouTube InnerTube API with multiple client attempts
+  const clients = [
+    { clientName: 'WEB', clientVersion: '2.20240313.05.00', ua: UA },
+    { clientName: 'ANDROID', clientVersion: '19.09.37', ua: 'com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip' },
+    { clientName: 'IOS', clientVersion: '19.09.3', ua: 'com.google.ios.youtube/19.09.3 (iPhone; U; CPU iPhone OS 17_0 like Mac OS X)' },
+  ];
+
+  for (const client of clients) {
+    try {
+      console.log(`VIDEO_SUMMARY: trying InnerTube ${client.clientName} client...`);
+      const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': client.ua },
+        body: JSON.stringify({
+          context: {
+            client: { hl: 'en', gl: 'US', clientName: client.clientName, clientVersion: client.clientVersion }
+          },
+          videoId,
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (playerRes.ok) {
+        const playerData = await playerRes.json();
+        const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        if (Array.isArray(tracks) && tracks.length > 0) {
+          const enTrack = tracks.find((t: any) => t.languageCode === 'en') || tracks[0];
+          if (enTrack?.baseUrl) {
+            let captionUrl = enTrack.baseUrl;
+            if (!captionUrl.includes('fmt=')) captionUrl += '&fmt=srv3';
+            console.log(`VIDEO_SUMMARY: found caption track (${enTrack.languageCode}) via ${client.clientName}, fetching XML...`);
+            const xmlRes = await fetch(captionUrl, {
+              headers: { 'User-Agent': UA },
+              signal: AbortSignal.timeout(8000),
+            });
+            if (xmlRes.ok) {
+              const xml = await xmlRes.text();
+              const segments = parseTranscriptXml(xml);
+              if (segments.length > 0) {
+                console.log(`VIDEO_SUMMARY: got ${segments.length} segments via InnerTube ${client.clientName}`);
+                return { text: segments.map(s => s.text).join(' '), segments };
+              }
             }
           }
+        } else {
+          console.log(`VIDEO_SUMMARY: ${client.clientName} returned no caption tracks`);
         }
-      } else {
-        console.log('VIDEO_SUMMARY: InnerTube returned no caption tracks (video may have no captions)');
       }
+    } catch (e) {
+      console.log(`VIDEO_SUMMARY: InnerTube ${client.clientName} failed:`, e);
     }
-  } catch (e) {
-    console.log('VIDEO_SUMMARY: InnerTube player API failed:', e);
   }
 
   // Method 2: Scrape YouTube page for captionTracks (fallback)
