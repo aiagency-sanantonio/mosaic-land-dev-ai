@@ -1,4 +1,4 @@
-import { Mountain, FileSearch, Map, Building2, Link } from 'lucide-react';
+import { Mountain, FileSearch, Map, Building2, Link, Youtube } from 'lucide-react';
 
 export function EmptyState() {
   const suggestions = [
@@ -21,6 +21,11 @@ export function EmptyState() {
       icon: Link,
       title: 'Analyze a URL',
       description: 'Paste a public URL to get a grounded summary with sources',
+    },
+    {
+      icon: Youtube,
+      title: 'Summarize a Video',
+      description: 'Paste a YouTube link for a quick transcript summary',
     },
   ];
 
