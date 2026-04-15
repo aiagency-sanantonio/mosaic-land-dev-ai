@@ -24,21 +24,29 @@ DOCUMENT_SEARCH — specific document content, contracts, proposals, surveys
 
 HYBRID — needs both structured data and documents (e.g. "full status update for X project")
 
-SAVED_LINK_SEARCH — user is asking about saved web links, bookmarks, or websites the team has saved (e.g. "what links do we have for Fischer Ranch", "find saved link for TCEQ", "show me vendor links")
+URL_RESEARCH — user is asking about, referencing, or wants analysis of a specific web URL. This includes:
+- A message containing a URL (e.g. "what is this? https://...")
+- Referencing a URL from chat history (e.g. "summarize that link", "do the same thing but with this one", "how many lots are on that page?", "can you research the first link?")
+Extract the URL into the "url" field. If the URL appeared in chat history (not the current message), still extract it.
+
+SAVED_LINK_SEARCH — user is asking about saved web links, bookmarks, or websites the team has saved (e.g. "what links do we have for Fischer Ranch", "find saved link for TCEQ", "show me vendor links", "where are the district maps again?")
+Extract the core topic/entity keywords into "search_keywords" (e.g. "district maps" from "where are the district maps again?", "TCEQ" from "do we have a TCEQ link saved?").
 
 CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
 
 If the chat history shows the assistant just asked a clarifying question and the user's current message is a short follow-up answer (e.g. "all", "yes", "all of the above", a project name, or a list of components), do NOT return CLARIFY. Instead, combine the original question from chat history with the user's answer and classify the combined intent as AGGREGATE, STATUS_LOOKUP, DOCUMENT_SEARCH, or HYBRID accordingly.
 
-Return: { "query_type": "...", "project_name": "name or null", "project_names": ["name1", "name2"] or null, "clarify_question": "question to ask user or null", "reasoning": "one sentence" }
+Return: { "query_type": "...", "project_name": "name or null", "project_names": ["name1", "name2"] or null, "clarify_question": "question to ask user or null", "url": "extracted URL or null", "search_keywords": "extracted topic keywords or null", "reasoning": "one sentence" }
 
 If the question mentions two or more projects (e.g. "compare bids for Fischer Ranch and Clearwater"), populate "project_names" with ALL of them and set "project_name" to the first one. If only one project is mentioned, set "project_names" to null.`;
 
 interface ClassifyResult {
-  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY' | 'SAVED_LINK_SEARCH';
+  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY' | 'SAVED_LINK_SEARCH' | 'URL_RESEARCH';
   project_name: string | null;
   project_names: string[] | null;
   clarify_question: string | null;
+  url?: string | null;
+  search_keywords?: string | null;
   reasoning: string;
 }
 
@@ -833,7 +841,7 @@ function detectSaveLinkCommand(msg: string): boolean {
 // ── Search saved web links ──
 async function searchSavedLinks(
   supabaseAdmin: any,
-  query: string,
+  searchKeywords: string | null,
   projectName: string | null
 ): Promise<string> {
   let q = supabaseAdmin
@@ -843,24 +851,35 @@ async function searchSavedLinks(
     .order('created_at', { ascending: false })
     .limit(20);
 
-  // Apply filters
+  // Apply filters: prefer search_keywords from classifier, fall back to project_name
   if (projectName) {
     q = q.ilike('project_name', `%${projectName}%`);
-  } else if (query) {
-    q = q.or(`name.ilike.%${query}%,project_name.ilike.%${query}%,url.ilike.%${query}%`);
   }
 
-  const { data, error } = await q;
+  const { data: allData, error } = await q;
   if (error) {
     console.error('searchSavedLinks error:', error);
     return 'I encountered an error searching the saved links.';
   }
-  if (!data || data.length === 0) {
+
+  // Client-side keyword filtering for better multi-keyword matching
+  let filtered = allData || [];
+  if (searchKeywords && !projectName) {
+    const keywords = searchKeywords.toLowerCase().split(/\s+/).filter(k => k.length > 2);
+    if (keywords.length > 0) {
+      filtered = filtered.filter((link: any) => {
+        const haystack = `${link.name} ${link.project_name || ''} ${link.url} ${(link.categories || []).join(' ')} ${link.notes || ''}`.toLowerCase();
+        return keywords.some(kw => haystack.includes(kw));
+      });
+    }
+  }
+
+  if (filtered.length === 0) {
     return 'No saved web links found matching your query. You can add links from the **Web Links** page or by using the "Save this link" button after a URL research.';
   }
 
-  let md = `## Saved Web Links\n\nFound **${data.length}** link(s):\n\n`;
-  for (const link of data) {
+  let md = `## Saved Web Links\n\nFound **${filtered.length}** link(s):\n\n`;
+  for (const link of filtered) {
     md += `### [${link.name}](${link.url})\n`;
     if (link.project_name) md += `**Project:** ${link.project_name}\n`;
     if (link.categories?.length) md += `**Categories:** ${link.categories.join(', ')}\n`;
@@ -1039,7 +1058,7 @@ serve(async (req) => {
 
     // Append shared team knowledge (already fetched in parallel with message-based matching)
     // Re-fetch with project_name now that classification is complete
-    const { query_type, project_name, project_names, clarify_question } = classification;
+    const { query_type, project_name, project_names, clarify_question, url: classifiedUrl, search_keywords } = classification;
     let knowledgeText = systemKnowledge;
     if (project_name && !knowledgeText) {
       knowledgeText = await fetchSystemKnowledge(supabase, message, project_name);
@@ -1069,11 +1088,47 @@ serve(async (req) => {
       );
     }
 
-    // SAVED_LINK_SEARCH — query saved_web_links and return formatted results
+    // URL_RESEARCH via classifier (handles URLs from chat history that pre-classifier missed)
+    if (query_type === 'URL_RESEARCH' && classifiedUrl) {
+      console.log('URL_RESEARCH (classifier) triggered for:', classifiedUrl);
+      try {
+        const research = await summarizeUrlWithPerplexity({
+          url: classifiedUrl,
+          userMessage: message,
+          chatHistory: chatHistory || '',
+        });
+
+        const responseText = research.text;
+
+        if (callback_url && job_id) {
+          await fetch(callback_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_id, response: responseText }),
+          });
+        }
+
+        await supabase.from('retrieval_logs').insert({
+          thread_id: threadId || null,
+          user_id: userId || null,
+          question: message,
+          query_type: 'URL_RESEARCH',
+          top_sources: research.citations.map((c: string) => ({ url: c })),
+        });
+
+        return new Response(
+          JSON.stringify({ success: true, query_type: 'URL_RESEARCH' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (urlErr) {
+        console.error('URL_RESEARCH (classifier) failed, falling through:', urlErr);
+      }
+    }
+
+    // SAVED_LINK_SEARCH — query saved_web_links using classifier-extracted keywords
     if (query_type === 'SAVED_LINK_SEARCH') {
-      console.log('SAVED_LINK_SEARCH query detected');
-      const searchTerm = project_name || message.replace(/(?:find|show|get|list|search|saved|links?|web|bookmarks?|for|me|do we have|what)/gi, '').trim();
-      const response = await searchSavedLinks(supabase, searchTerm, project_name);
+      console.log('SAVED_LINK_SEARCH query detected, search_keywords:', search_keywords);
+      const response = await searchSavedLinks(supabase, search_keywords || null, project_name);
 
       if (callback_url && job_id) {
         await fetch(callback_url, {
