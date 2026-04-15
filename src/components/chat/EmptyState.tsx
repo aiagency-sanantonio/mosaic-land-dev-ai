@@ -17,6 +17,11 @@ export function EmptyState() {
       title: 'Zoning Analysis',
       description: 'Get zoning and development details',
     },
+    {
+      icon: Link,
+      title: 'Analyze a URL',
+      description: 'Paste a public URL to get a grounded summary with sources',
+    },
   ];
 
   return (
@@ -32,7 +37,7 @@ export function EmptyState() {
         Your AI assistant for land development intelligence. Ask questions about your documents, parcels, and projects.
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-2xl w-full">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 max-w-3xl w-full">
         {suggestions.map((item, index) => (
           <div
             key={item.title}
