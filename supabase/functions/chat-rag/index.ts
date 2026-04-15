@@ -768,7 +768,52 @@ function parseTranscriptXml(xml: string): { start: number; text: string }[] {
 async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; segments: { start: number; text: string }[] } | null> {
   const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
-  // Method 1: Scrape YouTube page for captionTracks
+  // Method 1: YouTube InnerTube API (most reliable from server-side)
+  try {
+    console.log('VIDEO_SUMMARY: trying InnerTube player API...');
+    const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
+      body: JSON.stringify({
+        context: {
+          client: { hl: 'en', gl: 'US', clientName: 'WEB', clientVersion: '2.20240313.05.00' }
+        },
+        videoId,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (playerRes.ok) {
+      const playerData = await playerRes.json();
+      const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (Array.isArray(tracks) && tracks.length > 0) {
+        // Prefer English, fall back to first
+        const enTrack = tracks.find((t: any) => t.languageCode === 'en') || tracks[0];
+        if (enTrack?.baseUrl) {
+          let captionUrl = enTrack.baseUrl;
+          if (!captionUrl.includes('fmt=')) captionUrl += '&fmt=srv3';
+          console.log(`VIDEO_SUMMARY: found caption track (${enTrack.languageCode}), fetching XML...`);
+          const xmlRes = await fetch(captionUrl, {
+            headers: { 'User-Agent': UA },
+            signal: AbortSignal.timeout(8000),
+          });
+          if (xmlRes.ok) {
+            const xml = await xmlRes.text();
+            const segments = parseTranscriptXml(xml);
+            if (segments.length > 0) {
+              console.log(`VIDEO_SUMMARY: got ${segments.length} segments via InnerTube`);
+              return { text: segments.map(s => s.text).join(' '), segments };
+            }
+          }
+        }
+      } else {
+        console.log('VIDEO_SUMMARY: InnerTube returned no caption tracks (video may have no captions)');
+      }
+    }
+  } catch (e) {
+    console.log('VIDEO_SUMMARY: InnerTube player API failed:', e);
+  }
+
+  // Method 2: Scrape YouTube page for captionTracks (fallback)
   try {
     console.log('VIDEO_SUMMARY: trying YouTube page scrape for captions...');
     const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
@@ -777,18 +822,14 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
     });
     if (pageRes.ok) {
       const html = await pageRes.text();
-      // Extract captionTracks JSON from ytInitialPlayerResponse
       const captionMatch = html.match(/"captionTracks"\s*:\s*(\[.*?\])/);
       if (captionMatch) {
         try {
           const tracks = JSON.parse(captionMatch[1]);
-          // Prefer English, fall back to first track
           const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('.en')) || tracks[0];
           if (enTrack?.baseUrl) {
             let captionUrl = enTrack.baseUrl;
-            // Ensure we get XML format
             if (!captionUrl.includes('fmt=')) captionUrl += '&fmt=srv3';
-            console.log('VIDEO_SUMMARY: found caption track, fetching transcript XML...');
             const xmlRes = await fetch(captionUrl, {
               headers: { 'User-Agent': UA },
               signal: AbortSignal.timeout(8000),
@@ -805,17 +846,14 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
         } catch (parseErr) {
           console.log('VIDEO_SUMMARY: failed to parse captionTracks JSON:', parseErr);
         }
-      } else {
-        console.log('VIDEO_SUMMARY: no captionTracks found in page HTML');
       }
     }
   } catch (e) {
     console.log('VIDEO_SUMMARY: YouTube page scrape failed:', e);
   }
 
-  // Method 2: Direct timedtext API
+  // Method 3: Direct timedtext API
   try {
-    console.log('VIDEO_SUMMARY: trying direct timedtext API...');
     const ttRes = await fetch(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv3`, {
       headers: { 'User-Agent': UA },
       signal: AbortSignal.timeout(8000),
@@ -830,32 +868,6 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
     }
   } catch (e) {
     console.log('VIDEO_SUMMARY: timedtext API failed:', e);
-  }
-
-  // Method 3: Legacy fallback APIs
-  const fallbackApis = [
-    `https://yt.vl.comp.nus.edu.sg/transcript?v=${videoId}`,
-    `https://youtubetranscript.com/?server_vid2=${videoId}`,
-  ];
-  for (const apiUrl of fallbackApis) {
-    try {
-      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(6000) });
-      if (!res.ok) continue;
-      const contentType = res.headers.get('content-type') || '';
-      let segments: { start: number; text: string }[] = [];
-      if (contentType.includes('application/json')) {
-        const data = await res.json();
-        const arr = Array.isArray(data) ? data : (data.transcript && Array.isArray(data.transcript) ? data.transcript : []);
-        segments = arr.map((s: any) => ({ start: parseFloat(s.start || s.offset || 0), text: String(s.text || s.content || '') }));
-      } else {
-        segments = parseTranscriptXml(await res.text());
-      }
-      if (segments.length > 0) {
-        return { text: segments.map(s => s.text).join(' '), segments };
-      }
-    } catch (e) {
-      console.log(`VIDEO_SUMMARY: fallback API failed for ${apiUrl}:`, e);
-    }
   }
 
   return null;
