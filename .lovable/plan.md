@@ -1,47 +1,39 @@
 
 
-## Plan: Harden URL_RESEARCH Fallback + Add Classification Safety Net
+## Plan: Fix SAVED_LINK_SEARCH Misclassification + Add Fallback
 
-### Issues Found
+### Two Problems
 
-**Bug: Silent empty-context fallback when classifier returns `URL_RESEARCH` without a URL**
-At line 1112, the condition `if (query_type === 'URL_RESEARCH' && classifiedUrl)` skips when `classifiedUrl` is null. But the code then continues past `SAVED_LINK_SEARCH` and falls into the retrieval section. Since `query_type` is `URL_RESEARCH`, none of the retrieval branches (AGGREGATE, STATUS_LOOKUP, DOCUMENT_SEARCH, HYBRID) match — it hits the `else` at line 1240, setting `context = ''`. The user gets an LLM answer with zero retrieval context.
+**Problem 1 — Misclassification:** "Who is Mosaic Land Development?" is classified as `SAVED_LINK_SEARCH` because the classifier sees it as an entity lookup. But the user is asking a general knowledge question about the company — this should be `DOCUMENT_SEARCH` (to check indexed docs) or handled by general LLM knowledge.
 
-**Risk: False URL_RESEARCH classification on database questions**
-No code-level protection exists. A question like "What's the grading cost for Fischer Ranch?" could be misclassified as `URL_RESEARCH` if chat history contains URLs.
+**Problem 2 — Dead-end on zero results:** When `SAVED_LINK_SEARCH` finds no matching links, it returns a hard-coded "No saved web links found" message and exits immediately. There's no fallback to document search, unlike `URL_RESEARCH` which we already fixed.
 
 ### Changes — `supabase/functions/chat-rag/index.ts`
 
-**1. Fallback when `URL_RESEARCH` has no URL or Perplexity fails**
+**1. Update classifier prompt to narrow `SAVED_LINK_SEARCH` scope**
 
-After the `URL_RESEARCH` block (line ~1146), if we didn't return (meaning either `classifiedUrl` was null or Perplexity threw), re-classify `query_type` to `DOCUMENT_SEARCH` so the request falls into the normal retrieval pipeline instead of the empty-context dead end.
+Add explicit guidance: `SAVED_LINK_SEARCH` is ONLY for when the user explicitly asks about saved/bookmarked links (e.g. "what links do we have", "show me saved links", "find the TCEQ link we saved"). General "who is X" or "what is X" questions about companies, entities, or concepts are `DOCUMENT_SEARCH`, not `SAVED_LINK_SEARCH`.
 
-```typescript
-// After line 1146 (end of URL_RESEARCH block)
-// If URL_RESEARCH didn't return (no URL or Perplexity failed), 
-// fall back to document search so we don't hit empty context
-if (query_type === 'URL_RESEARCH') {
-  console.log('URL_RESEARCH did not resolve — falling back to DOCUMENT_SEARCH');
-  classification.query_type = 'DOCUMENT_SEARCH';
-}
+**2. Add fallback when `SAVED_LINK_SEARCH` finds zero results**
+
+Instead of returning the "no links found" dead-end, fall back to `DOCUMENT_SEARCH` so the system can try to answer from indexed documents or general knowledge. Change the flow:
+
+```
+if (filtered.length === 0) → don't return canned message
+  → instead, fall through to DOCUMENT_SEARCH retrieval pipeline
 ```
 
-This requires destructuring `classification` as mutable (currently uses `const { query_type, ... }`). Change to `let` or reassign on the object directly.
-
-**2. No other changes needed**
-
-The classifier prompt already has strong guidance about when to use `URL_RESEARCH` vs database queries. The `try/catch` around Perplexity is already solid. The `SAVED_LINK_SEARCH` gracefully handles zero results. Adding more guardrails (like validating the URL format from the classifier) would over-engineer it — the real fix is just ensuring the fallback doesn't dead-end.
+Implementation: In the main handler, when `SAVED_LINK_SEARCH` returns zero results, re-route `query_type` to `DOCUMENT_SEARCH` and continue instead of returning early. This mirrors the `URL_RESEARCH` fallback pattern already in place.
 
 ### What stays the same
 - No frontend changes
 - No database changes
-- Pre-classifier fast path for explicit URLs unchanged
-- Classifier prompt unchanged
-- `SAVED_LINK_SEARCH` logic unchanged
-- `summarizeUrlWithPerplexity` unchanged
+- `searchSavedLinks` function itself unchanged
+- All other query type handlers unchanged
+- `URL_RESEARCH` fallback unchanged
 
 ### Files changed
 | File | Change |
 |------|--------|
-| `supabase/functions/chat-rag/index.ts` | Add fallback from failed/empty `URL_RESEARCH` to `DOCUMENT_SEARCH` (~3 lines) |
+| `supabase/functions/chat-rag/index.ts` | Narrow `SAVED_LINK_SEARCH` in classifier prompt; add zero-result fallback to `DOCUMENT_SEARCH` |
 
