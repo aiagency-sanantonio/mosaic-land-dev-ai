@@ -841,7 +841,7 @@ function detectSaveLinkCommand(msg: string): boolean {
 // ── Search saved web links ──
 async function searchSavedLinks(
   supabaseAdmin: any,
-  query: string,
+  searchKeywords: string | null,
   projectName: string | null
 ): Promise<string> {
   let q = supabaseAdmin
@@ -851,24 +851,35 @@ async function searchSavedLinks(
     .order('created_at', { ascending: false })
     .limit(20);
 
-  // Apply filters
+  // Apply filters: prefer search_keywords from classifier, fall back to project_name
   if (projectName) {
     q = q.ilike('project_name', `%${projectName}%`);
-  } else if (query) {
-    q = q.or(`name.ilike.%${query}%,project_name.ilike.%${query}%,url.ilike.%${query}%`);
   }
 
-  const { data, error } = await q;
+  const { data: allData, error } = await q;
   if (error) {
     console.error('searchSavedLinks error:', error);
     return 'I encountered an error searching the saved links.';
   }
-  if (!data || data.length === 0) {
+
+  // Client-side keyword filtering for better multi-keyword matching
+  let filtered = allData || [];
+  if (searchKeywords && !projectName) {
+    const keywords = searchKeywords.toLowerCase().split(/\s+/).filter(k => k.length > 2);
+    if (keywords.length > 0) {
+      filtered = filtered.filter((link: any) => {
+        const haystack = `${link.name} ${link.project_name || ''} ${link.url} ${(link.categories || []).join(' ')} ${link.notes || ''}`.toLowerCase();
+        return keywords.some(kw => haystack.includes(kw));
+      });
+    }
+  }
+
+  if (filtered.length === 0) {
     return 'No saved web links found matching your query. You can add links from the **Web Links** page or by using the "Save this link" button after a URL research.';
   }
 
-  let md = `## Saved Web Links\n\nFound **${data.length}** link(s):\n\n`;
-  for (const link of data) {
+  let md = `## Saved Web Links\n\nFound **${filtered.length}** link(s):\n\n`;
+  for (const link of filtered) {
     md += `### [${link.name}](${link.url})\n`;
     if (link.project_name) md += `**Project:** ${link.project_name}\n`;
     if (link.categories?.length) md += `**Categories:** ${link.categories.join(', ')}\n`;
