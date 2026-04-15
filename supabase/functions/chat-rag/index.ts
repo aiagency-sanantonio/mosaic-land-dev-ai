@@ -2,8 +2,9 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
 const TERRACHAT_SYSTEM_PROMPT = `CRITICAL RULE — VERIFIED BID DATA:
@@ -11,6 +12,9 @@ const TERRACHAT_SYSTEM_PROMPT = `CRITICAL RULE — VERIFIED BID DATA:
 2. If the context contains a section labeled "VERIFIED BID DATA", you MUST lead your response with those exact figures. Never say you do not have bid data or that bid tabulations are unavailable if either section exists — they contain official contractor bids.
 3. The most recent dates take priority. Always surface the most recent dated record first.
 4. NEVER use phrases like "I don't have verified bid data", "no bid tabulations available", "I couldn't find bid data" or similar when VERIFIED BID DATA or MOST RECENT VERIFIED BID SNAPSHOT sections are present in the context. This is a hard rule with zero exceptions.
+
+CRITICAL RULE — PROJECT DATA ISOLATION:
+When answering a question about a specific project, ONLY use data that is explicitly associated with that project. Do NOT combine or blend data from other projects into the answer, even if those other projects appear in the retrieved context. If you see data from multiple projects in the context, clearly separate them and only present the data for the project the user asked about. If no data is found for the specific project, say so — do not substitute data from a different project.
 
 You are TerraChat, the AI assistant for Mosaic Land Development — a Texas land development company managing 30+ active residential projects. Be specific, always cite sources (file name, source type, date). For costs: show the source tier (bid tab vs OPC) and flag data older than 2 years. For permits: highlight EXPIRED and CRITICAL urgency prominently. If data is incomplete or conflicting, say so explicitly. Do not fabricate numbers. Texas context: MUDs, PIDs, TIRZs, TxDOT, TCEQ, TPDES, plat bonds. When answering cost questions, ALWAYS prioritize records under VERIFIED BID DATA over OTHER COST DATA. If verified bid data exists for a project, lead your answer with those figures and only reference other cost data as supplementary context. When citing sources, always include the full clickable markdown link provided in the context. Format source citations as: 📄 filename. Never cite a source without its link. If no link is available, note the filename only.`;
 
@@ -45,7 +49,14 @@ Return: { "query_type": "...", "project_name": "name or null", "project_names": 
 If the question mentions two or more projects (e.g. "compare bids for Fischer Ranch and Clearwater"), populate "project_names" with ALL of them and set "project_name" to the first one. If only one project is mentioned, set "project_names" to null.`;
 
 interface ClassifyResult {
-  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY' | 'SAVED_LINK_SEARCH' | 'URL_RESEARCH';
+  query_type:
+    | "AGGREGATE"
+    | "STATUS_LOOKUP"
+    | "DOCUMENT_SEARCH"
+    | "HYBRID"
+    | "CLARIFY"
+    | "SAVED_LINK_SEARCH"
+    | "URL_RESEARCH";
   project_name: string | null;
   project_names: string[] | null;
   clarify_question: string | null;
@@ -55,37 +66,40 @@ interface ClassifyResult {
 }
 
 function extractJsonObject(text: string): string {
-  const start = text.indexOf('{');
-  if (start === -1) throw new Error('No JSON object found in classifier response');
+  const start = text.indexOf("{");
+  if (start === -1) throw new Error("No JSON object found in classifier response");
   let depth = 0;
   for (let i = start; i < text.length; i++) {
-    if (text[i] === '{') depth++;
-    else if (text[i] === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
   }
-  throw new Error('Unterminated JSON object in classifier response');
+  throw new Error("Unterminated JSON object in classifier response");
 }
 
-async function classifyQuery(message: string, chatHistory: string = ''): Promise<ClassifyResult> {
-  const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+async function classifyQuery(message: string, chatHistory: string = ""): Promise<ClassifyResult> {
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not configured");
 
-  const trimmedHistory = chatHistory ? chatHistory.slice(-1500) : '';
+  const trimmedHistory = chatHistory ? chatHistory.slice(-1500) : "";
   const userContent = trimmedHistory
     ? `## Recent Chat History\n${trimmedHistory}\n\n## Current Question\n${message}`
     : message;
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 350,
       system: CLASSIFY_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userContent }],
+      messages: [{ role: "user", content: userContent }],
     }),
   });
 
@@ -95,10 +109,9 @@ async function classifyQuery(message: string, chatHistory: string = ''): Promise
   }
 
   const data = await res.json();
-  const text = data.content?.[0]?.text || '';
-  console.log('classifyQuery raw response:', text);
+  const text = data.content?.[0]?.text || "";
+  console.log("classifyQuery raw response:", text);
 
-  // Extract the first valid JSON object using brace counting (handles trailing text from LLM)
   const jsonStr = extractJsonObject(text);
   return JSON.parse(jsonStr) as ClassifyResult;
 }
@@ -110,7 +123,8 @@ function extractDateFromFilename(fileName: string | null): Date | null {
     const d = new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`);
     if (!isNaN(d.getTime())) return d;
   }
-  const yymmddMatch = fileName.match(/^(\d{2})(\d{2})(\d{2})/) || fileName.match(/[_\-](\d{2})(\d{2})(\d{2})(?:\.|_|$)/);
+  const yymmddMatch =
+    fileName.match(/^(\d{2})(\d{2})(\d{2})/) || fileName.match(/[_\-](\d{2})(\d{2})(\d{2})(?:\.|_|$)/);
   if (yymmddMatch) {
     const yy = parseInt(yymmddMatch[1]);
     const year = yy >= 50 ? 1900 + yy : 2000 + yy;
@@ -122,52 +136,62 @@ function extractDateFromFilename(fileName: string | null): Date | null {
 
 function buildDropboxUrl(filePath: string | null): string | null {
   if (!filePath) return null;
-  const encoded = filePath.split('/').map(segment => encodeURIComponent(segment)).join('/');
+  const encoded = filePath
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
   return `https://www.dropbox.com/home${encoded}`;
 }
 
 function getSourcePriority(filePath: string | null): { rank: number; label: string } {
-  const fp = (filePath || '').toLowerCase();
-  if (fp.includes('zz md_50kft') || fp.includes('recent bids') || fp.includes('average cost')) {
-    return { rank: 0, label: 'HIGHEST (master cost)' };
+  const fp = (filePath || "").toLowerCase();
+  if (fp.includes("zz md_50kft") || fp.includes("recent bids") || fp.includes("average cost")) {
+    return { rank: 0, label: "HIGHEST (master cost)" };
   }
-  if (fp.includes('bid tab')) {
-    return { rank: 1, label: 'HIGH (bid tab)' };
+  if (fp.includes("bid tab")) {
+    return { rank: 1, label: "HIGH (bid tab)" };
   }
-  if (fp.includes('opc') || fp.includes('opinion')) {
-    return { rank: 3, label: 'LOW (OPC)' };
+  if (fp.includes("opc") || fp.includes("opinion")) {
+    return { rank: 3, label: "LOW (OPC)" };
   }
-  return { rank: 2, label: 'NORMAL' };
+  return { rank: 2, label: "NORMAL" };
 }
 
 interface BidSummary {
   hasBids: boolean;
-  topBid: { value: number; metric: string; date: string | null; source: string | null; dropboxUrl: string | null } | null;
+  topBid: {
+    value: number;
+    metric: string;
+    date: string | null;
+    source: string | null;
+    dropboxUrl: string | null;
+  } | null;
   allBidRows: any[];
 }
 
 function isBidRelatedQuestion(message: string): boolean {
   const lowerMsg = message.toLowerCase();
-  return /\b(bid|bids|bid total|bid amount|bid comparison|bid tab|contractor bid|bid result|bid tabulation)\b/.test(lowerMsg);
+  return /\b(bid|bids|bid total|bid amount|bid comparison|bid tab|contractor bid|bid result|bid tabulation)\b/.test(
+    lowerMsg,
+  );
 }
 
 function buildDeterministicBidResponse(summary: BidSummary, projectName: string | null): string {
-  if (!summary.hasBids || !summary.topBid) return '';
+  if (!summary.hasBids || !summary.topBid) return "";
 
-  const formatCurrency = (v: number) => '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatCurrency = (v: number) =>
+    "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const top = summary.topBid;
-  const projLabel = projectName || 'the project';
+  const projLabel = projectName || "the project";
 
-  // Group allBidRows by source_file_name to detect bid tabulations
   const bySource: Record<string, any[]> = {};
   for (const r of summary.allBidRows) {
-    const key = r.source_file_name || '_unknown_';
+    const key = r.source_file_name || "_unknown_";
     if (!bySource[key]) bySource[key] = [];
     bySource[key].push(r);
   }
 
-  // Check if the top bid's source file is a multi-contractor bid tabulation
-  const topSourceRows = bySource[top.source || '_unknown_'] || [];
+  const topSourceRows = bySource[top.source || "_unknown_"] || [];
   const isBidTab = topSourceRows.length >= 3;
 
   const lines: string[] = [];
@@ -178,7 +202,9 @@ function buildDeterministicBidResponse(summary: BidSummary, projectName: string 
     const minVal = Math.min(...values);
     const maxVal = Math.max(...values);
     const count = topSourceRows.length;
-    lines.push(`**Apparent low bid: ${formatCurrency(minVal)} (lowest of ${count} contractor bids ranging up to ${formatCurrency(maxVal)})**`);
+    lines.push(
+      `**Apparent low bid: ${formatCurrency(minVal)} (lowest of ${count} contractor bids ranging up to ${formatCurrency(maxVal)})**`,
+    );
   } else {
     lines.push(`**Most recent verified bid total: ${formatCurrency(top.value)}**`);
   }
@@ -190,87 +216,83 @@ function buildDeterministicBidResponse(summary: BidSummary, projectName: string 
     lines.push(`- **Source:** ${link}`);
   }
 
-  // Show individual bids from the tabulation
   if (isBidTab) {
     const sorted = [...topSourceRows].sort((a, b) => a.value - b.value);
-    lines.push('');
-    lines.push('### Contractor Bids');
-    lines.push('| # | Amount |');
-    lines.push('|---|--------|');
+    lines.push("");
+    lines.push("### Contractor Bids");
+    lines.push("| # | Amount |");
+    lines.push("|---|--------|");
     sorted.forEach((r: any, i: number) => {
       lines.push(`| ${i + 1} | ${formatCurrency(r.value)} |`);
     });
   }
 
-  // Add other bid records from different source files
-  const otherRows = summary.allBidRows.filter(r => (r.source_file_name || '_unknown_') !== (top.source || '_unknown_')).slice(0, 10);
+  const otherRows = summary.allBidRows
+    .filter((r) => (r.source_file_name || "_unknown_") !== (top.source || "_unknown_"))
+    .slice(0, 10);
   if (otherRows.length > 0) {
-    lines.push('');
-    lines.push('### Other Verified Bid Records');
-    lines.push('| Date | Source | Metric | Amount |');
-    lines.push('|------|--------|--------|--------|');
+    lines.push("");
+    lines.push("### Other Verified Bid Records");
+    lines.push("| Date | Source | Metric | Amount |");
+    lines.push("|------|--------|--------|--------|");
     for (const r of otherRows) {
-      const date = r.date || 'No date';
-      const src = r.source_file_name || 'Unknown';
+      const date = r.date || "No date";
+      const src = r.source_file_name || "Unknown";
       const srcCell = r.dropbox_url ? `[${src}](${r.dropbox_url})` : src;
-      const metric = r.metric_name || '';
+      const metric = r.metric_name || "";
       const val = formatCurrency(r.value);
       lines.push(`| ${date} | ${srcCell} | ${metric} | ${val} |`);
     }
   }
 
-  lines.push('\n*This data comes from verified bid tabulation documents in the system.*');
-  return lines.join('\n');
+  lines.push("\n*This data comes from verified bid tabulation documents in the system.*");
+  return lines.join("\n");
 }
 
 function buildComparisonBidResponse(summaries: { projectName: string; summary: BidSummary }[]): string {
-  const formatCurrency = (v: number) => '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const valid = summaries.filter(s => s.summary.hasBids && s.summary.topBid);
+  const formatCurrency = (v: number) =>
+    "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const valid = summaries.filter((s) => s.summary.hasBids && s.summary.topBid);
 
-  if (valid.length === 0) return '';
+  if (valid.length === 0) return "";
 
   const lines: string[] = [];
-  lines.push('## Verified Bid Comparison\n');
+  lines.push("## Verified Bid Comparison\n");
 
-  // Side-by-side summary table
-  lines.push('| Project | Most Recent Bid Total | Date | Source |');
-  lines.push('|---------|----------------------|------|--------|');
+  lines.push("| Project | Most Recent Bid Total | Date | Source |");
+  lines.push("|---------|----------------------|------|--------|");
   for (const { projectName, summary } of valid) {
     const top = summary.topBid!;
-    const src = top.source
-      ? (top.dropboxUrl ? `[${top.source}](${top.dropboxUrl})` : top.source)
-      : 'N/A';
-    lines.push(`| **${projectName}** | ${formatCurrency(top.value)} | ${top.date || 'N/A'} | 📄 ${src} |`);
+    const src = top.source ? (top.dropboxUrl ? `[${top.source}](${top.dropboxUrl})` : top.source) : "N/A";
+    lines.push(`| **${projectName}** | ${formatCurrency(top.value)} | ${top.date || "N/A"} | 📄 ${src} |`);
   }
 
-  // Per-project detail sections
   for (const { projectName, summary } of valid) {
     const others = summary.allBidRows.slice(1, 6);
     if (others.length > 0) {
-      lines.push('');
+      lines.push("");
       lines.push(`### ${projectName} — Other Bid Records`);
-      lines.push('| Date | Source | Metric | Amount |');
-      lines.push('|------|--------|--------|--------|');
+      lines.push("| Date | Source | Metric | Amount |");
+      lines.push("|------|--------|--------|--------|");
       for (const r of others) {
-        const date = r.date || 'No date';
-        const src = r.source_file_name || 'Unknown';
+        const date = r.date || "No date";
+        const src = r.source_file_name || "Unknown";
         const srcCell = r.dropbox_url ? `[${src}](${r.dropbox_url})` : src;
-        const metric = r.metric_name || '';
+        const metric = r.metric_name || "";
         const val = formatCurrency(r.value);
         lines.push(`| ${date} | ${srcCell} | ${metric} | ${val} |`);
       }
     }
   }
 
-  // Note projects with no bids
-  const missing = summaries.filter(s => !s.summary.hasBids);
+  const missing = summaries.filter((s) => !s.summary.hasBids);
   if (missing.length > 0) {
-    lines.push('');
-    lines.push(`> ⚠️ No verified bid data found for: ${missing.map(m => m.projectName).join(', ')}`);
+    lines.push("");
+    lines.push(`> ⚠️ No verified bid data found for: ${missing.map((m) => m.projectName).join(", ")}`);
   }
 
-  lines.push('\n*This data comes from verified bid tabulation documents in the system.*');
-  return lines.join('\n');
+  lines.push("\n*This data comes from verified bid tabulation documents in the system.*");
+  return lines.join("\n");
 }
 
 // ============================================================
@@ -282,38 +304,39 @@ function buildComparisonBidResponse(summaries: { projectName: string; summary: B
 async function retrieveVerifiedBids(projectName: string | null): Promise<BidSummary> {
   if (!projectName) return { hasBids: false, topBid: null, allBidRows: [] };
 
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-  );
+  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-  // Query bid rows using BOTH filename and path signals
-  // Use OR across multiple bid keyword patterns
-  const bidPatterns = ['%bid tab%', '%bid comparison%', '%bid results%', '%bid proposal%', '%recent bids%', '%bid tabulation%'];
+  const bidPatterns = [
+    "%bid tab%",
+    "%bid comparison%",
+    "%bid results%",
+    "%bid proposal%",
+    "%recent bids%",
+    "%bid tabulation%",
+  ];
 
-  const orFilters = bidPatterns.flatMap(p => [
-    `source_file_name.ilike.${p}`,
-    `source_file_path.ilike.${p}`,
-  ]).join(',');
+  const orFilters = bidPatterns
+    .flatMap((p) => [`source_file_name.ilike.${p}`, `source_file_path.ilike.${p}`])
+    .join(",");
 
+  // FIX (Change 2): Use exact match instead of substring match
   const { data, error } = await supabase
-    .from('project_data')
-    .select('project_name, category, metric_name, value, unit, date, source_file_name, source_file_path, confidence')
-    .ilike('project_name', `%${projectName}%`)
+    .from("project_data")
+    .select("project_name, category, metric_name, value, unit, date, source_file_name, source_file_path, confidence")
+    .ilike("project_name", projectName)
     .or(orFilters)
-    .order('date', { ascending: false })
+    .order("date", { ascending: false })
     .limit(100);
 
   if (error) {
-    console.error('retrieveVerifiedBids query error:', error.message);
+    console.error("retrieveVerifiedBids query error:", error.message);
     return { hasBids: false, topBid: null, allBidRows: [] };
   }
 
   console.log(`retrieveVerifiedBids: raw rows returned=${data?.length ?? 0} for project="${projectName}"`);
 
   if (!data || data.length === 0) {
-    // Fallback: strip unit/phase/section suffixes and retry
-    const strippedName = projectName.replace(/\s+(unit|phase|section)\s+\d+.*/i, '');
+    const strippedName = projectName.replace(/\s+(unit|phase|section)\s+\d+.*/i, "");
     if (strippedName !== projectName) {
       console.log(`retrieveVerifiedBids: retrying with stripped name="${strippedName}"`);
       return retrieveVerifiedBids(strippedName);
@@ -322,12 +345,12 @@ async function retrieveVerifiedBids(projectName: string | null): Promise<BidSumm
   }
 
   const now = new Date();
-  const rows = data.map(r => {
+  const rows = data.map((r) => {
     const priority = getSourcePriority(r.source_file_path);
     let effectiveDate: string | null = r.date;
     if (!r.date) {
       const fileDate = extractDateFromFilename(r.source_file_name);
-      if (fileDate) effectiveDate = `${fileDate.toISOString().split('T')[0]} (from filename)`;
+      if (fileDate) effectiveDate = `${fileDate.toISOString().split("T")[0]} (from filename)`;
     }
     return {
       project_name: r.project_name,
@@ -344,26 +367,31 @@ async function retrieveVerifiedBids(projectName: string | null): Promise<BidSumm
     };
   });
 
-  // Filter out small line-item values that aren't real bid totals
   const MIN_BID_VALUE = 100000;
-  const topCandidates = rows.filter(r => r.value >= MIN_BID_VALUE);
+  const topCandidates = rows.filter((r) => r.value >= MIN_BID_VALUE);
 
-  // Prioritize significant top-line metrics
-  const significantMetrics = ['total_cost', 'bid_amount', 'estimated_cost', 'contract_amount', 'base_bid'];
-  const significantRows = (topCandidates.length > 0 ? topCandidates : rows).filter(r =>
-    significantMetrics.some(m => (r.metric_name || '').toLowerCase().includes(m.replace('_', ' ')) || (r.metric_name || '').toLowerCase().includes(m))
+  const significantMetrics = ["total_cost", "bid_amount", "estimated_cost", "contract_amount", "base_bid"];
+  const significantRows = (topCandidates.length > 0 ? topCandidates : rows).filter((r) =>
+    significantMetrics.some(
+      (m) =>
+        (r.metric_name || "").toLowerCase().includes(m.replace("_", " ")) ||
+        (r.metric_name || "").toLowerCase().includes(m),
+    ),
   );
 
-  // Sort by source priority first, then date descending
-  const sortedRows = (significantRows.length > 0 ? significantRows : (topCandidates.length > 0 ? topCandidates : rows)).sort((a, b) => {
+  const sortedRows = (
+    significantRows.length > 0 ? significantRows : topCandidates.length > 0 ? topCandidates : rows
+  ).sort((a, b) => {
     if (a._rank !== b._rank) return a._rank - b._rank;
-    const dateA = a.date ? new Date(String(a.date).replace(' (from filename)', '')).getTime() : 0;
-    const dateB = b.date ? new Date(String(b.date).replace(' (from filename)', '')).getTime() : 0;
+    const dateA = a.date ? new Date(String(a.date).replace(" (from filename)", "")).getTime() : 0;
+    const dateB = b.date ? new Date(String(b.date).replace(" (from filename)", "")).getTime() : 0;
     return dateB - dateA;
   });
 
   const topBid = sortedRows[0];
-  console.log(`retrieveVerifiedBids: significant_rows=${significantRows.length}, top_bid_value=${topBid.value}, top_bid_source=${topBid.source_file_name}, top_bid_date=${topBid.date}`);
+  console.log(
+    `retrieveVerifiedBids: significant_rows=${significantRows.length}, top_bid_value=${topBid.value}, top_bid_source=${topBid.source_file_name}, top_bid_date=${topBid.date}`,
+  );
 
   return {
     hasBids: true,
@@ -382,29 +410,30 @@ async function retrieveAggregate(
   projectName: string | null,
   message: string,
   userId: string,
-  threadId: string
+  threadId: string,
 ): Promise<{ context: string; bidSummary: BidSummary }> {
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-  );
+  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-  let query = supabase.from('project_data').select('project_name, category, metric_name, value, unit, date, source_file_name, source_file_path, confidence');
+  let query = supabase
+    .from("project_data")
+    .select("project_name, category, metric_name, value, unit, date, source_file_name, source_file_path, confidence");
   if (projectName) {
-    query = query.or(`project_name.ilike.%${projectName}%,source_file_name.ilike.%${projectName}%`);
+    // FIX (Change 1): Use exact-ish match instead of substring match
+    // project_name must match exactly (case-insensitive) OR the source file path must be inside the project's folder
+    query = query.or(`project_name.ilike.${projectName},source_file_path.ilike./1-Projects/${projectName}/%`);
   }
-  const { data, error } = await query.order('date', { ascending: false }).limit(500);
+  const { data, error } = await query.order("date", { ascending: false }).limit(500);
   if (error) throw new Error(`project_data query failed: ${error.message}`);
 
   if (!data || data.length === 0) {
-    console.log('retrieveAggregate: no structured data found, falling back to document search');
+    console.log("retrieveAggregate: no structured data found, falling back to document search");
     const docContext = await retrieveDocuments(message, projectName, userId, threadId);
     return { context: docContext, bidSummary: { hasBids: false, topBid: null, allBidRows: [] } };
   }
 
   const now = new Date();
 
-  const rows = (data || []).map(r => {
+  const rows = (data || []).map((r) => {
     const priority = getSourcePriority(r.source_file_path);
 
     let data_currency_flag: string | null = null;
@@ -414,23 +443,23 @@ async function retrieveAggregate(
       if (fileDate) {
         const ageMs = now.getTime() - fileDate.getTime();
         const ageDays = ageMs / (1000 * 60 * 60 * 24);
-        const dateStr = fileDate.toISOString().split('T')[0];
+        const dateStr = fileDate.toISOString().split("T")[0];
         effectiveDate = `${dateStr} (from filename)`;
         if (ageDays > 730) {
-          data_currency_flag = '⚠️ Data is over 2 years old — recommend getting fresh bids';
+          data_currency_flag = "⚠️ Data is over 2 years old — recommend getting fresh bids";
         } else if (ageDays > 365) {
-          data_currency_flag = '⚠️ Data is 1-2 years old';
+          data_currency_flag = "⚠️ Data is 1-2 years old";
         }
       } else {
-        data_currency_flag = '⚠️ No date available — cannot assess data currency';
+        data_currency_flag = "⚠️ No date available — cannot assess data currency";
       }
     } else {
       const ageMs = now.getTime() - new Date(r.date).getTime();
       const ageDays = ageMs / (1000 * 60 * 60 * 24);
       if (ageDays > 730) {
-        data_currency_flag = '⚠️ Data is over 2 years old — recommend getting fresh bids';
+        data_currency_flag = "⚠️ Data is over 2 years old — recommend getting fresh bids";
       } else if (ageDays > 365) {
-        data_currency_flag = '⚠️ Data is 1-2 years old';
+        data_currency_flag = "⚠️ Data is 1-2 years old";
       }
     }
 
@@ -454,48 +483,48 @@ async function retrieveAggregate(
   const strip = (r: typeof rows) => r.map(({ _rank, ...rest }) => rest);
   const context = `=== COST DATA ===\n${JSON.stringify(strip(rows.slice(0, 80)))}`;
 
-  // bidSummary is no longer computed here — it comes from retrieveVerifiedBids()
   return { context, bidSummary: { hasBids: false, topBid: null, allBidRows: [] } };
 }
 
-
 async function retrieveStatus(projectName: string | null, message: string): Promise<string> {
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-  );
+  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-  let query = supabase.from('permits_tracking').select('*');
+  let query = supabase.from("permits_tracking").select("*");
   if (projectName) {
-    query = query.ilike('project_name', `%${projectName}%`);
+    // FIX (Change 3): Use exact match instead of substring match
+    query = query.ilike("project_name", projectName);
   }
 
   const lowerMsg = message.toLowerCase();
-  const wantsExpired = /\b(show expired|expired permits|historical|all permits|full history|past permits|every permit)\b/.test(lowerMsg);
+  const wantsExpired =
+    /\b(show expired|expired permits|historical|all permits|full history|past permits|every permit)\b/.test(lowerMsg);
   const now = new Date();
 
   if (!wantsExpired) {
-    const today = now.toISOString().split('T')[0];
-    query = query.gte('expiration_date', today);
+    const today = now.toISOString().split("T")[0];
+    query = query.gte("expiration_date", today);
   }
 
-  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  let countQuery = supabase.from('permits_tracking').select('*', { count: 'exact', head: true })
-    .gte('expiration_date', ninetyDaysAgo);
-  if (projectName) countQuery = countQuery.ilike('project_name', `%${projectName}%`);
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+  let countQuery = supabase
+    .from("permits_tracking")
+    .select("*", { count: "exact", head: true })
+    .gte("expiration_date", ninetyDaysAgo);
+  // FIX (Change 3): Use exact match for count query too
+  if (projectName) countQuery = countQuery.ilike("project_name", projectName);
 
   const [{ data, error }, { count: totalCount }] = await Promise.all([
-    query.order('expiration_date', { ascending: true }).limit(200),
+    query.order("expiration_date", { ascending: true }).limit(200),
     countQuery,
   ]);
 
   if (error) throw new Error(`permits_tracking query failed: ${error.message}`);
 
   const sections: Record<string, any[]> = {
-    '🚨 CRITICAL — expiring within 30 days': [],
-    '⚠️ WARNING — expiring 31-90 days': [],
-    '📋 UPCOMING — expiring 91 days to 1 year': [],
-    '✅ OK — expiring beyond 1 year': [],
+    "🚨 CRITICAL — expiring within 30 days": [],
+    "⚠️ WARNING — expiring 31-90 days": [],
+    "📋 UPCOMING — expiring 91 days to 1 year": [],
+    "✅ OK — expiring beyond 1 year": [],
   };
   const expiredSection: any[] = [];
 
@@ -513,7 +542,11 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
     };
 
     if (!r.expiration_date) {
-      sections['📋 UPCOMING — expiring 91 days to 1 year'].push({ ...permit, days_until_expiry: null, urgency: 'UNKNOWN' });
+      sections["📋 UPCOMING — expiring 91 days to 1 year"].push({
+        ...permit,
+        days_until_expiry: null,
+        urgency: "UNKNOWN",
+      });
       continue;
     }
 
@@ -521,36 +554,43 @@ async function retrieveStatus(projectName: string | null, message: string): Prom
     const days = Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
     if (days < 0) {
-      expiredSection.push({ ...permit, days_until_expiry: days, urgency: 'EXPIRED' });
+      expiredSection.push({ ...permit, days_until_expiry: days, urgency: "EXPIRED" });
     } else if (days <= 30) {
-      sections['🚨 CRITICAL — expiring within 30 days'].push({ ...permit, days_until_expiry: days, urgency: 'CRITICAL' });
+      sections["🚨 CRITICAL — expiring within 30 days"].push({
+        ...permit,
+        days_until_expiry: days,
+        urgency: "CRITICAL",
+      });
     } else if (days <= 90) {
-      sections['⚠️ WARNING — expiring 31-90 days'].push({ ...permit, days_until_expiry: days, urgency: 'WARNING' });
+      sections["⚠️ WARNING — expiring 31-90 days"].push({ ...permit, days_until_expiry: days, urgency: "WARNING" });
     } else if (days <= 365) {
-      sections['📋 UPCOMING — expiring 91 days to 1 year'].push({ ...permit, days_until_expiry: days, urgency: 'UPCOMING' });
+      sections["📋 UPCOMING — expiring 91 days to 1 year"].push({
+        ...permit,
+        days_until_expiry: days,
+        urgency: "UPCOMING",
+      });
     } else {
-      sections['✅ OK — expiring beyond 1 year'].push({ ...permit, days_until_expiry: days, urgency: 'OK' });
+      sections["✅ OK — expiring beyond 1 year"].push({ ...permit, days_until_expiry: days, urgency: "OK" });
     }
   }
 
-  // Build grouped output, only include non-empty sections
   const grouped: Record<string, any[]> = {};
   for (const [label, permits] of Object.entries(sections)) {
     if (permits.length > 0) grouped[label] = permits;
   }
   if (wantsExpired && expiredSection.length > 0) {
-    grouped['❌ EXPIRED'] = expiredSection;
+    grouped["❌ EXPIRED"] = expiredSection;
   }
 
   const shownCount = Object.values(grouped).reduce((sum, arr) => sum + arr.length, 0);
 
   return JSON.stringify({
-    total_permits_in_system: totalCount ?? '?',
+    total_permits_in_system: totalCount ?? "?",
     showing: shownCount,
     ...grouped,
     _note: wantsExpired
-      ? `Showing all ${shownCount} permits including expired. ${totalCount ?? '?'} total in system.`
-      : `Showing ${shownCount} active/future permits. Expired permits are hidden — ask for "show expired" or "historical permits" to include them. ${totalCount ?? '?'} total in system.`,
+      ? `Showing all ${shownCount} permits including expired. ${totalCount ?? "?"} total in system.`
+      : `Showing ${shownCount} active/future permits. Expired permits are hidden — ask for "show expired" or "historical permits" to include them. ${totalCount ?? "?"} total in system.`,
   });
 }
 
@@ -559,23 +599,23 @@ async function callSearchRanked(
   filterProject: string | null,
   matchCount: number,
   userId: string,
-  threadId: string
+  threadId: string,
 ): Promise<any[]> {
-  const supabaseUrl = Deno.env.get('SUPABASE_URL');
-  const webhookSecret = Deno.env.get('N8N_WEBHOOK_SECRET');
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const webhookSecret = Deno.env.get("N8N_WEBHOOK_SECRET");
   if (!supabaseUrl || !webhookSecret) {
-    throw new Error('SUPABASE_URL or N8N_WEBHOOK_SECRET not configured');
+    throw new Error("SUPABASE_URL or N8N_WEBHOOK_SECRET not configured");
   }
 
   const res = await fetch(`${supabaseUrl}/functions/v1/search-ranked-documents`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${webhookSecret}`,
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${webhookSecret}`,
     },
     body: JSON.stringify({
       query,
-      query_type: 'general',
+      query_type: "general",
       match_count: matchCount,
       content_max_length: 1000,
       match_threshold: 0.15,
@@ -596,58 +636,58 @@ async function callSearchRanked(
 }
 
 function formatDocs(docs: any[]): string {
-  if (docs.length === 0) return 'No relevant documents found.';
+  if (docs.length === 0) return "No relevant documents found.";
   return docs
     .map((d: any, i: number) => {
       const dbxUrl = buildDropboxUrl(d.file_path);
-      const linkPart = dbxUrl ? ` | [View in Dropbox](${dbxUrl})` : '';
-      return `[Source ${i + 1}] ${d.file_name || 'Unknown'} (${d.source_type || 'document'}, ${d.document_date || 'no date'})${linkPart}\n${d.content || ''}`;
+      const linkPart = dbxUrl ? ` | [View in Dropbox](${dbxUrl})` : "";
+      return `[Source ${i + 1}] ${d.file_name || "Unknown"} (${d.source_type || "document"}, ${d.document_date || "no date"})${linkPart}\n${d.content || ""}`;
     })
-    .join('\n\n');
+    .join("\n\n");
 }
 
+// FIX (Change 4): Rewritten retrieveDocuments with tighter fallback logic
 async function retrieveDocuments(
   message: string,
   projectName: string | null,
   userId: string,
-  threadId: string
+  threadId: string,
 ): Promise<string> {
-  // No project name — single unfiltered call
   if (!projectName) {
     const docs = await callSearchRanked(message, null, 12, userId, threadId);
     return formatDocs(docs);
   }
 
-  // First attempt: filter by classified project name
   console.log(`retrieveDocuments: first attempt with filter_project="${projectName}"`);
   const firstDocs = await callSearchRanked(message, projectName, 12, userId, threadId);
   console.log(`retrieveDocuments: first attempt returned ${firstDocs.length} docs`);
 
-  if (firstDocs.length >= 3) {
+  if (firstDocs.length >= 1) {
     return formatDocs(firstDocs);
   }
 
-  // Fallback: unfiltered search with project name prepended to query
-  console.log(`retrieveDocuments: fallback — unfiltered search with project name in query`);
+  // Fallback: still filter by project, but augment the query with the project name
+  // to improve embedding similarity. Do NOT drop the project filter.
+  console.log(`retrieveDocuments: fallback — augmented query, still project-filtered`);
   const augmentedQuery = `${projectName}: ${message}`;
-  const fallbackDocs = await callSearchRanked(augmentedQuery, null, 20, userId, threadId);
+  const fallbackDocs = await callSearchRanked(augmentedQuery, projectName, 15, userId, threadId);
   console.log(`retrieveDocuments: fallback returned ${fallbackDocs.length} docs`);
 
-  // Merge & deduplicate by id, keeping higher-similarity hit
-  const docMap = new Map<string, any>();
-  for (const doc of [...firstDocs, ...fallbackDocs]) {
-    const id = doc.id || doc.file_name;
-    const existing = docMap.get(id);
-    if (!existing || (doc.similarity ?? 0) > (existing.similarity ?? 0)) {
-      docMap.set(id, doc);
-    }
+  if (fallbackDocs.length >= 1) {
+    return formatDocs(fallbackDocs);
   }
 
-  const merged = Array.from(docMap.values())
-    .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
-    .slice(0, 15);
+  // Last resort: unfiltered but with project name in query, clearly labeled
+  console.log(`retrieveDocuments: last resort — unfiltered search`);
+  const lastResortDocs = await callSearchRanked(augmentedQuery, null, 10, userId, threadId);
 
-  return formatDocs(merged);
+  if (lastResortDocs.length > 0) {
+    // Prepend a warning so the LLM knows these results may be from other projects
+    const warning = `⚠️ NOTE: No documents were found specifically filed under "${projectName}". The following results are from a broader search and may reference other projects. Verify project attribution carefully.\n\n`;
+    return warning + formatDocs(lastResortDocs);
+  }
+
+  return `No documents found for project "${projectName}".`;
 }
 
 async function synthesizeAnswer(
@@ -655,32 +695,32 @@ async function synthesizeAnswer(
   chatHistory: string,
   context: string,
   contextType: string,
-  systemAddendum: string = ''
+  systemAddendum: string = "",
 ): Promise<string> {
-  const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not configured");
 
-  const trimmedHistory = chatHistory ? chatHistory.slice(-3000) : '';
+  const trimmedHistory = chatHistory ? chatHistory.slice(-3000) : "";
 
-  let userContent = '';
+  let userContent = "";
   if (trimmedHistory) {
     userContent += `## Recent Chat History\n${trimmedHistory}\n\n`;
   }
   userContent += `## User Question\n${message}\n\n`;
   userContent += `## ${contextType}\n${context}`;
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: "claude-sonnet-4-20250514",
       max_tokens: 2048,
       system: TERRACHAT_SYSTEM_PROMPT + systemAddendum,
-      messages: [{ role: 'user', content: userContent }],
+      messages: [{ role: "user", content: userContent }],
     }),
   });
 
@@ -690,30 +730,30 @@ async function synthesizeAnswer(
   }
 
   const data = await res.json();
-  return data.content?.[0]?.text || '';
+  return data.content?.[0]?.text || "";
 }
 
 async function fetchSystemKnowledge(
   supabaseClient: ReturnType<typeof createClient>,
   message: string,
-  projectName: string | null
+  projectName: string | null,
 ): Promise<string> {
   try {
     const { data, error } = await supabaseClient
-      .from('system_knowledge')
-      .select('title, content, tier, keywords')
-      .eq('is_active', true)
-      .order('created_at', { ascending: true });
+      .from("system_knowledge")
+      .select("title, content, tier, keywords")
+      .eq("is_active", true)
+      .order("created_at", { ascending: true });
 
-    if (error || !data || data.length === 0) return '';
+    if (error || !data || data.length === 0) return "";
 
     const lowerMessage = message.toLowerCase();
-    const lowerProject = projectName?.toLowerCase() || '';
+    const lowerProject = projectName?.toLowerCase() || "";
 
     const filtered = data.filter((entry: any) => {
-      if (entry.tier === 'reference') return false;
-      if (entry.tier === 'always') return true;
-      if (entry.tier === 'contextual') {
+      if (entry.tier === "reference") return false;
+      if (entry.tier === "always") return true;
+      if (entry.tier === "contextual") {
         const keywords: string[] = entry.keywords || [];
         return keywords.some((kw: string) => {
           const lkw = kw.toLowerCase();
@@ -723,18 +763,18 @@ async function fetchSystemKnowledge(
       return false;
     });
 
-    if (filtered.length === 0) return '';
+    if (filtered.length === 0) return "";
 
-    let result = '\n\n## SHARED TEAM KNOWLEDGE\n' +
-      filtered.map((e: any) => `### ${e.title}\n${e.content}`).join('\n\n');
+    let result =
+      "\n\n## SHARED TEAM KNOWLEDGE\n" + filtered.map((e: any) => `### ${e.title}\n${e.content}`).join("\n\n");
 
     if (result.length > 800) {
-      result = result.slice(0, 800) + '\n[...additional knowledge truncated]';
+      result = result.slice(0, 800) + "\n[...additional knowledge truncated]";
     }
 
     return result;
   } catch (_e) {
-    return '';
+    return "";
   }
 }
 
@@ -746,15 +786,14 @@ function extractPublicUrls(message: string): string[] {
     try {
       const parsed = new URL(url);
       const hostname = parsed.hostname.toLowerCase();
-      // Reject private/local addresses
-      if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.internal')) return false;
+      if (hostname === "localhost" || hostname.endsWith(".local") || hostname.endsWith(".internal")) return false;
       if (/^127\./.test(hostname)) return false;
       if (/^10\./.test(hostname)) return false;
       if (/^192\.168\./.test(hostname)) return false;
       if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return false;
       if (/^169\.254\./.test(hostname)) return false;
-      if (hostname === '[::1]') return false;
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      if (hostname === "[::1]") return false;
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
       return true;
     } catch {
       return false;
@@ -767,17 +806,17 @@ async function summarizeUrlWithPerplexity(opts: {
   userMessage: string;
   chatHistory: string;
 }): Promise<{ text: string; citations: string[] }> {
-  const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY');
+  const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
   if (!PERPLEXITY_API_KEY) {
-    throw new Error('PERPLEXITY_API_KEY is not configured');
+    throw new Error("PERPLEXITY_API_KEY is not configured");
   }
 
-  const hasFollowUpQuestion = opts.userMessage.trim() && !opts.userMessage.trim().startsWith('http');
+  const hasFollowUpQuestion = opts.userMessage.trim() && !opts.userMessage.trim().startsWith("http");
 
   const systemPrompt = `You are a research analyst. The user has shared a URL. Your job is to:
 1. Fetch and analyze the content at the provided URL
 2. Search the web for additional relevant context about the topic
-3. ${hasFollowUpQuestion ? 'Answer the user\'s specific question about the page content directly and precisely.' : 'Return a well-structured, grounded summary'}
+3. ${hasFollowUpQuestion ? "Answer the user's specific question about the page content directly and precisely." : "Return a well-structured, grounded summary"}
 
 Format your response EXACTLY as:
 
@@ -801,17 +840,17 @@ Be factual and cite specific details. If the URL is inaccessible, say so clearly
     ? `Analyze this URL: ${opts.url}\n\nUser's question about this page: ${opts.userMessage.trim()}`
     : `Please analyze this URL: ${opts.url}`;
 
-  const response = await fetch('https://api.perplexity.ai/chat/completions', {
-    method: 'POST',
+  const response = await fetch("https://api.perplexity.ai/chat/completions", {
+    method: "POST",
     headers: {
-      'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
-      'Content-Type': 'application/json',
+      Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: 'sonar',
+      model: "sonar",
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
       temperature: 0.2,
     }),
@@ -819,18 +858,17 @@ Be factual and cite specific details. If the URL is inaccessible, say so clearly
 
   if (!response.ok) {
     const errText = await response.text();
-    console.error('Perplexity API error:', response.status, errText);
+    console.error("Perplexity API error:", response.status, errText);
     throw new Error(`Perplexity API error [${response.status}]: ${errText}`);
   }
 
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || 'Unable to analyze the URL.';
+  const content = data.choices?.[0]?.message?.content || "Unable to analyze the URL.";
   const citations: string[] = data.citations || [];
 
-  // Append citations if not already in the content
   let finalText = content;
-  if (citations.length > 0 && !content.includes('## Sources')) {
-    finalText += '\n\n## Sources\n' + citations.map((c: string, i: number) => `- [Source ${i + 1}](${c})`).join('\n');
+  if (citations.length > 0 && !content.includes("## Sources")) {
+    finalText += "\n\n## Sources\n" + citations.map((c: string, i: number) => `- [Source ${i + 1}](${c})`).join("\n");
   }
 
   return { text: finalText, citations };
@@ -842,15 +880,15 @@ function detectRememberCommand(msg: string): { isRemember: boolean; content: str
   if (match && match[1].trim().length > 0) {
     return { isRemember: true, content: match[1].trim() };
   }
-  return { isRemember: false, content: '' };
+  return { isRemember: false, content: "" };
 }
 
 function extractTitle(content: string): string {
   const max = 60;
   if (content.length <= max) return content;
   const trimmed = content.slice(0, max);
-  const lastSpace = trimmed.lastIndexOf(' ');
-  return (lastSpace > 20 ? trimmed.slice(0, lastSpace) : trimmed) + '…';
+  const lastSpace = trimmed.lastIndexOf(" ");
+  return (lastSpace > 20 ? trimmed.slice(0, lastSpace) : trimmed) + "…";
 }
 
 // ── "Save this link" command detection ──
@@ -862,34 +900,36 @@ function detectSaveLinkCommand(msg: string): boolean {
 async function searchSavedLinks(
   supabaseAdmin: any,
   searchKeywords: string | null,
-  projectName: string | null
+  projectName: string | null,
 ): Promise<string> {
   let q = supabaseAdmin
-    .from('saved_web_links')
-    .select('name, url, project_name, categories, notes, created_at')
-    .eq('is_active', true)
-    .order('created_at', { ascending: false })
+    .from("saved_web_links")
+    .select("name, url, project_name, categories, notes, created_at")
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
     .limit(20);
 
-  // Apply filters: prefer search_keywords from classifier, fall back to project_name
   if (projectName) {
-    q = q.ilike('project_name', `%${projectName}%`);
+    q = q.ilike("project_name", `%${projectName}%`);
   }
 
   const { data: allData, error } = await q;
   if (error) {
-    console.error('searchSavedLinks error:', error);
-    return 'I encountered an error searching the saved links.';
+    console.error("searchSavedLinks error:", error);
+    return "I encountered an error searching the saved links.";
   }
 
-  // Client-side keyword filtering for better multi-keyword matching
   let filtered = allData || [];
   if (searchKeywords && !projectName) {
-    const keywords = searchKeywords.toLowerCase().split(/\s+/).filter(k => k.length > 2);
+    const keywords = searchKeywords
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((k) => k.length > 2);
     if (keywords.length > 0) {
       filtered = filtered.filter((link: any) => {
-        const haystack = `${link.name} ${link.project_name || ''} ${link.url} ${(link.categories || []).join(' ')} ${link.notes || ''}`.toLowerCase();
-        return keywords.some(kw => haystack.includes(kw));
+        const haystack =
+          `${link.name} ${link.project_name || ""} ${link.url} ${(link.categories || []).join(" ")} ${link.notes || ""}`.toLowerCase();
+        return keywords.some((kw) => haystack.includes(kw));
       });
     }
   }
@@ -902,7 +942,7 @@ async function searchSavedLinks(
   for (const link of filtered) {
     md += `### [${link.name}](${link.url})\n`;
     if (link.project_name) md += `**Project:** ${link.project_name}\n`;
-    if (link.categories?.length) md += `**Categories:** ${link.categories.join(', ')}\n`;
+    if (link.categories?.length) md += `**Categories:** ${link.categories.join(", ")}\n`;
     if (link.notes) md += `${link.notes}\n`;
     md += `*Added ${new Date(link.created_at).toLocaleDateString()}*\n\n`;
   }
@@ -910,7 +950,7 @@ async function searchSavedLinks(
 }
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') {
+  if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
@@ -918,22 +958,19 @@ serve(async (req) => {
     const body = await req.json();
     const { threadId, userId, message, chatHistory, job_id, callback_url, uploaded_document } = body;
 
-    console.log('chat-rag received:', JSON.stringify({ threadId, userId, message, job_id, callback_url }));
+    console.log("chat-rag received:", JSON.stringify({ threadId, userId, message, job_id, callback_url }));
 
     // ── Early intercept: "Remember This" command ──
     const { isRemember, content: rememberContent } = detectRememberCommand(message);
     if (isRemember) {
-      console.log('REMEMBER command detected, saving to system_knowledge');
-      const supabaseAdmin = createClient(
-        Deno.env.get('SUPABASE_URL')!,
-        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-      );
+      console.log("REMEMBER command detected, saving to system_knowledge");
+      const supabaseAdmin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
       const title = extractTitle(rememberContent);
-      const tier = 'always';
+      const tier = "always";
       const keywords: string[] = [];
 
-      const { error: insertErr } = await supabaseAdmin.from('system_knowledge').insert({
+      const { error: insertErr } = await supabaseAdmin.from("system_knowledge").insert({
         title,
         content: rememberContent,
         tier,
@@ -948,37 +985,36 @@ serve(async (req) => {
 
       if (callback_url && job_id) {
         await fetch(callback_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ job_id, response: confirmationMsg }),
         });
       }
 
-      return new Response(
-        JSON.stringify({ success: true, response: confirmationMsg }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ success: true, response: confirmationMsg }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // ── Early intercept: URL Research ──
     const detectedUrls = extractPublicUrls(message);
     if (detectedUrls.length > 0) {
       const targetUrl = detectedUrls[0];
-      console.log('URL_RESEARCH mode triggered for:', targetUrl);
+      console.log("URL_RESEARCH mode triggered for:", targetUrl);
 
       try {
         const research = await summarizeUrlWithPerplexity({
           url: targetUrl,
           userMessage: message,
-          chatHistory: chatHistory || '',
+          chatHistory: chatHistory || "",
         });
 
         const responseText = research.text;
 
         if (callback_url && job_id) {
           await fetch(callback_url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               job_id,
               response: responseText,
@@ -986,36 +1022,32 @@ serve(async (req) => {
           });
         }
 
-        // Log for analytics
-        const supabaseAdmin = createClient(
-          Deno.env.get('SUPABASE_URL')!,
-          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-        );
-        await supabaseAdmin.from('retrieval_logs').insert({
-          thread_id: threadId || null,
-          user_id: userId || null,
-          question: message,
-          query_type: 'URL_RESEARCH',
-          top_sources: research.citations.map((c: string) => ({ url: c })),
-        }).then(({ error }) => {
-          if (error) console.error('Failed to log URL_RESEARCH:', error);
-        });
+        const supabaseAdmin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+        await supabaseAdmin
+          .from("retrieval_logs")
+          .insert({
+            thread_id: threadId || null,
+            user_id: userId || null,
+            question: message,
+            query_type: "URL_RESEARCH",
+            top_sources: research.citations.map((c: string) => ({ url: c })),
+          })
+          .then(({ error }) => {
+            if (error) console.error("Failed to log URL_RESEARCH:", error);
+          });
 
-        return new Response(
-          JSON.stringify({ success: true, query_type: 'URL_RESEARCH' }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return new Response(JSON.stringify({ success: true, query_type: "URL_RESEARCH" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       } catch (urlErr) {
-        console.error('URL_RESEARCH failed, falling through to normal pipeline:', urlErr);
-        // Fall through to normal classification if Perplexity fails
+        console.error("URL_RESEARCH failed, falling through to normal pipeline:", urlErr);
       }
     }
 
     // ── Early intercept: "Save this link" command ──
     if (detectSaveLinkCommand(message)) {
-      console.log('SAVE_LINK command detected');
-      // Extract the most recent URL from chat history
-      const historyUrls = extractPublicUrls(chatHistory || '');
+      console.log("SAVE_LINK command detected");
+      const historyUrls = extractPublicUrls(chatHistory || "");
       const lastUrl = historyUrls.length > 0 ? historyUrls[historyUrls.length - 1] : null;
 
       const responseText = lastUrl
@@ -1024,35 +1056,31 @@ serve(async (req) => {
 
       if (callback_url && job_id) {
         await fetch(callback_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ job_id, response: responseText }),
         });
       }
 
-      return new Response(
-        JSON.stringify({ success: true, query_type: 'SAVE_LINK_COMMAND' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ success: true, query_type: "SAVE_LINK_COMMAND" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Fetch user profile and classify in parallel
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    );
+    const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const [profileResult, classification, systemKnowledge] = await Promise.all([
       supabase
-        .from('user_profiles_extended')
-        .select('display_name, role_title, preferred_projects')
-        .eq('user_id', userId)
+        .from("user_profiles_extended")
+        .select("display_name, role_title, preferred_projects")
+        .eq("user_id", userId)
         .maybeSingle(),
-      classifyQuery(message, chatHistory || ''),
+      classifyQuery(message, chatHistory || ""),
       fetchSystemKnowledge(supabase, message, null),
     ]);
 
-    console.log('classification:', JSON.stringify(classification));
+    console.log("classification:", JSON.stringify(classification));
 
     const profile = profileResult.data;
     if (profile) {
@@ -1060,25 +1088,27 @@ serve(async (req) => {
       if (profile.display_name) profileLines.push(`User: ${profile.display_name}`);
       if (profile.role_title) profileLines.push(`Role: ${profile.role_title}`);
       if (profile.preferred_projects?.length) {
-        profileLines.push(`Preferred projects: ${profile.preferred_projects.join(', ')}`);
+        profileLines.push(`Preferred projects: ${profile.preferred_projects.join(", ")}`);
       }
-      // No mutation needed — synthesizeAnswer already uses TERRACHAT_SYSTEM_PROMPT;
-      // we'll pass profile context as part of the chat history prefix instead.
       if (profileLines.length > 0) {
-        const profileContext = `[User Profile]\n${profileLines.join('\n')}\n\n`;
-        // Prepend to chatHistory so synthesizeAnswer includes it
-        body.chatHistory = profileContext + (chatHistory || '');
+        const profileContext = `[User Profile]\n${profileLines.join("\n")}\n\n`;
+        body.chatHistory = profileContext + (chatHistory || "");
       }
     }
 
-    let systemAddendum = '';
+    let systemAddendum = "";
     if (profile?.preferred_projects?.length) {
-      systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(', ')}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
+      systemAddendum = `\n\nThis user works primarily with these projects: ${profile.preferred_projects.join(", ")}. When answering general questions that don't mention a specific project, prioritize data from these projects first.`;
     }
 
-    // Append shared team knowledge (already fetched in parallel with message-based matching)
-    // Re-fetch with project_name now that classification is complete
-    let { query_type, project_name, project_names, clarify_question, url: classifiedUrl, search_keywords } = classification;
+    let {
+      query_type,
+      project_name,
+      project_names,
+      clarify_question,
+      url: classifiedUrl,
+      search_keywords,
+    } = classification;
     let knowledgeText = systemKnowledge;
     if (project_name && !knowledgeText) {
       knowledgeText = await fetchSystemKnowledge(supabase, message, project_name);
@@ -1087,230 +1117,232 @@ serve(async (req) => {
       systemAddendum += knowledgeText;
       console.log(`systemKnowledge injected: length=${knowledgeText.length}`);
     }
-    const hasUploadedDocument = typeof uploaded_document === 'string' && uploaded_document.trim().length > 0;
+    const hasUploadedDocument = typeof uploaded_document === "string" && uploaded_document.trim().length > 0;
 
-    // CLARIFY — return the clarify question directly, no retrieval
-    // But if system knowledge was injected, fall through to LLM synthesis
-    if (query_type === 'CLARIFY' && !hasUploadedDocument && !knowledgeText) {
-      const response = clarify_question || 'Could you please provide more details about your question?';
+    // CLARIFY
+    if (query_type === "CLARIFY" && !hasUploadedDocument && !knowledgeText) {
+      const response = clarify_question || "Could you please provide more details about your question?";
 
       if (callback_url && job_id) {
         await fetch(callback_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ job_id, response }),
         });
       }
 
-      return new Response(
-        JSON.stringify({ success: true }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    // URL_RESEARCH via classifier (handles URLs from chat history that pre-classifier missed)
-    if (query_type === 'URL_RESEARCH' && classifiedUrl) {
-      console.log('URL_RESEARCH (classifier) triggered for:', classifiedUrl);
+    // URL_RESEARCH via classifier
+    if (query_type === "URL_RESEARCH" && classifiedUrl) {
+      console.log("URL_RESEARCH (classifier) triggered for:", classifiedUrl);
       try {
         const research = await summarizeUrlWithPerplexity({
           url: classifiedUrl,
           userMessage: message,
-          chatHistory: chatHistory || '',
+          chatHistory: chatHistory || "",
         });
 
         const responseText = research.text;
 
         if (callback_url && job_id) {
           await fetch(callback_url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ job_id, response: responseText }),
           });
         }
 
-        await supabase.from('retrieval_logs').insert({
+        await supabase.from("retrieval_logs").insert({
           thread_id: threadId || null,
           user_id: userId || null,
           question: message,
-          query_type: 'URL_RESEARCH',
+          query_type: "URL_RESEARCH",
           top_sources: research.citations.map((c: string) => ({ url: c })),
         });
 
-        return new Response(
-          JSON.stringify({ success: true, query_type: 'URL_RESEARCH' }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+        return new Response(JSON.stringify({ success: true, query_type: "URL_RESEARCH" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       } catch (urlErr) {
-        console.error('URL_RESEARCH (classifier) failed, falling through:', urlErr);
+        console.error("URL_RESEARCH (classifier) failed, falling through:", urlErr);
       }
     }
 
-    // Fallback: if URL_RESEARCH didn't return (no URL found or Perplexity failed),
-    // re-route to DOCUMENT_SEARCH so we don't end up with empty context
-    if (query_type === 'URL_RESEARCH') {
-      console.log('URL_RESEARCH did not resolve — falling back to DOCUMENT_SEARCH');
-      query_type = 'DOCUMENT_SEARCH';
+    // Fallback: if URL_RESEARCH didn't return, re-route to DOCUMENT_SEARCH
+    if (query_type === "URL_RESEARCH") {
+      console.log("URL_RESEARCH did not resolve — falling back to DOCUMENT_SEARCH");
+      query_type = "DOCUMENT_SEARCH";
     }
 
-    // SAVED_LINK_SEARCH — query saved_web_links using classifier-extracted keywords
-    if (query_type === 'SAVED_LINK_SEARCH') {
-      console.log('SAVED_LINK_SEARCH query detected, search_keywords:', search_keywords);
+    // SAVED_LINK_SEARCH
+    if (query_type === "SAVED_LINK_SEARCH") {
+      console.log("SAVED_LINK_SEARCH query detected, search_keywords:", search_keywords);
       const response = await searchSavedLinks(supabase, search_keywords || null, project_name);
 
       if (callback_url && job_id) {
         await fetch(callback_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ job_id, response }),
         });
       }
 
-      await supabase.from('retrieval_logs').insert({
+      await supabase.from("retrieval_logs").insert({
         thread_id: threadId || null,
         user_id: userId || null,
         question: message,
-        query_type: 'SAVED_LINK_SEARCH',
+        query_type: "SAVED_LINK_SEARCH",
         normalized_project: project_name || null,
       });
 
-      return new Response(
-        JSON.stringify({ success: true, query_type: 'SAVED_LINK_SEARCH' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ success: true, query_type: "SAVED_LINK_SEARCH" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Retrieve context based on query type
-    let context = '';
-    let contextType = 'Retrieved Documents';
+    let context = "";
+    let contextType = "Retrieved Documents";
     let bidSummary: BidSummary = { hasBids: false, topBid: null, allBidRows: [] };
     let multiProjectBidSummaries: { projectName: string; summary: BidSummary }[] = [];
 
-    // For AGGREGATE, HYBRID, or DOCUMENT_SEARCH queries, run dedicated bid retrieval
     const bidQuestion = isBidRelatedQuestion(message);
-    const needsBidCheck = bidQuestion && (query_type === 'AGGREGATE' || query_type === 'HYBRID' || query_type === 'DOCUMENT_SEARCH') && !hasUploadedDocument;
+    const needsBidCheck =
+      bidQuestion &&
+      (query_type === "AGGREGATE" || query_type === "HYBRID" || query_type === "DOCUMENT_SEARCH") &&
+      !hasUploadedDocument;
 
-    // Determine if this is a multi-project bid comparison
     const isMultiProjectBid = needsBidCheck && project_names && project_names.length > 1;
 
     if (isMultiProjectBid) {
-      // Parallel bid retrieval for all projects
       console.log(`multi-project bid retrieval: projects=${JSON.stringify(project_names)}`);
       const results = await Promise.all(
         project_names.map(async (pn) => ({
           projectName: pn,
           summary: await retrieveVerifiedBids(pn),
-        }))
+        })),
       );
       multiProjectBidSummaries = results;
-      // Set bidSummary to the first project's result for fallback compatibility
       bidSummary = results[0]?.summary || { hasBids: false, topBid: null, allBidRows: [] };
-      console.log(`multi-project bid results: ${results.map(r => `${r.projectName}=${r.summary.hasBids}(${r.summary.allBidRows.length} rows)`).join(', ')}`);
+      console.log(
+        `multi-project bid results: ${results.map((r) => `${r.projectName}=${r.summary.hasBids}(${r.summary.allBidRows.length} rows)`).join(", ")}`,
+      );
     } else if (needsBidCheck) {
-      // Single project bid retrieval
       bidSummary = await retrieveVerifiedBids(project_name);
-      console.log(`dedicated bid retrieval: hasBids=${bidSummary.hasBids}, topBid=${bidSummary.topBid?.value ?? 'none'}, rows=${bidSummary.allBidRows.length}`);
+      console.log(
+        `dedicated bid retrieval: hasBids=${bidSummary.hasBids}, topBid=${bidSummary.topBid?.value ?? "none"}, rows=${bidSummary.allBidRows.length}`,
+      );
     }
 
     if (hasUploadedDocument) {
-      // Cap uploaded document context to 15,000 chars — summaries are ~3-5k so this is generous
-      const cappedDoc = uploaded_document.length > 15000
-        ? uploaded_document.slice(0, 15000) + '\n\n[... document truncated due to length ...]'
-        : uploaded_document;
+      const cappedDoc =
+        uploaded_document.length > 15000
+          ? uploaded_document.slice(0, 15000) + "\n\n[... document truncated due to length ...]"
+          : uploaded_document;
       console.log(`uploaded_document: original_length=${uploaded_document.length}, capped_length=${cappedDoc.length}`);
       context = `=== USER UPLOADED DOCUMENT ===\n${cappedDoc}\n=== END UPLOADED DOCUMENT ===`;
-      contextType = 'User Uploaded Document';
-      systemAddendum += '\n\nA USER UPLOADED DOCUMENT is present in the context. These are pre-processed structured summaries of the uploaded documents, containing the key figures, dates, parties, and scope items. Treat them as the primary source for answering the question. Reference them directly in your answer.';
-    } else if (query_type === 'AGGREGATE') {
+      contextType = "User Uploaded Document";
+      systemAddendum +=
+        "\n\nA USER UPLOADED DOCUMENT is present in the context. These are pre-processed structured summaries of the uploaded documents, containing the key figures, dates, parties, and scope items. Treat them as the primary source for answering the question. Reference them directly in your answer.";
+    } else if (query_type === "AGGREGATE") {
       const result = await retrieveAggregate(project_name, message, userId, threadId);
       context = result.context;
-      contextType = 'Structured Cost Data';
-    } else if (query_type === 'STATUS_LOOKUP') {
+      contextType = "Structured Cost Data";
+    } else if (query_type === "STATUS_LOOKUP") {
       context = await retrieveStatus(project_name, message);
-      contextType = 'Permit Status Data';
-      systemAddendum += '\n\nWhen permit records are missing a permit number, flag them with ⚠️ INCOMPLETE RECORD and note that the data may have been extracted incorrectly from the source document. Do not treat incomplete records as fully reliable.';
-    } else if (query_type === 'DOCUMENT_SEARCH') {
+      contextType = "Permit Status Data";
+      systemAddendum +=
+        "\n\nWhen permit records are missing a permit number, flag them with ⚠️ INCOMPLETE RECORD and note that the data may have been extracted incorrectly from the source document. Do not treat incomplete records as fully reliable.";
+    } else if (query_type === "DOCUMENT_SEARCH") {
       context = await retrieveDocuments(message, project_name, userId, threadId);
-      contextType = 'Retrieved Documents';
-    } else if (query_type === 'HYBRID') {
+      contextType = "Retrieved Documents";
+    } else if (query_type === "HYBRID") {
       const [aggResult, docResult] = await Promise.allSettled([
         retrieveAggregate(project_name, message, userId, threadId),
         retrieveDocuments(message, project_name, userId, threadId),
       ]);
 
       const parts: string[] = [];
-      if (aggResult.status === 'fulfilled') {
+      if (aggResult.status === "fulfilled") {
         parts.push(`## Structured Cost Data\n${aggResult.value.context}`);
       }
-      if (docResult.status === 'fulfilled') parts.push(`## Retrieved Documents\n${docResult.value}`);
-      context = parts.join('\n\n');
-      contextType = 'Combined Data';
+      if (docResult.status === "fulfilled") parts.push(`## Retrieved Documents\n${docResult.value}`);
+      context = parts.join("\n\n");
+      contextType = "Combined Data";
     } else {
-      // CLARIFY that fell through due to system knowledge — no retrieval needed
-      context = '';
-      contextType = 'General Knowledge';
+      context = "";
+      contextType = "General Knowledge";
     }
 
     console.log(`context retrieved (${contextType}), length=${context.length}`);
 
-    // Log total payload size for debugging
-    const totalPayloadSize = (body.chatHistory || '').length + context.length + message.length;
-    console.log(`total_payload_estimate: chatHistory=${(body.chatHistory || '').length}, context=${context.length}, message=${message.length}, total=${totalPayloadSize}`);
+    const totalPayloadSize = (body.chatHistory || "").length + context.length + message.length;
+    console.log(
+      `total_payload_estimate: chatHistory=${(body.chatHistory || "").length}, context=${context.length}, message=${message.length}, total=${totalPayloadSize}`,
+    );
 
-    // ============================================================
-    // DETERMINISTIC SHORT-CIRCUIT: If dedicated bid retrieval found
-    // verified bids, return a code-built answer. LLM not involved.
-    // ============================================================
-    console.log(`bid_question=${bidQuestion}, has_verified_bids=${bidSummary.hasBids}, top_bid=${bidSummary.topBid?.value ?? 'none'}`);
+    console.log(
+      `bid_question=${bidQuestion}, has_verified_bids=${bidSummary.hasBids}, top_bid=${bidSummary.topBid?.value ?? "none"}`,
+    );
 
     let answer: string;
 
-    if (isMultiProjectBid && multiProjectBidSummaries.some(s => s.summary.hasBids)) {
-      console.log(`DETERMINISTIC MULTI-PROJECT BID MODE: Bypassing LLM. projects=${multiProjectBidSummaries.map(s => s.projectName).join(', ')}`);
+    if (isMultiProjectBid && multiProjectBidSummaries.some((s) => s.summary.hasBids)) {
+      console.log(
+        `DETERMINISTIC MULTI-PROJECT BID MODE: Bypassing LLM. projects=${multiProjectBidSummaries.map((s) => s.projectName).join(", ")}`,
+      );
       answer = buildComparisonBidResponse(multiProjectBidSummaries);
     } else if (bidSummary.hasBids && bidSummary.topBid) {
-      console.log(`DETERMINISTIC BID MODE: Bypassing LLM. top_bid=${bidSummary.topBid.value}, source=${bidSummary.topBid.source}`);
+      console.log(
+        `DETERMINISTIC BID MODE: Bypassing LLM. top_bid=${bidSummary.topBid.value}, source=${bidSummary.topBid.source}`,
+      );
       answer = buildDeterministicBidResponse(bidSummary, project_name);
     } else {
-      // Normal LLM synthesis path — wrapped in try-catch for resilience
       try {
-        answer = await synthesizeAnswer(message, body.chatHistory || '', context, contextType, systemAddendum);
+        answer = await synthesizeAnswer(message, body.chatHistory || "", context, contextType, systemAddendum);
       } catch (synthError) {
-        console.error('LLM synthesis failed:', synthError);
-        answer = 'I encountered an error while processing your request. This may be due to the size of the documents in this conversation. Please try asking your question in a new chat thread, or with fewer attached documents.';
+        console.error("LLM synthesis failed:", synthError);
+        answer =
+          "I encountered an error while processing your request. This may be due to the size of the documents in this conversation. Please try asking your question in a new chat thread, or with fewer attached documents.";
       }
 
-      // Defensive check: if answer claims no bids but we might have missed them
-      const claimsMissing = /(?:don[\u2019']?t have|do not have|no |couldn[\u2019']?t find|not available|unable to (?:find|locate)|without|lack).{0,120}(?:bid data|contractor bids?|bid tabulation|tabulated contractor bids|verified bid|bid information|bid total|bid result|bid comparison)/i.test(answer);
+      const claimsMissing =
+        /(?:don[\u2019']?t have|do not have|no |couldn[\u2019']?t find|not available|unable to (?:find|locate)|without|lack).{0,120}(?:bid data|contractor bids?|bid tabulation|tabulated contractor bids|verified bid|bid information|bid total|bid result|bid comparison)/i.test(
+          answer,
+        );
 
       if (bidQuestion && claimsMissing && !bidSummary.hasBids) {
-        // Last resort: try dedicated bid retrieval even if we didn't before
-        console.warn('DEFENSIVE: LLM claims no bids. Running late dedicated bid retrieval as fallback.');
+        console.warn("DEFENSIVE: LLM claims no bids. Running late dedicated bid retrieval as fallback.");
         const lateBidSummary = await retrieveVerifiedBids(project_name);
         if (lateBidSummary.hasBids && lateBidSummary.topBid) {
-          console.warn(`DEFENSIVE OVERRIDE: Found ${lateBidSummary.allBidRows.length} bid rows via late retrieval. Using deterministic response.`);
+          console.warn(
+            `DEFENSIVE OVERRIDE: Found ${lateBidSummary.allBidRows.length} bid rows via late retrieval. Using deterministic response.`,
+          );
           answer = buildDeterministicBidResponse(lateBidSummary, project_name);
         }
       }
     }
 
-    // POST result to callback
     if (callback_url && job_id) {
       await fetch(callback_url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_id, response: answer }),
       });
     }
 
-    return new Response(
-      JSON.stringify({ success: true }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (error) {
-    console.error('Error in chat-rag:', error);
-    return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    console.error("Error in chat-rag:", error);
+    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
