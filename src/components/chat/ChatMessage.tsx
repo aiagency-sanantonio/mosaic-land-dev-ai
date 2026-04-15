@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { User, Bot, Paperclip, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { User, Bot, Paperclip, ThumbsUp, ThumbsDown, Bookmark } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -7,6 +7,7 @@ import type { Components } from 'react-markdown';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { AddLinkDialog } from '@/components/weblinks/AddLinkDialog';
 
 interface ChatMessageProps {
   role: 'user' | 'assistant';
@@ -15,6 +16,7 @@ interface ChatMessageProps {
   fileName?: string | null;
   messageId?: string;
   threadId?: string;
+  previousUserMessage?: string;
 }
 
 const markdownComponents: Components = {
@@ -87,11 +89,25 @@ const markdownComponents: Components = {
   pre: ({ children }) => <>{children}</>,
 };
 
-export function ChatMessage({ role, content, isNew = false, fileName, messageId, threadId }: ChatMessageProps) {
+export function ChatMessage({ role, content, isNew = false, fileName, messageId, threadId, previousUserMessage }: ChatMessageProps) {
   const isUser = role === 'user';
   const { user } = useAuth();
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+
+  // Detect if this is a URL_RESEARCH response
+  const isUrlResearch = !isUser && content.includes('## Summary') && content.includes('## Sources');
+  const researchedUrl = isUrlResearch && previousUserMessage
+    ? (previousUserMessage.match(/https?:\/\/[^\s<>"')\]]+/i)?.[0] || '')
+    : '';
+  // Extract a name from the summary line
+  const summaryLine = isUrlResearch
+    ? content.split('\n').find((l) => l.startsWith('## Summary'))
+    : null;
+  const prefillName = summaryLine
+    ? (content.split('\n')[(content.split('\n').indexOf(summaryLine)) + 1] || '').slice(0, 80).trim()
+    : '';
 
   const handleFeedback = async (rating: 'up' | 'down') => {
     if (!messageId || !user || submitting || feedback) return;
@@ -177,7 +193,27 @@ export function ChatMessage({ role, content, isNew = false, fileName, messageId,
             </button>
           </div>
         )}
+        {isUrlResearch && researchedUrl && (
+          <div className="mt-1.5">
+            <button
+              onClick={() => setSaveDialogOpen(true)}
+              className="inline-flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors font-medium"
+            >
+              <Bookmark className="h-3.5 w-3.5" />
+              Save this link
+            </button>
+          </div>
+        )}
       </div>
+
+      {saveDialogOpen && (
+        <AddLinkDialog
+          open={saveDialogOpen}
+          onOpenChange={setSaveDialogOpen}
+          prefillUrl={researchedUrl}
+          prefillName={prefillName}
+        />
+      )}
     </div>
   );
 }
