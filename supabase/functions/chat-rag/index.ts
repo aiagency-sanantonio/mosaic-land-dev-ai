@@ -825,6 +825,51 @@ function extractTitle(content: string): string {
   return (lastSpace > 20 ? trimmed.slice(0, lastSpace) : trimmed) + '…';
 }
 
+// ── "Save this link" command detection ──
+function detectSaveLinkCommand(msg: string): boolean {
+  return /^(?:save this link|save that link|save this url|bookmark this)/i.test(msg.trim());
+}
+
+// ── Search saved web links ──
+async function searchSavedLinks(
+  supabaseAdmin: any,
+  query: string,
+  projectName: string | null
+): Promise<string> {
+  let q = supabaseAdmin
+    .from('saved_web_links')
+    .select('name, url, project_name, categories, notes, created_at')
+    .eq('is_active', true)
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  // Apply filters
+  if (projectName) {
+    q = q.ilike('project_name', `%${projectName}%`);
+  } else if (query) {
+    q = q.or(`name.ilike.%${query}%,project_name.ilike.%${query}%,url.ilike.%${query}%`);
+  }
+
+  const { data, error } = await q;
+  if (error) {
+    console.error('searchSavedLinks error:', error);
+    return 'I encountered an error searching the saved links.';
+  }
+  if (!data || data.length === 0) {
+    return 'No saved web links found matching your query. You can add links from the **Web Links** page or by using the "Save this link" button after a URL research.';
+  }
+
+  let md = `## Saved Web Links\n\nFound **${data.length}** link(s):\n\n`;
+  for (const link of data) {
+    md += `### [${link.name}](${link.url})\n`;
+    if (link.project_name) md += `**Project:** ${link.project_name}\n`;
+    if (link.categories?.length) md += `**Categories:** ${link.categories.join(', ')}\n`;
+    if (link.notes) md += `${link.notes}\n`;
+    md += `*Added ${new Date(link.created_at).toLocaleDateString()}*\n\n`;
+  }
+  return md;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
