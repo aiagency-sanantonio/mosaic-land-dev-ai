@@ -1078,7 +1078,7 @@ serve(async (req) => {
 
     // Append shared team knowledge (already fetched in parallel with message-based matching)
     // Re-fetch with project_name now that classification is complete
-    const { query_type, project_name, project_names, clarify_question, url: classifiedUrl, search_keywords } = classification;
+    let { query_type, project_name, project_names, clarify_question, url: classifiedUrl, search_keywords } = classification;
     let knowledgeText = systemKnowledge;
     if (project_name && !knowledgeText) {
       knowledgeText = await fetchSystemKnowledge(supabase, message, project_name);
@@ -1143,6 +1143,13 @@ serve(async (req) => {
       } catch (urlErr) {
         console.error('URL_RESEARCH (classifier) failed, falling through:', urlErr);
       }
+    }
+
+    // Fallback: if URL_RESEARCH didn't return (no URL found or Perplexity failed),
+    // re-route to DOCUMENT_SEARCH so we don't end up with empty context
+    if (query_type === 'URL_RESEARCH') {
+      console.log('URL_RESEARCH did not resolve — falling back to DOCUMENT_SEARCH');
+      query_type = 'DOCUMENT_SEARCH';
     }
 
     // SAVED_LINK_SEARCH — query saved_web_links using classifier-extracted keywords
