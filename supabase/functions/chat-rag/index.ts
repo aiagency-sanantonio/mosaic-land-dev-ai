@@ -753,49 +753,108 @@ function getYouTubeVideoId(url: string): string | null {
   } catch { return null; }
 }
 
+function parseTranscriptXml(xml: string): { start: number; text: string }[] {
+  const segments: { start: number; text: string }[] = [];
+  const matches = xml.matchAll(/<text start="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g);
+  for (const m of matches) {
+    segments.push({
+      start: parseFloat(m[1]),
+      text: m[2].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/<[^>]+>/g, '').trim(),
+    });
+  }
+  return segments;
+}
+
 async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; segments: { start: number; text: string }[] } | null> {
-  // Try primary free transcript API
-  const apis = [
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+
+  // Method 1: Scrape YouTube page for captionTracks
+  try {
+    console.log('VIDEO_SUMMARY: trying YouTube page scrape for captions...');
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (pageRes.ok) {
+      const html = await pageRes.text();
+      // Extract captionTracks JSON from ytInitialPlayerResponse
+      const captionMatch = html.match(/"captionTracks"\s*:\s*(\[.*?\])/);
+      if (captionMatch) {
+        try {
+          const tracks = JSON.parse(captionMatch[1]);
+          // Prefer English, fall back to first track
+          const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('.en')) || tracks[0];
+          if (enTrack?.baseUrl) {
+            let captionUrl = enTrack.baseUrl;
+            // Ensure we get XML format
+            if (!captionUrl.includes('fmt=')) captionUrl += '&fmt=srv3';
+            console.log('VIDEO_SUMMARY: found caption track, fetching transcript XML...');
+            const xmlRes = await fetch(captionUrl, {
+              headers: { 'User-Agent': UA },
+              signal: AbortSignal.timeout(8000),
+            });
+            if (xmlRes.ok) {
+              const xml = await xmlRes.text();
+              const segments = parseTranscriptXml(xml);
+              if (segments.length > 0) {
+                console.log(`VIDEO_SUMMARY: scraped ${segments.length} segments from YouTube page`);
+                return { text: segments.map(s => s.text).join(' '), segments };
+              }
+            }
+          }
+        } catch (parseErr) {
+          console.log('VIDEO_SUMMARY: failed to parse captionTracks JSON:', parseErr);
+        }
+      } else {
+        console.log('VIDEO_SUMMARY: no captionTracks found in page HTML');
+      }
+    }
+  } catch (e) {
+    console.log('VIDEO_SUMMARY: YouTube page scrape failed:', e);
+  }
+
+  // Method 2: Direct timedtext API
+  try {
+    console.log('VIDEO_SUMMARY: trying direct timedtext API...');
+    const ttRes = await fetch(`https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=srv3`, {
+      headers: { 'User-Agent': UA },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (ttRes.ok) {
+      const xml = await ttRes.text();
+      const segments = parseTranscriptXml(xml);
+      if (segments.length > 0) {
+        console.log(`VIDEO_SUMMARY: got ${segments.length} segments from timedtext API`);
+        return { text: segments.map(s => s.text).join(' '), segments };
+      }
+    }
+  } catch (e) {
+    console.log('VIDEO_SUMMARY: timedtext API failed:', e);
+  }
+
+  // Method 3: Legacy fallback APIs
+  const fallbackApis = [
     `https://yt.vl.comp.nus.edu.sg/transcript?v=${videoId}`,
     `https://youtubetranscript.com/?server_vid2=${videoId}`,
   ];
-
-  for (const apiUrl of apis) {
+  for (const apiUrl of fallbackApis) {
     try {
-      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(6000) });
       if (!res.ok) continue;
-
       const contentType = res.headers.get('content-type') || '';
       let segments: { start: number; text: string }[] = [];
-
       if (contentType.includes('application/json')) {
         const data = await res.json();
-        if (Array.isArray(data)) {
-          segments = data.map((s: any) => ({
-            start: parseFloat(s.start || s.offset || 0),
-            text: String(s.text || s.content || ''),
-          }));
-        } else if (data.transcript && Array.isArray(data.transcript)) {
-          segments = data.transcript.map((s: any) => ({
-            start: parseFloat(s.start || s.offset || 0),
-            text: String(s.text || s.content || ''),
-          }));
-        }
+        const arr = Array.isArray(data) ? data : (data.transcript && Array.isArray(data.transcript) ? data.transcript : []);
+        segments = arr.map((s: any) => ({ start: parseFloat(s.start || s.offset || 0), text: String(s.text || s.content || '') }));
       } else {
-        // XML response from youtubetranscript.com
-        const xml = await res.text();
-        const matches = xml.matchAll(/<text start="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g);
-        for (const m of matches) {
-          segments.push({ start: parseFloat(m[1]), text: m[2].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"') });
-        }
+        segments = parseTranscriptXml(await res.text());
       }
-
       if (segments.length > 0) {
-        const fullText = segments.map(s => s.text).join(' ');
-        return { text: fullText, segments };
+        return { text: segments.map(s => s.text).join(' '), segments };
       }
     } catch (e) {
-      console.log(`Transcript API failed for ${apiUrl}:`, e);
+      console.log(`VIDEO_SUMMARY: fallback API failed for ${apiUrl}:`, e);
     }
   }
 
