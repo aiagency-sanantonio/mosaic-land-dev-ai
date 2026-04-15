@@ -65,7 +65,7 @@ function extractJsonObject(text: string): string {
   throw new Error('Unterminated JSON object in classifier response');
 }
 
-
+async function classifyQuery(message: string, chatHistory: string = ''): Promise<ClassifyResult> {
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
 
