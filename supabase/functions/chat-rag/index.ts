@@ -1069,6 +1069,34 @@ serve(async (req) => {
       );
     }
 
+    // SAVED_LINK_SEARCH — query saved_web_links and return formatted results
+    if (query_type === 'SAVED_LINK_SEARCH') {
+      console.log('SAVED_LINK_SEARCH query detected');
+      const searchTerm = project_name || message.replace(/(?:find|show|get|list|search|saved|links?|web|bookmarks?|for|me|do we have|what)/gi, '').trim();
+      const response = await searchSavedLinks(supabase, searchTerm, project_name);
+
+      if (callback_url && job_id) {
+        await fetch(callback_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id, response }),
+        });
+      }
+
+      await supabase.from('retrieval_logs').insert({
+        thread_id: threadId || null,
+        user_id: userId || null,
+        question: message,
+        query_type: 'SAVED_LINK_SEARCH',
+        normalized_project: project_name || null,
+      });
+
+      return new Response(
+        JSON.stringify({ success: true, query_type: 'SAVED_LINK_SEARCH' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Retrieve context based on query type
     let context = '';
     let contextType = 'Retrieved Documents';
