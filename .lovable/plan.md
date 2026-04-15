@@ -1,68 +1,120 @@
 
 
-## Plan: Add URL Research Mode via Perplexity API (using `sonar`)
+## Plan: Web Links — Shared Link Library + Chat Integration
 
-### Overview
-Detect public URLs in user messages within `chat-rag`, skip the normal RAG classifier, and route to a Perplexity `sonar` model call that summarizes the URL content with web-grounded sources.
+### 1. Database Migration
 
-### Prerequisites
-- **Perplexity connector** — connect via the Perplexity connector (no manual API key needed)
-- Verify `PERPLEXITY_API_KEY` becomes available after connection
+Create `saved_web_links` table:
 
-### Changes
+```sql
+CREATE TABLE public.saved_web_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  url text NOT NULL,
+  project_name text,
+  categories text[] NOT NULL DEFAULT '{}',
+  notes text,
+  added_by uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  is_active boolean NOT NULL DEFAULT true,
+  last_researched_at timestamptz
+);
 
-#### 1. `supabase/functions/chat-rag/index.ts`
+ALTER TABLE public.saved_web_links ENABLE ROW LEVEL SECURITY;
 
-**Add `extractPublicUrls(message)` helper** (near line 714, with other helpers):
-- Regex to find `https?://...` URLs
-- Reject localhost, private IPs (10.x, 172.16-31.x, 192.168.x), .local, .internal
-- Return array of valid public URLs
+-- All authenticated users can view all links (shared library)
+CREATE POLICY "Authenticated users can view web links"
+  ON public.saved_web_links FOR SELECT TO authenticated
+  USING (is_active = true);
 
-**Add `summarizeUrlWithPerplexity({ url, userMessage, chatHistory })` helper**:
-- Call `https://api.perplexity.ai/chat/completions` with model `sonar`
-- System prompt instructs: fetch/analyze URL content, search web for context, return structured markdown (Summary, Key Findings, Notes/Risks, Sources)
-- Parse `citations` array from response and append as source links
-- Return formatted markdown
+-- Any authenticated user can add links
+CREATE POLICY "Authenticated users can insert web links"
+  ON public.saved_web_links FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = added_by);
 
-**Add early intercept** (~line 782, after "Remember This" check, before classification):
-- `const urls = extractPublicUrls(message)`
-- If URLs found, take first URL, call `summarizeUrlWithPerplexity`
-- POST result to `callback_url` via existing job callback pattern
-- Return early
+-- Users can update their own links
+CREATE POLICY "Users can update own web links"
+  ON public.saved_web_links FOR UPDATE TO authenticated
+  USING (auth.uid() = added_by);
 
-#### 2. `src/components/chat/EmptyState.tsx`
-- Add a 4th suggestion card: icon `Link`, title "Analyze a URL", description "Paste a public URL to get a grounded summary with sources"
+-- Users can soft-delete their own links
+CREATE POLICY "Users can delete own web links"
+  ON public.saved_web_links FOR DELETE TO authenticated
+  USING (auth.uid() = added_by);
 
-#### 3. `src/components/chat/ChatInput.tsx`
-- Update placeholder text to mention URL analysis capability
-
-### Response Format
-```
-## Summary
-[Overview of URL content]
-
-## Key Findings
-- Finding 1
-- Finding 2
-
-## Notes & Risks
-- Caveats or concerns
-
-## Sources
-- [Title](url) — description
+-- Service role full access
+CREATE POLICY "Service role manages web links"
+  ON public.saved_web_links FOR ALL TO public
+  USING (true) WITH CHECK (true);
 ```
 
-### Flow
-```text
-User message with URL → chat-webhook → chat-rag
-  → extractPublicUrls? YES → summarizeUrlWithPerplexity (sonar)
-                                → POST to callback_url → chat-response-webhook
-  → No URLs → normal classification → RAG pipeline
-```
+### 2. Frontend: Web Links Page (`src/pages/WebLinks.tsx`)
 
-### Technical Details
-- Model: `sonar` (not sonar-pro)
-- Temperature: 0.2 for factual grounding
-- Perplexity connector provides the API key automatically as `PERPLEXITY_API_KEY`
-- No changes to job flow, callback pattern, or existing classification logic
+New route `/web-links` added to `App.tsx`. Page includes:
+- Header with search input and "Add Link" button
+- Searchable, filterable list of all saved links (search by name, project, category)
+- Category filter chips
+- Each link card shows: name, URL (clickable), project_name, categories as badges, notes, added_by email, date
+- Mobile-friendly responsive grid (1 col mobile, 2 col tablet, 3 col desktop)
+- Uses `@tanstack/react-query` for data fetching
+
+### 3. Frontend: Add Link Dialog (`src/components/weblinks/AddLinkDialog.tsx`)
+
+Modal form with fields:
+- URL (required, validated)
+- Name (required)
+- Project Name (plain text input — no dropdown, no master list)
+- Categories (multi-select from predefined list: Vendor, Consultant, Government, Utility, Reference, Permit, Legal, Other)
+- Notes (optional textarea)
+
+Pre-fill URL and name when triggered from chat context (via URL params or state).
+
+### 4. Frontend: Navigation Access
+
+Add a "Web Links" button to the sidebar (`ChatSidebar.tsx`) between New Chat and New Folder — a `Link2` icon button that navigates to `/web-links`.
+
+### 5. Chat Integration: "Save This Link" Flow
+
+**In `ChatMessage.tsx`**: After an assistant message that was a URL_RESEARCH response (detected by checking if the message contains `## Summary` and `## Sources` patterns and the preceding user message contained a URL), show a "Save this link" button below the feedback buttons.
+
+Clicking "Save this link" opens the `AddLinkDialog` pre-filled with:
+- URL extracted from the user's message
+- Name pre-filled from the page title in the summary
+
+**In `chat-rag/index.ts`**: Add a `SAVED_LINK_SEARCH` intercept. Before classification, detect if the user is asking to find a saved link (e.g., "find saved link for...", "what links do we have for..."). If detected:
+- Query `saved_web_links` by project_name, categories, or name (case-insensitive ILIKE)
+- Return formatted results
+- Skip normal RAG pipeline
+
+Also add to the classification prompt a new type `SAVED_LINK_SEARCH` for queries about saved web links.
+
+**Chat "save this link" command**: In `chat-rag`, detect messages like "save this link" or "save that link". If detected, look back in chat history for the most recent URL_RESEARCH URL, then return a response with a special marker that the frontend interprets to open the save dialog pre-filled.
+
+### 6. Backend: chat-rag Changes
+
+Add to `chat-rag/index.ts`:
+- New intercept after URL_RESEARCH check: detect "save this link" commands
+- New function `searchSavedLinks(query, projectName, category)` that queries `saved_web_links`
+- Add `SAVED_LINK_SEARCH` to the classify prompt so the classifier can route link-search queries
+- When classification returns `SAVED_LINK_SEARCH`, query saved links and format as markdown list
+
+### 7. Files to Create/Modify
+
+| File | Action |
+|------|--------|
+| `src/pages/WebLinks.tsx` | Create — main page |
+| `src/components/weblinks/AddLinkDialog.tsx` | Create — add/edit form |
+| `src/components/weblinks/LinkCard.tsx` | Create — individual link display |
+| `src/hooks/useWebLinks.tsx` | Create — CRUD hook |
+| `src/App.tsx` | Add `/web-links` route |
+| `src/components/chat/ChatSidebar.tsx` | Add Web Links nav button |
+| `src/components/chat/ChatMessage.tsx` | Add "Save this link" button for URL_RESEARCH responses |
+| `supabase/functions/chat-rag/index.ts` | Add SAVED_LINK_SEARCH type + save-link command detection |
+
+### Key Constraints Honored
+- Project name is plain text only — no dropdown, no validation against a master list
+- Bot never auto-saves links — only explicit user action (UI button or "save this link" command)
+- URL research continues to work as-is without saving
+- All users see all active links (shared library)
 
