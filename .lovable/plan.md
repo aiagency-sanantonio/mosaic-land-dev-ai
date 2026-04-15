@@ -1,71 +1,68 @@
 
 
-## Plan: Fix Indexing Self-Chain Reliability
+## Plan: Add URL Research Mode via Perplexity API (using `sonar`)
 
-### Problem
+### Overview
+Detect public URLs in user messages within `chat-rag`, skip the normal RAG classifier, and route to a Perplexity `sonar` model call that summarizes the URL content with web-grounded sources.
 
-The indexing loop silently dies because of two issues:
+### Prerequisites
+- **Perplexity connector** — connect via the Perplexity connector (no manual API key needed)
+- Verify `PERPLEXITY_API_KEY` becomes available after connection
 
-1. **`setTimeout` is unreliable in edge functions** (lines 568-577 of `batch-index`). The Deno edge runtime can terminate the function *before* the `setTimeout` callback fires. The `fetch` inside it is fire-and-forget and never awaited — so the self-chain request simply never happens.
+### Changes
 
-2. **The cron safety net only runs once per day** (2:30 AM UTC). So when the self-chain breaks, nothing re-triggers indexing until the next night. The memory notes say "every minute" but the actual cron schedule is `30 2 * * *`.
+#### 1. `supabase/functions/chat-rag/index.ts`
 
-### Fix (2 changes)
+**Add `extractPublicUrls(message)` helper** (near line 714, with other helpers):
+- Regex to find `https?://...` URLs
+- Reject localhost, private IPs (10.x, 172.16-31.x, 192.168.x), .local, .internal
+- Return array of valid public URLs
 
-#### 1. Replace `setTimeout` with `EdgeRuntime.waitUntil` in `batch-index/index.ts`
+**Add `summarizeUrlWithPerplexity({ url, userMessage, chatHistory })` helper**:
+- Call `https://api.perplexity.ai/chat/completions` with model `sonar`
+- System prompt instructs: fetch/analyze URL content, search web for context, return structured markdown (Summary, Key Findings, Notes/Risks, Sources)
+- Parse `citations` array from response and append as source links
+- Return formatted markdown
 
-Instead of fire-and-forget `setTimeout`, use `EdgeRuntime.waitUntil()` to guarantee the self-chain fetch completes before the runtime shuts down. This is the standard Deno Deploy / Supabase pattern for background work after returning a response.
+**Add early intercept** (~line 782, after "Remember This" check, before classification):
+- `const urls = extractPublicUrls(message)`
+- If URLs found, take first URL, call `summarizeUrlWithPerplexity`
+- POST result to `callback_url` via existing job callback pattern
+- Return early
 
-**Current code (lines 562-578):**
-```typescript
-if (!isDone) {
-  setTimeout(() => {
-    fetch(fnUrl, { ... }).catch(err => console.error(...));
-  }, 500);
-}
+#### 2. `src/components/chat/EmptyState.tsx`
+- Add a 4th suggestion card: icon `Link`, title "Analyze a URL", description "Paste a public URL to get a grounded summary with sources"
+
+#### 3. `src/components/chat/ChatInput.tsx`
+- Update placeholder text to mention URL analysis capability
+
+### Response Format
+```
+## Summary
+[Overview of URL content]
+
+## Key Findings
+- Finding 1
+- Finding 2
+
+## Notes & Risks
+- Caveats or concerns
+
+## Sources
+- [Title](url) — description
 ```
 
-**New approach:**
-- Build the self-chain fetch as a delayed promise
-- Return the HTTP response immediately
-- Use `EdgeRuntime.waitUntil(chainPromise)` to keep the runtime alive until the fetch completes
-
-This means restructuring the serve handler slightly: instead of returning the response at the end, we capture the chain promise and call `waitUntil` before returning.
-
-#### 2. Increase cron frequency from daily to every 5 minutes
-
-Change the `nightly-batch-index` cron job from `30 2 * * *` to `*/5 * * * *`. The batch-index function already exits gracefully when there's no running job ("No running job found, skipping"), so frequent cron hits are harmless when idle. But when a chain breaks, the cron will pick it back up within 5 minutes instead of waiting until the next night.
-
-This requires unscheduling the old job and creating a new one via SQL insert.
+### Flow
+```text
+User message with URL → chat-webhook → chat-rag
+  → extractPublicUrls? YES → summarizeUrlWithPerplexity (sonar)
+                                → POST to callback_url → chat-response-webhook
+  → No URLs → normal classification → RAG pipeline
+```
 
 ### Technical Details
-
-**`supabase/functions/batch-index/index.ts`**:
-- Declare `let chainPromise: Promise<void> | null = null` before the response
-- Replace the `setTimeout` block with:
-  ```typescript
-  if (!isDone) {
-    chainPromise = new Promise<void>(resolve => setTimeout(resolve, 500))
-      .then(() => fetch(fnUrl, { method: 'POST', headers: {...}, body: ... }))
-      .then(r => r.text())
-      .then(() => console.log('Self-chain triggered'))
-      .catch(err => console.error('Self-chain failed:', err));
-  }
-  ```
-- After building the Response object but before returning it, add:
-  ```typescript
-  if (chainPromise) {
-    EdgeRuntime.waitUntil(chainPromise);
-  }
-  ```
-- Add a TypeScript declaration for `EdgeRuntime` at the top of the file
-
-**Cron job update** (via SQL):
-- `SELECT cron.unschedule(7)` to remove the daily job
-- Create new job with `*/5 * * * *` schedule, same HTTP call
-
-### What This Fixes
-- Self-chaining will reliably fire even when the edge runtime wants to shut down
-- If a chain still breaks (network blip, OOM, etc.), the 5-minute cron will restart it automatically
-- No changes to the processing logic, kill switch, or stats tracking
+- Model: `sonar` (not sonar-pro)
+- Temperature: 0.2 for factual grounding
+- Perplexity connector provides the API key automatically as `PERPLEXITY_API_KEY`
+- No changes to job flow, callback pattern, or existing classification logic
 
