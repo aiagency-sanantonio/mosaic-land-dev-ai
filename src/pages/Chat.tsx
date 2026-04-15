@@ -154,17 +154,23 @@ export default function Chat() {
               <EmptyState />
             ) : (
               <div className="p-4 space-y-4 pb-8">
-                {messages.map((message, index) => (
-                    <ChatMessage
-                    key={message.id}
-                    role={message.role}
-                    content={message.content}
-                    isNew={index === messages.length - 1}
-                    fileName={message.file_name}
-                    messageId={message.id}
-                    threadId={currentThreadId ?? undefined}
-                  />
-                ))}
+                {messages.map((message, index) => {
+                    const prevUserMsg = message.role === 'assistant'
+                      ? messages.slice(0, index).reverse().find((m) => m.role === 'user')?.content
+                      : undefined;
+                    return (
+                      <ChatMessage
+                        key={message.id}
+                        role={message.role}
+                        content={message.content}
+                        isNew={index === messages.length - 1}
+                        fileName={message.file_name}
+                        messageId={message.id}
+                        threadId={currentThreadId ?? undefined}
+                        previousUserMessage={prevUserMsg}
+                      />
+                    );
+                  })}
                 {sendingMessage && (
                   <div className="flex gap-3 max-w-4xl mx-auto">
                     <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
