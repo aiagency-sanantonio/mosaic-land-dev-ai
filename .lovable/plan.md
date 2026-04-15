@@ -1,44 +1,57 @@
 
 
-## Plan: Fix URL Follow-Up by Including URL in Perplexity Prompt
+## Plan: Harden Classifier JSON Parsing + Improve Follow-Up Context
 
-### Problem
-When the user asks a follow-up question about a previously pasted URL (e.g., "how many sections are on that page?"), the classifier correctly extracts the URL from chat history and routes to `URL_RESEARCH`. However, the `summarizeUrlWithPerplexity` function on line 782 has a bug:
+### Two Bugs Found in Logs
+
+**Bug 1 — JSON parse crash (causes 500 error):**
+The classifier (Claude Haiku) sometimes returns extra conversational text after the JSON block. The current cleanup regex only strips markdown fences but doesn't isolate the JSON object, so `JSON.parse` chokes on trailing text like "**Quick Answer:** Based on the chat history..."
+
+**Bug 2 — Misclassification of follow-up questions:**
+"Just give me the link to the first district map" was classified as `SAVED_LINK_SEARCH` instead of `URL_RESEARCH`, even though the conversation already had a researched URL. The classifier needs stronger guidance to recognize when a follow-up references previously researched content.
+
+### Changes — `supabase/functions/chat-rag/index.ts`
+
+**1. Fix JSON extraction (line ~86)**
+
+Replace the naive regex strip with a robust JSON extractor that finds the first `{...}` block using brace counting. This handles:
+- Markdown fences with trailing text
+- Extra commentary after the JSON
+- Any model formatting quirks
 
 ```typescript
-const userPrompt = opts.userMessage.trim() || `Please analyze this URL: ${opts.url}`;
+// Extract first valid JSON object from potentially messy LLM output
+function extractJsonObject(text: string): string {
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('No JSON object found in classifier response');
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  throw new Error('Unterminated JSON object in classifier response');
+}
 ```
 
-Since the user's message ("Can you give me a summary of the first map on that page?") is truthy, the URL is **never included** in the Perplexity prompt. Perplexity receives a question with no URL context and can't fetch or analyze the page.
+**2. Strengthen classifier prompt for follow-up context**
 
-### Fix
+Add explicit instruction to the `CLASSIFY_SYSTEM_PROMPT`:
+- When the assistant previously researched a URL and the user asks a follow-up about its content (e.g., "give me the link to the first district map", "how many sections are there?"), classify as `URL_RESEARCH` with the URL extracted from history — not `SAVED_LINK_SEARCH`.
+- `SAVED_LINK_SEARCH` is only for finding links the team has *saved* in the library when no prior URL research exists in the conversation.
 
-**File:** `supabase/functions/chat-rag/index.ts`
+**3. Increase classifier max_tokens**
 
-**1. Always include the URL in the Perplexity user prompt (line ~782)**
+Bump `max_tokens` from 256 to 300 to reduce truncation risk on longer reasoning outputs (the crash response had 348 chars of JSON alone).
 
-Change the `userPrompt` construction to always include the URL, and when the user's message is a follow-up question (not just the URL itself), frame it as "analyze this URL and answer this specific question":
-
-```typescript
-const hasQuestion = opts.userMessage.trim() && !opts.userMessage.trim().startsWith('http');
-const userPrompt = hasQuestion
-  ? `Analyze this URL: ${opts.url}\n\nUser's question about this page: ${opts.userMessage.trim()}`
-  : `Please analyze this URL: ${opts.url}`;
-```
-
-**2. Update the system prompt to handle Q&A mode (~line 759)**
-
-Add a line to the system prompt telling Perplexity that when a specific question accompanies the URL, it should answer that question directly using the page content rather than giving a generic summary.
-
-### What stays the same
+### What Stays the Same
 - No frontend changes
 - No database changes
 - Pre-classifier fast path for explicit URLs unchanged
-- Classifier prompt unchanged
-- Saved link search unchanged
+- Perplexity prompt fix from prior plan unchanged
+- All other query type handlers unchanged
 
-### Files changed
+### Files Changed
 | File | Change |
 |------|--------|
-| `supabase/functions/chat-rag/index.ts` | Fix `userPrompt` in `summarizeUrlWithPerplexity` to always include URL; update system prompt for Q&A mode |
+| `supabase/functions/chat-rag/index.ts` | Add `extractJsonObject` helper, update classifier prompt, bump max_tokens |
 
