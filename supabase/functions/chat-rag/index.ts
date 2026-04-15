@@ -1145,6 +1145,13 @@ serve(async (req) => {
       }
     }
 
+    // Fallback: if URL_RESEARCH didn't return (no URL found or Perplexity failed),
+    // re-route to DOCUMENT_SEARCH so we don't end up with empty context
+    if (query_type === 'URL_RESEARCH') {
+      console.log('URL_RESEARCH did not resolve — falling back to DOCUMENT_SEARCH');
+      query_type = 'DOCUMENT_SEARCH';
+    }
+
     // SAVED_LINK_SEARCH — query saved_web_links using classifier-extracted keywords
     if (query_type === 'SAVED_LINK_SEARCH') {
       console.log('SAVED_LINK_SEARCH query detected, search_keywords:', search_keywords);
