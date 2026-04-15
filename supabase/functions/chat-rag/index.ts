@@ -766,27 +766,60 @@ function parseTranscriptXml(xml: string): { start: number; text: string }[] {
 }
 
 async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; segments: { start: number; text: string }[] } | null> {
-  // Method 1: youtube-transcript npm package via esm.sh (most reliable)
-  try {
-    console.log('VIDEO_SUMMARY: trying youtube-transcript package...');
-    const { YoutubeTranscript } = await import("https://esm.sh/youtube-transcript@1.3.0");
-    const result = await YoutubeTranscript.fetchTranscript(videoId);
-    if (Array.isArray(result) && result.length > 0) {
-      const segments = result.map((s: any) => ({
-        start: (s.offset || 0) / 1000,
-        text: String(s.text || ''),
-      }));
-      console.log(`VIDEO_SUMMARY: got ${segments.length} segments via youtube-transcript package`);
-      return { text: segments.map(s => s.text).join(' '), segments };
+  // Method 1: Perplexity sonar — can access YouTube from its own crawling infra
+  const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY');
+  if (PERPLEXITY_API_KEY) {
+    try {
+      console.log('VIDEO_SUMMARY: trying Perplexity sonar for transcript extraction...');
+      const pplxRes = await fetch('https://api.perplexity.ai/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'sonar',
+          messages: [
+            {
+              role: 'user',
+              content: `Extract the full spoken transcript/captions from this YouTube video: https://www.youtube.com/watch?v=${videoId}\n\nReturn ONLY the raw transcript text with no commentary, no summary, no timestamps, no formatting. Just the spoken words. If captions/transcript are unavailable, respond with exactly: NO_TRANSCRIPT`,
+            },
+          ],
+          temperature: 0,
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (pplxRes.ok) {
+        const pplxData = await pplxRes.json();
+        const transcriptText = pplxData.choices?.[0]?.message?.content?.trim() || '';
+
+        if (transcriptText && !transcriptText.includes('NO_TRANSCRIPT')) {
+          // Split into pseudo-segments (~30 words each, ~15s estimated intervals)
+          const words = transcriptText.split(/\s+/);
+          const segments: { start: number; text: string }[] = [];
+          const WORDS_PER_SEGMENT = 30;
+          for (let i = 0; i < words.length; i += WORDS_PER_SEGMENT) {
+            const chunk = words.slice(i, i + WORDS_PER_SEGMENT).join(' ');
+            segments.push({ start: (i / WORDS_PER_SEGMENT) * 15, text: chunk });
+          }
+          console.log(`VIDEO_SUMMARY: got ${segments.length} segments via Perplexity sonar (${words.length} words)`);
+          return { text: transcriptText, segments };
+        } else {
+          console.log('VIDEO_SUMMARY: Perplexity returned NO_TRANSCRIPT or empty');
+        }
+      } else {
+        console.log(`VIDEO_SUMMARY: Perplexity returned ${pplxRes.status}`);
+      }
+    } catch (e) {
+      console.log('VIDEO_SUMMARY: Perplexity transcript extraction failed:', e instanceof Error ? e.message : e);
     }
-  } catch (e) {
-    console.log('VIDEO_SUMMARY: youtube-transcript package failed:', e instanceof Error ? e.message : e);
   }
 
-  // Method 2: YouTube page scrape with consent cookie bypass
+  // Method 2: Direct YouTube page scrape (fallback — may work outside cloud IPs)
   const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
   try {
-    console.log('VIDEO_SUMMARY: trying YouTube page scrape...');
+    console.log('VIDEO_SUMMARY: trying YouTube page scrape fallback...');
     const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', 'Cookie': 'CONSENT=PENDING+987; SOCS=CAESEwgDEgk2NTAyMTk0NTkaAmVuIAEaBgiA_L-uBg' },
       signal: AbortSignal.timeout(10000),
