@@ -1058,7 +1058,7 @@ serve(async (req) => {
 
     // Append shared team knowledge (already fetched in parallel with message-based matching)
     // Re-fetch with project_name now that classification is complete
-    const { query_type, project_name, project_names, clarify_question } = classification;
+    const { query_type, project_name, project_names, clarify_question, url: classifiedUrl, search_keywords } = classification;
     let knowledgeText = systemKnowledge;
     if (project_name && !knowledgeText) {
       knowledgeText = await fetchSystemKnowledge(supabase, message, project_name);
@@ -1088,11 +1088,47 @@ serve(async (req) => {
       );
     }
 
-    // SAVED_LINK_SEARCH — query saved_web_links and return formatted results
+    // URL_RESEARCH via classifier (handles URLs from chat history that pre-classifier missed)
+    if (query_type === 'URL_RESEARCH' && classifiedUrl) {
+      console.log('URL_RESEARCH (classifier) triggered for:', classifiedUrl);
+      try {
+        const research = await summarizeUrlWithPerplexity({
+          url: classifiedUrl,
+          userMessage: message,
+          chatHistory: chatHistory || '',
+        });
+
+        const responseText = research.text;
+
+        if (callback_url && job_id) {
+          await fetch(callback_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_id, response: responseText }),
+          });
+        }
+
+        await supabase.from('retrieval_logs').insert({
+          thread_id: threadId || null,
+          user_id: userId || null,
+          question: message,
+          query_type: 'URL_RESEARCH',
+          top_sources: research.citations.map((c: string) => ({ url: c })),
+        });
+
+        return new Response(
+          JSON.stringify({ success: true, query_type: 'URL_RESEARCH' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (urlErr) {
+        console.error('URL_RESEARCH (classifier) failed, falling through:', urlErr);
+      }
+    }
+
+    // SAVED_LINK_SEARCH — query saved_web_links using classifier-extracted keywords
     if (query_type === 'SAVED_LINK_SEARCH') {
-      console.log('SAVED_LINK_SEARCH query detected');
-      const searchTerm = project_name || message.replace(/(?:find|show|get|list|search|saved|links?|web|bookmarks?|for|me|do we have|what)/gi, '').trim();
-      const response = await searchSavedLinks(supabase, searchTerm, project_name);
+      console.log('SAVED_LINK_SEARCH query detected, search_keywords:', search_keywords);
+      const response = await searchSavedLinks(supabase, search_keywords || null, project_name);
 
       if (callback_url && job_id) {
         await fetch(callback_url, {
