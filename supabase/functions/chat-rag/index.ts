@@ -720,6 +720,7 @@ function extractPublicUrls(message: string): string[] {
     try {
       const parsed = new URL(url);
       const hostname = parsed.hostname.toLowerCase();
+      // Reject private/local addresses
       if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.internal')) return false;
       if (/^127\./.test(hostname)) return false;
       if (/^10\./.test(hostname)) return false;
@@ -733,181 +734,6 @@ function extractPublicUrls(message: string): string[] {
       return false;
     }
   });
-}
-
-// ── YouTube helpers ──
-function isYouTubeUrl(url: string): boolean {
-  try {
-    const h = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
-    return h === 'youtube.com' || h === 'm.youtube.com' || h === 'youtu.be';
-  } catch { return false; }
-}
-
-function getYouTubeVideoId(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    const h = parsed.hostname.toLowerCase().replace(/^www\./, '');
-    if (h === 'youtu.be') return parsed.pathname.slice(1).split('/')[0] || null;
-    if (h === 'youtube.com' || h === 'm.youtube.com') return parsed.searchParams.get('v');
-    return null;
-  } catch { return null; }
-}
-
-async function summarizeYouTubeWithPerplexity(videoId: string, userMessage: string): Promise<{ summary: string; sources: string[] } | null> {
-  const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY');
-  if (!PERPLEXITY_API_KEY) {
-    console.log('VIDEO_SUMMARY: PERPLEXITY_API_KEY not configured');
-    return null;
-  }
-
-  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-  // Strip the URL from the user message to get the actual question text
-  const strippedMessage = userMessage
-    .replace(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)[^\s]+/gi, '')
-    .trim();
-
-  // Detect if user is asking a specific question vs just sharing a link / asking for summary
-  const isSummaryRequest = !strippedMessage ||
-    /^(summarize|summary|sum up|recap|overview|what'?s this|check this|watch this)/i.test(strippedMessage);
-
-  const isDetailed = /detail|in[- ]depth|thorough|comprehensive/i.test(userMessage);
-
-  let systemPrompt: string;
-  let userPrompt: string;
-
-  if (isSummaryRequest) {
-    // Generic summary mode
-    systemPrompt = `You are a video content analyst. Summarize the YouTube video at the provided URL using ALL available information from your web search: video description, comments, related articles, blog posts, social media discussions, and any transcript data you can find.
-
-IMPORTANT: Do NOT say you "cannot access the video" or "need the transcript." Use whatever information your search returns — titles, descriptions, comments, reviews, discussions about the video. There is always SOME information available.
-
-Format your response EXACTLY as:
-
-## Summary
-[1 concise paragraph summarizing the video content, 2-3 sentences]
-
-## Key Points
-- [Key point 1]
-- [Key point 2]
-- [Key point 3]
-${isDetailed ? '- [Key point 4]\n- [Key point 5]\n\n## Details\n[Additional detail paragraph if relevant]' : ''}
-
-Be factual and specific. Only respond with exactly NO_VIDEO_INFO if you find literally zero search results mentioning this video.`;
-    userPrompt = `Summarize this YouTube video: ${videoUrl}`;
-    console.log('VIDEO_SUMMARY: generic summary mode');
-  } else {
-    // Specific question mode
-    systemPrompt = `You are a video content analyst. Answer the user's specific question about a YouTube video using ALL available information from your web search: video description, comments, related articles, blog posts, social media discussions, forums, and any transcript data you can find.
-
-CRITICAL RULES:
-- Do NOT say you "cannot access the video", "cannot provide a detailed analysis", or "need the transcript"
-- Do NOT hedge or apologize about limited information — just answer with what you find
-- Use video descriptions, comment sections, related discussions, reviews, and any web content about the video
-- If you find partial information, share what you found confidently
-- Stay focused on answering their specific question — do not give a generic summary
-- Only respond with exactly NO_VIDEO_INFO if you find literally zero search results mentioning this video`;
-    userPrompt = `Regarding this YouTube video (${videoUrl}): ${strippedMessage}`;
-    console.log(`VIDEO_SUMMARY: specific question mode — "${strippedMessage}"`);
-  }
-
-  try {
-    console.log('VIDEO_SUMMARY: calling Perplexity sonar...');
-    const res = await fetch('https://api.perplexity.ai/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'sonar',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.1,
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (!res.ok) {
-      console.log(`VIDEO_SUMMARY: Perplexity returned ${res.status}`);
-      return null;
-    }
-
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content?.trim() || '';
-    const citations: string[] = data.citations || [];
-
-    if (!content || content.includes('NO_VIDEO_INFO')) {
-      console.log('VIDEO_SUMMARY: Perplexity could not find video info');
-      return null;
-    }
-
-    // Detect refusal/hedging responses and treat them as failures
-    const refusalPatterns = [
-      'cannot provide a detailed',
-      'I cannot provide',
-      'do not contain the actual transcript',
-      'I don\'t have access to',
-      'I cannot access',
-      'search results do not contain',
-      'unable to access the video',
-      'I would need the full transcript',
-      'I would need access to',
-    ];
-    const isRefusal = refusalPatterns.some(p => content.toLowerCase().includes(p.toLowerCase()));
-    if (isRefusal) {
-      console.log('VIDEO_SUMMARY: detected refusal/hedging in response, returning null');
-      return null;
-    }
-
-    console.log(`VIDEO_SUMMARY: got response from Perplexity (${content.length} chars, ${citations.length} citations)`);
-    return { summary: content, sources: citations };
-  } catch (e) {
-    console.log('VIDEO_SUMMARY: Perplexity call failed:', e instanceof Error ? e.message : e);
-    return null;
-  }
-}
-
-function shouldResearchVideo(message: string): boolean {
-  return /\b(verify|verifiable|fact[- ]?check|research|claims?|what are people saying|is this true|is this accurate|is this real|are these real|is this correct|are these correct)\b/i.test(message);
-}
-
-async function researchVideoClaimsWithPerplexity(opts: {
-  videoUrl: string;
-  transcriptSummary: string;
-  userMessage: string;
-}): Promise<{ answer: string; sources: string[] }> {
-  const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY');
-  if (!PERPLEXITY_API_KEY) throw new Error('PERPLEXITY_API_KEY is not configured');
-
-  const res = await fetch('https://api.perplexity.ai/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'sonar',
-      temperature: 0.2,
-      messages: [
-        { role: 'system', content: 'Verify the claims from this video summary using web sources. Be concise. List what you can confirm, what you cannot, and any contradictions.' },
-        { role: 'user', content: `Video: ${opts.videoUrl}\n\nSummary of claims:\n${opts.transcriptSummary}\n\nUser request: ${opts.userMessage}` },
-      ],
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Perplexity API error [${res.status}]: ${errText}`);
-  }
-
-  const data = await res.json();
-  return {
-    answer: data.choices?.[0]?.message?.content || 'Unable to verify claims.',
-    sources: data.citations || [],
-  };
 }
 
 async function summarizeUrlWithPerplexity(opts: {
@@ -1048,87 +874,12 @@ serve(async (req) => {
       );
     }
 
-    // ── Early intercept: URL detection (YouTube → VIDEO_SUMMARY, other → URL_RESEARCH) ──
+    // ── Early intercept: URL Research ──
     const detectedUrls = extractPublicUrls(message);
     if (detectedUrls.length > 0) {
       const targetUrl = detectedUrls[0];
-
-      // ── YouTube VIDEO_SUMMARY path ──
-      if (isYouTubeUrl(targetUrl)) {
-        const videoId = getYouTubeVideoId(targetUrl);
-        console.log('VIDEO_SUMMARY mode triggered for:', targetUrl, 'videoId:', videoId);
-
-        let responseText: string;
-        let researchEnriched = false;
-        let sources: string[] = [];
-
-        if (!videoId) {
-          responseText = "I couldn't parse a video ID from that YouTube URL. Please check the link and try again.";
-        } else {
-          const result = await summarizeYouTubeWithPerplexity(videoId, message);
-
-          if (!result) {
-            responseText = "I couldn't access information about that video. Please check the link and try again.";
-          } else {
-            responseText = result.summary;
-            sources = result.sources;
-
-            // Check if user wants verification
-            if (shouldResearchVideo(message)) {
-              try {
-                const research = await researchVideoClaimsWithPerplexity({
-                  videoUrl: targetUrl,
-                  transcriptSummary: responseText,
-                  userMessage: message,
-                });
-                researchEnriched = true;
-                sources = [...sources, ...research.sources];
-                responseText += '\n\n## Verification\n' + research.answer;
-                if (research.sources.length > 0) {
-                  responseText += '\n\n## Sources\n' + research.sources.map((s, i) => `- [Source ${i + 1}](${s})`).join('\n');
-                }
-                responseText += '\n\n📋 *Based on web-grounded video analysis + verification*';
-              } catch (resErr) {
-                console.error('Perplexity verification failed:', resErr);
-                responseText += '\n\n📋 *Based on web-grounded video analysis*';
-              }
-            } else {
-              responseText += '\n\n📋 *Based on web-grounded video analysis*';
-            }
-          }
-        }
-
-        if (callback_url && job_id) {
-          await fetch(callback_url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ job_id, response: responseText }),
-          });
-        }
-
-        // Log for analytics
-        const supabaseAdmin = createClient(
-          Deno.env.get('SUPABASE_URL')!,
-          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-        );
-        await supabaseAdmin.from('retrieval_logs').insert({
-          thread_id: threadId || null,
-          user_id: userId || null,
-          question: message,
-          query_type: 'VIDEO_SUMMARY',
-          top_sources: [{ video_url: targetUrl, research_enriched: researchEnriched, sources }],
-        }).then(({ error }) => {
-          if (error) console.error('Failed to log VIDEO_SUMMARY:', error);
-        });
-
-        return new Response(
-          JSON.stringify({ success: true, query_type: 'VIDEO_SUMMARY' }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-
-      // ── Non-YouTube URL_RESEARCH path (existing Perplexity flow) ──
       console.log('URL_RESEARCH mode triggered for:', targetUrl);
+
       try {
         const research = await summarizeUrlWithPerplexity({
           url: targetUrl,
@@ -1149,6 +900,7 @@ serve(async (req) => {
           });
         }
 
+        // Log for analytics
         const supabaseAdmin = createClient(
           Deno.env.get('SUPABASE_URL')!,
           Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -1169,6 +921,7 @@ serve(async (req) => {
         );
       } catch (urlErr) {
         console.error('URL_RESEARCH failed, falling through to normal pipeline:', urlErr);
+        // Fall through to normal classification if Perplexity fails
       }
     }
 
