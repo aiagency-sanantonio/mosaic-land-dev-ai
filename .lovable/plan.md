@@ -1,120 +1,89 @@
 
 
-## Plan: Web Links — Shared Link Library + Chat Integration
+## Plan: Context-Aware URL Research & Saved Link Search
 
-### 1. Database Migration
+### Problem
+Three context gaps in `chat-rag/index.ts`:
+1. **URL Research** only triggers when the *current* message contains a URL. "Can you do the same but with this link" (referencing a prior message's URL) doesn't work.
+2. **Saved Link Search** uses naive regex stripping to extract keywords — fails on conversational queries like "Where are the district maps again?"
+3. **Follow-up questions** about previously researched URLs or saved links have no way to resolve "the first one", "that link", etc.
 
-Create `saved_web_links` table:
+### Solution: Use the Classifier as the Context Brain
 
-```sql
-CREATE TABLE public.saved_web_links (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL,
-  url text NOT NULL,
-  project_name text,
-  categories text[] NOT NULL DEFAULT '{}',
-  notes text,
-  added_by uuid NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  is_active boolean NOT NULL DEFAULT true,
-  last_researched_at timestamptz
-);
+The classifier (Claude Haiku) already receives chat history. Instead of adding more regex hacks, we lean on the classifier to extract structured context from conversational messages.
 
-ALTER TABLE public.saved_web_links ENABLE ROW LEVEL SECURITY;
+### Changes — All in `supabase/functions/chat-rag/index.ts`
 
--- All authenticated users can view all links (shared library)
-CREATE POLICY "Authenticated users can view web links"
-  ON public.saved_web_links FOR SELECT TO authenticated
-  USING (is_active = true);
+**1. Expand classifier output to extract URLs and search keywords**
 
--- Any authenticated user can add links
-CREATE POLICY "Authenticated users can insert web links"
-  ON public.saved_web_links FOR INSERT TO authenticated
-  WITH CHECK (auth.uid() = added_by);
+Update `CLASSIFY_SYSTEM_PROMPT` to also return:
+- `"url"`: if the user is referencing a URL (from their message or from chat history), extract it
+- `"search_keywords"`: for `SAVED_LINK_SEARCH`, extract the actual entity/topic keywords (e.g., "district maps" from "where are the district maps again?")
 
--- Users can update their own links
-CREATE POLICY "Users can update own web links"
-  ON public.saved_web_links FOR UPDATE TO authenticated
-  USING (auth.uid() = added_by);
+Update `ClassifyResult` interface to include `url?: string | null` and `search_keywords?: string | null`.
 
--- Users can soft-delete their own links
-CREATE POLICY "Users can delete own web links"
-  ON public.saved_web_links FOR DELETE TO authenticated
-  USING (auth.uid() = added_by);
+**2. Add `URL_RESEARCH` as a classifier type**
 
--- Service role full access
-CREATE POLICY "Service role manages web links"
-  ON public.saved_web_links FOR ALL TO public
-  USING (true) WITH CHECK (true);
+Currently URL detection is a pre-classifier regex intercept. Add `URL_RESEARCH` to the classifier so it can identify when a user is asking about a URL mentioned *earlier in conversation* (e.g., "summarize the first link", "do the same with this one: ...").
+
+The pre-classifier regex intercept stays as a fast path for messages that literally contain a URL. But if the classifier returns `URL_RESEARCH` with a `url` field extracted from history, the same `summarizeUrlWithPerplexity` flow runs.
+
+**3. Fix `searchSavedLinks` to use classifier-extracted keywords**
+
+Instead of the current naive regex strip at line 1075:
+```typescript
+const searchTerm = project_name || message.replace(/(?:find|show|...)/gi, '').trim();
 ```
 
-### 2. Frontend: Web Links Page (`src/pages/WebLinks.tsx`)
+Use the classifier's `search_keywords` field (which Claude extracts with full conversational context). Fall back to `project_name` if `search_keywords` is empty. Split into individual keywords and search with OR across name, project_name, url columns.
 
-New route `/web-links` added to `App.tsx`. Page includes:
-- Header with search input and "Add Link" button
-- Searchable, filterable list of all saved links (search by name, project, category)
-- Category filter chips
-- Each link card shows: name, URL (clickable), project_name, categories as badges, notes, added_by email, date
-- Mobile-friendly responsive grid (1 col mobile, 2 col tablet, 3 col desktop)
-- Uses `@tanstack/react-query` for data fetching
+**4. URL follow-up context from chat history**
 
-### 3. Frontend: Add Link Dialog (`src/components/weblinks/AddLinkDialog.tsx`)
+When the classifier returns `URL_RESEARCH` with a `url` extracted from chat history, pass it to `summarizeUrlWithPerplexity` along with the user's current question so Perplexity answers the specific question about that URL (not just summarizes it).
 
-Modal form with fields:
-- URL (required, validated)
-- Name (required)
-- Project Name (plain text input — no dropdown, no master list)
-- Categories (multi-select from predefined list: Vendor, Consultant, Government, Utility, Reference, Permit, Legal, Other)
-- Notes (optional textarea)
+### Updated Classifier Prompt Addition
 
-Pre-fill URL and name when triggered from chat context (via URL params or state).
+```
+URL_RESEARCH — user is asking about, referencing, or wants analysis of a specific web URL. 
+Extract the URL into the "url" field. If the URL is in chat history (not the current message), 
+still extract it. Examples: "summarize that link", "do the same thing but with this one", 
+"how many lots are on that page?"
 
-### 4. Frontend: Navigation Access
+For SAVED_LINK_SEARCH: extract the core topic/entity into "search_keywords" 
+(e.g., "district maps" from "where are the district maps again?").
 
-Add a "Web Links" button to the sidebar (`ChatSidebar.tsx`) between New Chat and New Folder — a `Link2` icon button that navigates to `/web-links`.
+Return: { "query_type": "...", "project_name": "...", "url": "url or null", 
+"search_keywords": "extracted keywords or null", ... }
+```
 
-### 5. Chat Integration: "Save This Link" Flow
+### Flow After Changes
 
-**In `ChatMessage.tsx`**: After an assistant message that was a URL_RESEARCH response (detected by checking if the message contains `## Summary` and `## Sources` patterns and the preceding user message contained a URL), show a "Save this link" button below the feedback buttons.
+```text
+User: "How many maps are on the district maps page?"
+  → Classifier sees chat history has a "District Maps" saved link URL
+  → Returns: { query_type: "URL_RESEARCH", url: "https://...", search_keywords: "district maps" }
+  → summarizeUrlWithPerplexity(url, userQuestion)
+  → Grounded answer about that specific URL
 
-Clicking "Save this link" opens the `AddLinkDialog` pre-filled with:
-- URL extracted from the user's message
-- Name pre-filled from the page title in the summary
+User: "Where are the district maps again?"
+  → Classifier: { query_type: "SAVED_LINK_SEARCH", search_keywords: "district maps" }
+  → searchSavedLinks with keywords ["district", "maps"]
+  → Returns matching saved link
 
-**In `chat-rag/index.ts`**: Add a `SAVED_LINK_SEARCH` intercept. Before classification, detect if the user is asking to find a saved link (e.g., "find saved link for...", "what links do we have for..."). If detected:
-- Query `saved_web_links` by project_name, categories, or name (case-insensitive ILIKE)
-- Return formatted results
-- Skip normal RAG pipeline
+User: "Can you do the same thing but with this link: https://..."
+  → Pre-classifier intercept catches the URL
+  → URL_RESEARCH as before (fast path)
+```
 
-Also add to the classification prompt a new type `SAVED_LINK_SEARCH` for queries about saved web links.
-
-**Chat "save this link" command**: In `chat-rag`, detect messages like "save this link" or "save that link". If detected, look back in chat history for the most recent URL_RESEARCH URL, then return a response with a special marker that the frontend interprets to open the save dialog pre-filled.
-
-### 6. Backend: chat-rag Changes
-
-Add to `chat-rag/index.ts`:
-- New intercept after URL_RESEARCH check: detect "save this link" commands
-- New function `searchSavedLinks(query, projectName, category)` that queries `saved_web_links`
-- Add `SAVED_LINK_SEARCH` to the classify prompt so the classifier can route link-search queries
-- When classification returns `SAVED_LINK_SEARCH`, query saved links and format as markdown list
-
-### 7. Files to Create/Modify
-
-| File | Action |
+### Files Changed
+| File | Change |
 |------|--------|
-| `src/pages/WebLinks.tsx` | Create — main page |
-| `src/components/weblinks/AddLinkDialog.tsx` | Create — add/edit form |
-| `src/components/weblinks/LinkCard.tsx` | Create — individual link display |
-| `src/hooks/useWebLinks.tsx` | Create — CRUD hook |
-| `src/App.tsx` | Add `/web-links` route |
-| `src/components/chat/ChatSidebar.tsx` | Add Web Links nav button |
-| `src/components/chat/ChatMessage.tsx` | Add "Save this link" button for URL_RESEARCH responses |
-| `supabase/functions/chat-rag/index.ts` | Add SAVED_LINK_SEARCH type + save-link command detection |
+| `supabase/functions/chat-rag/index.ts` | Update classifier prompt, interface, search logic, URL intercept fallback |
 
-### Key Constraints Honored
-- Project name is plain text only — no dropdown, no validation against a master list
-- Bot never auto-saves links — only explicit user action (UI button or "save this link" command)
-- URL research continues to work as-is without saving
-- All users see all active links (shared library)
+### What Stays the Same
+- No frontend changes
+- No database changes  
+- Pre-classifier fast path for explicit URLs still works
+- Save link flow unchanged
+- All other query types unchanged
 
