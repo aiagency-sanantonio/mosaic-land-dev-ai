@@ -874,6 +874,57 @@ serve(async (req) => {
       );
     }
 
+    // ── Early intercept: URL Research ──
+    const detectedUrls = extractPublicUrls(message);
+    if (detectedUrls.length > 0) {
+      const targetUrl = detectedUrls[0];
+      console.log('URL_RESEARCH mode triggered for:', targetUrl);
+
+      try {
+        const research = await summarizeUrlWithPerplexity({
+          url: targetUrl,
+          userMessage: message,
+          chatHistory: chatHistory || '',
+        });
+
+        const responseText = research.text;
+
+        if (callback_url && job_id) {
+          await fetch(callback_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              job_id,
+              response: responseText,
+            }),
+          });
+        }
+
+        // Log for analytics
+        const supabaseAdmin = createClient(
+          Deno.env.get('SUPABASE_URL')!,
+          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+        );
+        await supabaseAdmin.from('retrieval_logs').insert({
+          thread_id: threadId || null,
+          user_id: userId || null,
+          question: message,
+          query_type: 'URL_RESEARCH',
+          top_sources: research.citations.map((c: string) => ({ url: c })),
+        }).then(({ error }) => {
+          if (error) console.error('Failed to log URL_RESEARCH:', error);
+        });
+
+        return new Response(
+          JSON.stringify({ success: true, query_type: 'URL_RESEARCH' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (urlErr) {
+        console.error('URL_RESEARCH failed, falling through to normal pipeline:', urlErr);
+        // Fall through to normal classification if Perplexity fails
+      }
+    }
+
     // Fetch user profile and classify in parallel
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
