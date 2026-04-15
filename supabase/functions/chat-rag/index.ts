@@ -712,6 +712,100 @@ async function fetchSystemKnowledge(
   }
 }
 
+// ── URL detection helpers ──
+function extractPublicUrls(message: string): string[] {
+  const urlRegex = /https?:\/\/[^\s<>"')\]]+/gi;
+  const matches = message.match(urlRegex) || [];
+  return matches.filter((url) => {
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase();
+      // Reject private/local addresses
+      if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.internal')) return false;
+      if (/^127\./.test(hostname)) return false;
+      if (/^10\./.test(hostname)) return false;
+      if (/^192\.168\./.test(hostname)) return false;
+      if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return false;
+      if (/^169\.254\./.test(hostname)) return false;
+      if (hostname === '[::1]') return false;
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function summarizeUrlWithPerplexity(opts: {
+  url: string;
+  userMessage: string;
+  chatHistory: string;
+}): Promise<{ text: string; citations: string[] }> {
+  const PERPLEXITY_API_KEY = Deno.env.get('PERPLEXITY_API_KEY');
+  if (!PERPLEXITY_API_KEY) {
+    throw new Error('PERPLEXITY_API_KEY is not configured');
+  }
+
+  const systemPrompt = `You are a research analyst. The user has shared a URL. Your job is to:
+1. Fetch and analyze the content at the provided URL
+2. Search the web for additional relevant context about the topic
+3. Return a well-structured, grounded summary
+
+Format your response EXACTLY as:
+
+## Summary
+[Concise overview of the URL content and what it covers]
+
+## Key Findings
+- [Most important finding 1]
+- [Most important finding 2]
+- [Continue as needed]
+
+## Notes & Risks
+- [Any caveats, biases, outdated info, or risks worth noting]
+
+## Sources
+- List the original URL and any additional sources you referenced
+
+Be factual and cite specific details. If the URL is inaccessible, say so clearly and provide what you can find about the topic from other sources.`;
+
+  const userPrompt = opts.userMessage.trim() || `Please analyze this URL: ${opts.url}`;
+
+  const response = await fetch('https://api.perplexity.ai/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'sonar',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.2,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Perplexity API error:', response.status, errText);
+    throw new Error(`Perplexity API error [${response.status}]: ${errText}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || 'Unable to analyze the URL.';
+  const citations: string[] = data.citations || [];
+
+  // Append citations if not already in the content
+  let finalText = content;
+  if (citations.length > 0 && !content.includes('## Sources')) {
+    finalText += '\n\n## Sources\n' + citations.map((c: string, i: number) => `- [Source ${i + 1}](${c})`).join('\n');
+  }
+
+  return { text: finalText, citations };
+}
+
 // ── "Remember This" command detection ──
 function detectRememberCommand(msg: string): { isRemember: boolean; content: string } {
   const match = msg.match(/^(?:remember this:|remember that:|save this:|save this knowledge:)\s*(.+)/is);
@@ -778,6 +872,57 @@ serve(async (req) => {
         JSON.stringify({ success: true, response: confirmationMsg }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
+    }
+
+    // ── Early intercept: URL Research ──
+    const detectedUrls = extractPublicUrls(message);
+    if (detectedUrls.length > 0) {
+      const targetUrl = detectedUrls[0];
+      console.log('URL_RESEARCH mode triggered for:', targetUrl);
+
+      try {
+        const research = await summarizeUrlWithPerplexity({
+          url: targetUrl,
+          userMessage: message,
+          chatHistory: chatHistory || '',
+        });
+
+        const responseText = research.text;
+
+        if (callback_url && job_id) {
+          await fetch(callback_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              job_id,
+              response: responseText,
+            }),
+          });
+        }
+
+        // Log for analytics
+        const supabaseAdmin = createClient(
+          Deno.env.get('SUPABASE_URL')!,
+          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+        );
+        await supabaseAdmin.from('retrieval_logs').insert({
+          thread_id: threadId || null,
+          user_id: userId || null,
+          question: message,
+          query_type: 'URL_RESEARCH',
+          top_sources: research.citations.map((c: string) => ({ url: c })),
+        }).then(({ error }) => {
+          if (error) console.error('Failed to log URL_RESEARCH:', error);
+        });
+
+        return new Response(
+          JSON.stringify({ success: true, query_type: 'URL_RESEARCH' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (urlErr) {
+        console.error('URL_RESEARCH failed, falling through to normal pipeline:', urlErr);
+        // Fall through to normal classification if Perplexity fails
+      }
     }
 
     // Fetch user profile and classify in parallel

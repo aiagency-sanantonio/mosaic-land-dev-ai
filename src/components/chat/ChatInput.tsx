@@ -99,7 +99,7 @@ export function ChatInput({ onSend, isLoading = false, disabled = false }: ChatI
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about land parcels, zoning, development potential..."
+            placeholder="Ask about parcels, zoning, or paste a URL to analyze..."
             className="min-h-[44px] max-h-[200px] resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
             rows={1}
             disabled={disabled || isLoading}
