@@ -24,21 +24,29 @@ DOCUMENT_SEARCH — specific document content, contracts, proposals, surveys
 
 HYBRID — needs both structured data and documents (e.g. "full status update for X project")
 
-SAVED_LINK_SEARCH — user is asking about saved web links, bookmarks, or websites the team has saved (e.g. "what links do we have for Fischer Ranch", "find saved link for TCEQ", "show me vendor links")
+URL_RESEARCH — user is asking about, referencing, or wants analysis of a specific web URL. This includes:
+- A message containing a URL (e.g. "what is this? https://...")
+- Referencing a URL from chat history (e.g. "summarize that link", "do the same thing but with this one", "how many lots are on that page?", "can you research the first link?")
+Extract the URL into the "url" field. If the URL appeared in chat history (not the current message), still extract it.
+
+SAVED_LINK_SEARCH — user is asking about saved web links, bookmarks, or websites the team has saved (e.g. "what links do we have for Fischer Ranch", "find saved link for TCEQ", "show me vendor links", "where are the district maps again?")
+Extract the core topic/entity keywords into "search_keywords" (e.g. "district maps" from "where are the district maps again?", "TCEQ" from "do we have a TCEQ link saved?").
 
 CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
 
 If the chat history shows the assistant just asked a clarifying question and the user's current message is a short follow-up answer (e.g. "all", "yes", "all of the above", a project name, or a list of components), do NOT return CLARIFY. Instead, combine the original question from chat history with the user's answer and classify the combined intent as AGGREGATE, STATUS_LOOKUP, DOCUMENT_SEARCH, or HYBRID accordingly.
 
-Return: { "query_type": "...", "project_name": "name or null", "project_names": ["name1", "name2"] or null, "clarify_question": "question to ask user or null", "reasoning": "one sentence" }
+Return: { "query_type": "...", "project_name": "name or null", "project_names": ["name1", "name2"] or null, "clarify_question": "question to ask user or null", "url": "extracted URL or null", "search_keywords": "extracted topic keywords or null", "reasoning": "one sentence" }
 
 If the question mentions two or more projects (e.g. "compare bids for Fischer Ranch and Clearwater"), populate "project_names" with ALL of them and set "project_name" to the first one. If only one project is mentioned, set "project_names" to null.`;
 
 interface ClassifyResult {
-  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY' | 'SAVED_LINK_SEARCH';
+  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY' | 'SAVED_LINK_SEARCH' | 'URL_RESEARCH';
   project_name: string | null;
   project_names: string[] | null;
   clarify_question: string | null;
+  url?: string | null;
+  search_keywords?: string | null;
   reasoning: string;
 }
 
