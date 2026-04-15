@@ -972,6 +972,31 @@ serve(async (req) => {
       }
     }
 
+    // ── Early intercept: "Save this link" command ──
+    if (detectSaveLinkCommand(message)) {
+      console.log('SAVE_LINK command detected');
+      // Extract the most recent URL from chat history
+      const historyUrls = extractPublicUrls(chatHistory || '');
+      const lastUrl = historyUrls.length > 0 ? historyUrls[historyUrls.length - 1] : null;
+
+      const responseText = lastUrl
+        ? `I found the most recently discussed URL:\n\n**${lastUrl}**\n\nPlease use the **"Save this link"** button below the URL research response, or visit the **Web Links** page to save it with a name, project, and categories.`
+        : `I couldn't find a recently researched URL in this conversation. Please paste a URL first, then ask me to save it. You can also save links directly from the **Web Links** page.`;
+
+      if (callback_url && job_id) {
+        await fetch(callback_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id, response: responseText }),
+        });
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, query_type: 'SAVE_LINK_COMMAND' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Fetch user profile and classify in parallel
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
