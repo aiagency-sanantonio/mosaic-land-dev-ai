@@ -756,10 +756,12 @@ async function summarizeUrlWithPerplexity(opts: {
     throw new Error('PERPLEXITY_API_KEY is not configured');
   }
 
+  const hasFollowUpQuestion = opts.userMessage.trim() && !opts.userMessage.trim().startsWith('http');
+
   const systemPrompt = `You are a research analyst. The user has shared a URL. Your job is to:
 1. Fetch and analyze the content at the provided URL
 2. Search the web for additional relevant context about the topic
-3. Return a well-structured, grounded summary
+3. ${hasFollowUpQuestion ? 'Answer the user\'s specific question about the page content directly and precisely.' : 'Return a well-structured, grounded summary'}
 
 Format your response EXACTLY as:
 
@@ -779,7 +781,9 @@ Format your response EXACTLY as:
 
 Be factual and cite specific details. If the URL is inaccessible, say so clearly and provide what you can find about the topic from other sources.`;
 
-  const userPrompt = opts.userMessage.trim() || `Please analyze this URL: ${opts.url}`;
+  const userPrompt = hasFollowUpQuestion
+    ? `Analyze this URL: ${opts.url}\n\nUser's question about this page: ${opts.userMessage.trim()}`
+    : `Please analyze this URL: ${opts.url}`;
 
   const response = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
