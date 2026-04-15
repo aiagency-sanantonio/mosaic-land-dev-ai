@@ -1178,6 +1178,43 @@ serve(async (req) => {
       );
     }
 
+    // MULTI_STEP — execute chained plan (e.g. find saved link → research URL)
+    if (query_type === 'MULTI_STEP' && classification.plan?.length) {
+      console.log('MULTI_STEP plan detected:', JSON.stringify(classification.plan));
+      try {
+        const planResult = await executeMultiStepPlan(
+          classification.plan,
+          supabase,
+          message,
+          chatHistory || '',
+          project_name,
+        );
+
+        if (callback_url && job_id) {
+          await fetch(callback_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_id, response: planResult }),
+          });
+        }
+
+        await supabase.from('retrieval_logs').insert({
+          thread_id: threadId || null,
+          user_id: userId || null,
+          question: message,
+          query_type: 'MULTI_STEP',
+          normalized_project: project_name || null,
+        });
+
+        return new Response(
+          JSON.stringify({ success: true, query_type: 'MULTI_STEP' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (planErr) {
+        console.error('MULTI_STEP plan failed, falling through:', planErr);
+      }
+    }
+
     // URL_RESEARCH via classifier (handles URLs from chat history that pre-classifier missed)
     if (query_type === 'URL_RESEARCH' && classifiedUrl) {
       console.log('URL_RESEARCH (classifier) triggered for:', classifiedUrl);
