@@ -32,6 +32,17 @@ Extract the URL into the "url" field. If the URL appeared in chat history (not t
 SAVED_LINK_SEARCH — user is asking about saved web links, bookmarks, or websites the team has saved (e.g. "what links do we have for Fischer Ranch", "find saved link for TCEQ", "show me vendor links", "where are the district maps again?")
 Extract the core topic/entity keywords into "search_keywords" (e.g. "district maps" from "where are the district maps again?", "TCEQ" from "do we have a TCEQ link saved?").
 
+MULTI_STEP — the user's question requires chaining two actions. Use this when:
+- The user asks a question about content on a saved link they haven't pasted (need to find the link first, then research it)
+- The user references a topic that maps to a saved link and wants specific content from it (e.g. "how many sections are on the statewide map?" when "statewide map" is a saved link)
+- The user says something like "research that district map link" without a URL in the current message or chat history
+
+Return a "plan" array with up to 2 steps, executed in order:
+  Step 1: { "action": "SAVED_LINK_SEARCH", "search_keywords": "..." }
+  Step 2: { "action": "URL_RESEARCH", "question": "the user's actual question" }
+Step 2 automatically receives the URL found in Step 1.
+Only use MULTI_STEP when a single action type cannot answer the question.
+
 CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
 
 If the chat history shows the assistant just asked a clarifying question and the user's current message is a short follow-up answer (e.g. "all", "yes", "all of the above", a project name, or a list of components), do NOT return CLARIFY. Instead, combine the original question from chat history with the user's answer and classify the combined intent as AGGREGATE, STATUS_LOOKUP, DOCUMENT_SEARCH, or HYBRID accordingly.
@@ -40,17 +51,25 @@ IMPORTANT — URL_RESEARCH vs SAVED_LINK_SEARCH priority:
 - If the chat history shows the assistant previously researched or summarized a URL, and the user's follow-up question references that content (e.g. "give me the link to the first district map", "how many sections are there?", "what about district 1?"), classify as URL_RESEARCH and extract the URL from history. Do NOT classify as SAVED_LINK_SEARCH.
 - SAVED_LINK_SEARCH is ONLY for when the user is asking about links saved in the team library and there is NO prior URL research in the conversation.
 
-Return: { "query_type": "...", "project_name": "name or null", "project_names": ["name1", "name2"] or null, "clarify_question": "question to ask user or null", "url": "extracted URL or null", "search_keywords": "extracted topic keywords or null", "reasoning": "one sentence" }
+Return: { "query_type": "...", "project_name": "name or null", "project_names": ["name1", "name2"] or null, "clarify_question": "question to ask user or null", "url": "extracted URL or null", "search_keywords": "extracted topic keywords or null", "plan": [step objects] or null, "reasoning": "one sentence" }
 
 If the question mentions two or more projects (e.g. "compare bids for Fischer Ranch and Clearwater"), populate "project_names" with ALL of them and set "project_name" to the first one. If only one project is mentioned, set "project_names" to null.`;
 
+interface PlanStep {
+  action: 'SAVED_LINK_SEARCH' | 'URL_RESEARCH';
+  search_keywords?: string;
+  question?: string;
+  url?: string;
+}
+
 interface ClassifyResult {
-  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY' | 'SAVED_LINK_SEARCH' | 'URL_RESEARCH';
+  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY' | 'SAVED_LINK_SEARCH' | 'URL_RESEARCH' | 'MULTI_STEP';
   project_name: string | null;
   project_names: string[] | null;
   clarify_question: string | null;
   url?: string | null;
   search_keywords?: string | null;
+  plan?: PlanStep[] | null;
   reasoning: string;
 }
 
