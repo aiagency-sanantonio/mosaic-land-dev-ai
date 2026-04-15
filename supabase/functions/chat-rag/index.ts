@@ -1078,7 +1078,7 @@ serve(async (req) => {
 
     // Append shared team knowledge (already fetched in parallel with message-based matching)
     // Re-fetch with project_name now that classification is complete
-    const { query_type, project_name, project_names, clarify_question, url: classifiedUrl, search_keywords } = classification;
+    let { query_type, project_name, project_names, clarify_question, url: classifiedUrl, search_keywords } = classification;
     let knowledgeText = systemKnowledge;
     if (project_name && !knowledgeText) {
       knowledgeText = await fetchSystemKnowledge(supabase, message, project_name);
