@@ -1065,7 +1065,7 @@ serve(async (req) => {
           user_id: userId || null,
           question: message,
           query_type: 'VIDEO_SUMMARY',
-          top_sources: [{ video_url: targetUrl, transcript_used: transcriptUsed, research_enriched: researchEnriched }],
+          top_sources: [{ video_url: targetUrl, research_enriched: researchEnriched, sources }],
         }).then(({ error }) => {
           if (error) console.error('Failed to log VIDEO_SUMMARY:', error);
         });
