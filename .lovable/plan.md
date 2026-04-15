@@ -1,103 +1,57 @@
 
 
-## Plan: Add Multi-Step Planning to chat-rag Classifier
+## Plan: Harden Classifier JSON Parsing + Improve Follow-Up Context
 
-### Problem
-Currently, each query maps to exactly one action: either search saved links OR research a URL OR search documents. When a user asks "How many sections are on the statewide map?" and the statewide map is a saved link (not in chat history), the system can't chain: find the saved link → research that URL → answer the question. It picks one path and fails.
+### Two Bugs Found in Logs
 
-### Solution: Two-Step Action Plan from the Classifier
+**Bug 1 — JSON parse crash (causes 500 error):**
+The classifier (Claude Haiku) sometimes returns extra conversational text after the JSON block. The current cleanup regex only strips markdown fences but doesn't isolate the JSON object, so `JSON.parse` chokes on trailing text like "**Quick Answer:** Based on the chat history..."
 
-Expand the classifier to optionally return a `plan` field — an ordered array of up to 2 steps. The executor runs them sequentially, passing results forward.
-
-**Example flow:**
-```text
-User: "How many sections are on the statewide map?"
-
-Classifier returns:
-{
-  "query_type": "MULTI_STEP",
-  "plan": [
-    { "action": "SAVED_LINK_SEARCH", "search_keywords": "statewide map" },
-    { "action": "URL_RESEARCH", "question": "How many sections are on this page?" }
-  ],
-  "reasoning": "Need to find the saved link first, then research its content"
-}
-
-Executor:
-  Step 1: searchSavedLinks("statewide map") → finds URL https://example.com/map
-  Step 2: summarizeUrlWithPerplexity(found URL, user question) → answer
-```
+**Bug 2 — Misclassification of follow-up questions:**
+"Just give me the link to the first district map" was classified as `SAVED_LINK_SEARCH` instead of `URL_RESEARCH`, even though the conversation already had a researched URL. The classifier needs stronger guidance to recognize when a follow-up references previously researched content.
 
 ### Changes — `supabase/functions/chat-rag/index.ts`
 
-**1. Expand classifier prompt and interface**
+**1. Fix JSON extraction (line ~86)**
 
-Add `MULTI_STEP` query type and `plan` field to `ClassifyResult`:
+Replace the naive regex strip with a robust JSON extractor that finds the first `{...}` block using brace counting. This handles:
+- Markdown fences with trailing text
+- Extra commentary after the JSON
+- Any model formatting quirks
 
 ```typescript
-interface PlanStep {
-  action: 'SAVED_LINK_SEARCH' | 'URL_RESEARCH';
-  search_keywords?: string;
-  question?: string;
-  url?: string;
-}
-
-interface ClassifyResult {
-  // ... existing fields ...
-  plan?: PlanStep[] | null;  // max 2 steps
-}
-```
-
-Add to `CLASSIFY_SYSTEM_PROMPT`:
-```
-MULTI_STEP — the user's question requires chaining two actions. Use this when:
-- The user asks a question about content on a saved link they haven't pasted 
-  (need to find the link first, then research it)
-- The user references "that page" or a topic that maps to a saved link, 
-  and wants specific content from it
-
-Return a "plan" array with up to 2 steps, executed in order:
-  Step 1: { "action": "SAVED_LINK_SEARCH", "search_keywords": "..." }
-  Step 2: { "action": "URL_RESEARCH", "question": "the user's actual question" }
-
-Step 2 automatically receives the URL found in Step 1.
-Only use MULTI_STEP when a single action type cannot answer the question.
-```
-
-**2. Add plan executor**
-
-A new function `executeMultiStepPlan(plan, supabase, message, chatHistory)` that:
-1. Runs step 1 (SAVED_LINK_SEARCH) → extracts the first URL from results
-2. If a URL is found, runs step 2 (URL_RESEARCH) with that URL + the user's question
-3. If step 1 finds no URL, returns the saved links list as-is (graceful degradation)
-
-**3. Wire into main handler**
-
-After classification, before the existing `URL_RESEARCH` / `SAVED_LINK_SEARCH` blocks, add:
-```typescript
-if (query_type === 'MULTI_STEP' && classification.plan?.length) {
-  const result = await executeMultiStepPlan(classification.plan, supabase, message, chatHistory);
-  // send result via callback, log, return
+// Extract first valid JSON object from potentially messy LLM output
+function extractJsonObject(text: string): string {
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('No JSON object found in classifier response');
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  throw new Error('Unterminated JSON object in classifier response');
 }
 ```
 
-### Cost Impact
-- **Classifier (Haiku):** No extra call — same single classification, just a richer output
-- **Perplexity:** Same single call as URL_RESEARCH today
-- **Saved links query:** One lightweight DB query (already exists)
-- **Net cost increase:** Zero additional API calls vs. a user manually doing 2 messages
+**2. Strengthen classifier prompt for follow-up context**
 
-### Context Window Impact
-- No increase. The plan is decided by the classifier in its existing call. Execution is sequential with no extra LLM calls beyond what each individual path already uses.
+Add explicit instruction to the `CLASSIFY_SYSTEM_PROMPT`:
+- When the assistant previously researched a URL and the user asks a follow-up about its content (e.g., "give me the link to the first district map", "how many sections are there?"), classify as `URL_RESEARCH` with the URL extracted from history — not `SAVED_LINK_SEARCH`.
+- `SAVED_LINK_SEARCH` is only for finding links the team has *saved* in the library when no prior URL research exists in the conversation.
+
+**3. Increase classifier max_tokens**
+
+Bump `max_tokens` from 256 to 300 to reduce truncation risk on longer reasoning outputs (the crash response had 348 chars of JSON alone).
 
 ### What Stays the Same
-- No frontend changes, no database changes
-- Single-step queries (direct URL paste, simple saved link search, document search, etc.) route exactly as before
-- Pre-classifier URL fast path unchanged
-- All other query types unchanged
+- No frontend changes
+- No database changes
+- Pre-classifier fast path for explicit URLs unchanged
+- Perplexity prompt fix from prior plan unchanged
+- All other query type handlers unchanged
 
 ### Files Changed
 | File | Change |
 |------|--------|
-| `supabase/functions/chat-rag/index.ts` | Add `MULTI_STEP` to classifier prompt/interface, add `executeMultiStepPlan` function, wire into main handler |
+| `supabase/functions/chat-rag/index.ts` | Add `extractJsonObject` helper, update classifier prompt, bump max_tokens |
 
