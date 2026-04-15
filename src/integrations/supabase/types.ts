@@ -605,6 +605,48 @@ export type Database = {
         }
         Relationships: []
       }
+      saved_web_links: {
+        Row: {
+          added_by: string
+          categories: string[]
+          created_at: string
+          id: string
+          is_active: boolean
+          last_researched_at: string | null
+          name: string
+          notes: string | null
+          project_name: string | null
+          updated_at: string
+          url: string
+        }
+        Insert: {
+          added_by: string
+          categories?: string[]
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          last_researched_at?: string | null
+          name: string
+          notes?: string | null
+          project_name?: string | null
+          updated_at?: string
+          url: string
+        }
+        Update: {
+          added_by?: string
+          categories?: string[]
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          last_researched_at?: string | null
+          name?: string
+          notes?: string | null
+          project_name?: string | null
+          updated_at?: string
+          url?: string
+        }
+        Relationships: []
+      }
       shared_threads: {
         Row: {
           created_at: string
