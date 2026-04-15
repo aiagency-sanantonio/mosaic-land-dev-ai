@@ -1,89 +1,44 @@
 
 
-## Plan: Context-Aware URL Research & Saved Link Search
+## Plan: Fix URL Follow-Up by Including URL in Perplexity Prompt
 
 ### Problem
-Three context gaps in `chat-rag/index.ts`:
-1. **URL Research** only triggers when the *current* message contains a URL. "Can you do the same but with this link" (referencing a prior message's URL) doesn't work.
-2. **Saved Link Search** uses naive regex stripping to extract keywords — fails on conversational queries like "Where are the district maps again?"
-3. **Follow-up questions** about previously researched URLs or saved links have no way to resolve "the first one", "that link", etc.
+When the user asks a follow-up question about a previously pasted URL (e.g., "how many sections are on that page?"), the classifier correctly extracts the URL from chat history and routes to `URL_RESEARCH`. However, the `summarizeUrlWithPerplexity` function on line 782 has a bug:
 
-### Solution: Use the Classifier as the Context Brain
-
-The classifier (Claude Haiku) already receives chat history. Instead of adding more regex hacks, we lean on the classifier to extract structured context from conversational messages.
-
-### Changes — All in `supabase/functions/chat-rag/index.ts`
-
-**1. Expand classifier output to extract URLs and search keywords**
-
-Update `CLASSIFY_SYSTEM_PROMPT` to also return:
-- `"url"`: if the user is referencing a URL (from their message or from chat history), extract it
-- `"search_keywords"`: for `SAVED_LINK_SEARCH`, extract the actual entity/topic keywords (e.g., "district maps" from "where are the district maps again?")
-
-Update `ClassifyResult` interface to include `url?: string | null` and `search_keywords?: string | null`.
-
-**2. Add `URL_RESEARCH` as a classifier type**
-
-Currently URL detection is a pre-classifier regex intercept. Add `URL_RESEARCH` to the classifier so it can identify when a user is asking about a URL mentioned *earlier in conversation* (e.g., "summarize the first link", "do the same with this one: ...").
-
-The pre-classifier regex intercept stays as a fast path for messages that literally contain a URL. But if the classifier returns `URL_RESEARCH` with a `url` field extracted from history, the same `summarizeUrlWithPerplexity` flow runs.
-
-**3. Fix `searchSavedLinks` to use classifier-extracted keywords**
-
-Instead of the current naive regex strip at line 1075:
 ```typescript
-const searchTerm = project_name || message.replace(/(?:find|show|...)/gi, '').trim();
+const userPrompt = opts.userMessage.trim() || `Please analyze this URL: ${opts.url}`;
 ```
 
-Use the classifier's `search_keywords` field (which Claude extracts with full conversational context). Fall back to `project_name` if `search_keywords` is empty. Split into individual keywords and search with OR across name, project_name, url columns.
+Since the user's message ("Can you give me a summary of the first map on that page?") is truthy, the URL is **never included** in the Perplexity prompt. Perplexity receives a question with no URL context and can't fetch or analyze the page.
 
-**4. URL follow-up context from chat history**
+### Fix
 
-When the classifier returns `URL_RESEARCH` with a `url` extracted from chat history, pass it to `summarizeUrlWithPerplexity` along with the user's current question so Perplexity answers the specific question about that URL (not just summarizes it).
+**File:** `supabase/functions/chat-rag/index.ts`
 
-### Updated Classifier Prompt Addition
+**1. Always include the URL in the Perplexity user prompt (line ~782)**
 
-```
-URL_RESEARCH — user is asking about, referencing, or wants analysis of a specific web URL. 
-Extract the URL into the "url" field. If the URL is in chat history (not the current message), 
-still extract it. Examples: "summarize that link", "do the same thing but with this one", 
-"how many lots are on that page?"
+Change the `userPrompt` construction to always include the URL, and when the user's message is a follow-up question (not just the URL itself), frame it as "analyze this URL and answer this specific question":
 
-For SAVED_LINK_SEARCH: extract the core topic/entity into "search_keywords" 
-(e.g., "district maps" from "where are the district maps again?").
-
-Return: { "query_type": "...", "project_name": "...", "url": "url or null", 
-"search_keywords": "extracted keywords or null", ... }
+```typescript
+const hasQuestion = opts.userMessage.trim() && !opts.userMessage.trim().startsWith('http');
+const userPrompt = hasQuestion
+  ? `Analyze this URL: ${opts.url}\n\nUser's question about this page: ${opts.userMessage.trim()}`
+  : `Please analyze this URL: ${opts.url}`;
 ```
 
-### Flow After Changes
+**2. Update the system prompt to handle Q&A mode (~line 759)**
 
-```text
-User: "How many maps are on the district maps page?"
-  → Classifier sees chat history has a "District Maps" saved link URL
-  → Returns: { query_type: "URL_RESEARCH", url: "https://...", search_keywords: "district maps" }
-  → summarizeUrlWithPerplexity(url, userQuestion)
-  → Grounded answer about that specific URL
+Add a line to the system prompt telling Perplexity that when a specific question accompanies the URL, it should answer that question directly using the page content rather than giving a generic summary.
 
-User: "Where are the district maps again?"
-  → Classifier: { query_type: "SAVED_LINK_SEARCH", search_keywords: "district maps" }
-  → searchSavedLinks with keywords ["district", "maps"]
-  → Returns matching saved link
+### What stays the same
+- No frontend changes
+- No database changes
+- Pre-classifier fast path for explicit URLs unchanged
+- Classifier prompt unchanged
+- Saved link search unchanged
 
-User: "Can you do the same thing but with this link: https://..."
-  → Pre-classifier intercept catches the URL
-  → URL_RESEARCH as before (fast path)
-```
-
-### Files Changed
+### Files changed
 | File | Change |
 |------|--------|
-| `supabase/functions/chat-rag/index.ts` | Update classifier prompt, interface, search logic, URL intercept fallback |
-
-### What Stays the Same
-- No frontend changes
-- No database changes  
-- Pre-classifier fast path for explicit URLs still works
-- Save link flow unchanged
-- All other query types unchanged
+| `supabase/functions/chat-rag/index.ts` | Fix `userPrompt` in `summarizeUrlWithPerplexity` to always include URL; update system prompt for Q&A mode |
 
