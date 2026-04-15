@@ -33,8 +33,9 @@ URL_RESEARCH — user is asking about, referencing, or wants analysis of a speci
 - Referencing a URL from chat history (e.g. "summarize that link", "do the same thing but with this one", "how many lots are on that page?", "can you research the first link?")
 Extract the URL into the "url" field. If the URL appeared in chat history (not the current message), still extract it.
 
-SAVED_LINK_SEARCH — user is asking about saved web links, bookmarks, or websites the team has saved (e.g. "what links do we have for Fischer Ranch", "find saved link for TCEQ", "show me vendor links", "where are the district maps again?")
-Extract the core topic/entity keywords into "search_keywords" (e.g. "district maps" from "where are the district maps again?", "TCEQ" from "do we have a TCEQ link saved?").
+SAVED_LINK_SEARCH — user is EXPLICITLY asking about saved/bookmarked web links in the team library (e.g. "what links do we have saved", "find the TCEQ link we saved", "show me saved vendor links", "do we have a bookmarked link for that?").
+This is ONLY for explicit saved-link requests. General questions like "who is Mosaic Land Development?", "what is TCEQ?", "tell me about Fischer Ranch" are NOT saved link searches — those are DOCUMENT_SEARCH even if they mention an entity that might have a saved link.
+Extract the core topic/entity keywords into "search_keywords" (e.g. "TCEQ" from "do we have a TCEQ link saved?").
 
 CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
 
@@ -1183,25 +1184,32 @@ serve(async (req) => {
       console.log("SAVED_LINK_SEARCH query detected, search_keywords:", search_keywords);
       const response = await searchSavedLinks(supabase, search_keywords || null, project_name);
 
-      if (callback_url && job_id) {
-        await fetch(callback_url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ job_id, response }),
+      // If no links found, fall back to DOCUMENT_SEARCH instead of dead-ending
+      const isNoResults = response.startsWith("No saved web links found");
+      if (isNoResults) {
+        console.log("SAVED_LINK_SEARCH found zero results — falling back to DOCUMENT_SEARCH");
+        query_type = "DOCUMENT_SEARCH";
+      } else {
+        if (callback_url && job_id) {
+          await fetch(callback_url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ job_id, response }),
+          });
+        }
+
+        await supabase.from("retrieval_logs").insert({
+          thread_id: threadId || null,
+          user_id: userId || null,
+          question: message,
+          query_type: "SAVED_LINK_SEARCH",
+          normalized_project: project_name || null,
+        });
+
+        return new Response(JSON.stringify({ success: true, query_type: "SAVED_LINK_SEARCH" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-
-      await supabase.from("retrieval_logs").insert({
-        thread_id: threadId || null,
-        user_id: userId || null,
-        question: message,
-        query_type: "SAVED_LINK_SEARCH",
-        normalized_project: project_name || null,
-      });
-
-      return new Response(JSON.stringify({ success: true, query_type: "SAVED_LINK_SEARCH" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
     }
 
     // Retrieve context based on query type
