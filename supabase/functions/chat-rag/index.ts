@@ -753,50 +753,66 @@ function getYouTubeVideoId(url: string): string | null {
   } catch { return null; }
 }
 
+function parseTranscriptXml(xml: string): { start: number; text: string }[] {
+  const segments: { start: number; text: string }[] = [];
+  const matches = xml.matchAll(/<text start="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g);
+  for (const m of matches) {
+    segments.push({
+      start: parseFloat(m[1]),
+      text: m[2].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/<[^>]+>/g, '').trim(),
+    });
+  }
+  return segments;
+}
+
 async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; segments: { start: number; text: string }[] } | null> {
-  // Try primary free transcript API
-  const apis = [
-    `https://yt.vl.comp.nus.edu.sg/transcript?v=${videoId}`,
-    `https://youtubetranscript.com/?server_vid2=${videoId}`,
-  ];
-
-  for (const apiUrl of apis) {
-    try {
-      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-
-      const contentType = res.headers.get('content-type') || '';
-      let segments: { start: number; text: string }[] = [];
-
-      if (contentType.includes('application/json')) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          segments = data.map((s: any) => ({
-            start: parseFloat(s.start || s.offset || 0),
-            text: String(s.text || s.content || ''),
-          }));
-        } else if (data.transcript && Array.isArray(data.transcript)) {
-          segments = data.transcript.map((s: any) => ({
-            start: parseFloat(s.start || s.offset || 0),
-            text: String(s.text || s.content || ''),
-          }));
-        }
-      } else {
-        // XML response from youtubetranscript.com
-        const xml = await res.text();
-        const matches = xml.matchAll(/<text start="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g);
-        for (const m of matches) {
-          segments.push({ start: parseFloat(m[1]), text: m[2].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"') });
-        }
-      }
-
-      if (segments.length > 0) {
-        const fullText = segments.map(s => s.text).join(' ');
-        return { text: fullText, segments };
-      }
-    } catch (e) {
-      console.log(`Transcript API failed for ${apiUrl}:`, e);
+  // Method 1: youtube-transcript npm package via esm.sh (most reliable)
+  try {
+    console.log('VIDEO_SUMMARY: trying youtube-transcript package...');
+    const { YoutubeTranscript } = await import("https://esm.sh/youtube-transcript@1.3.0");
+    const result = await YoutubeTranscript.fetchTranscript(videoId);
+    if (Array.isArray(result) && result.length > 0) {
+      const segments = result.map((s: any) => ({
+        start: (s.offset || 0) / 1000,
+        text: String(s.text || ''),
+      }));
+      console.log(`VIDEO_SUMMARY: got ${segments.length} segments via youtube-transcript package`);
+      return { text: segments.map(s => s.text).join(' '), segments };
     }
+  } catch (e) {
+    console.log('VIDEO_SUMMARY: youtube-transcript package failed:', e instanceof Error ? e.message : e);
+  }
+
+  // Method 2: YouTube page scrape with consent cookie bypass
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+  try {
+    console.log('VIDEO_SUMMARY: trying YouTube page scrape...');
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
+      headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', 'Cookie': 'CONSENT=PENDING+987; SOCS=CAESEwgDEgk2NTAyMTk0NTkaAmVuIAEaBgiA_L-uBg' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (pageRes.ok) {
+      const html = await pageRes.text();
+      const captionMatch = html.match(/"captionTracks"\s*:\s*(\[.*?\])/);
+      if (captionMatch) {
+        const tracks = JSON.parse(captionMatch[1]);
+        const enTrack = tracks.find((t: any) => t.languageCode === 'en' || t.vssId?.includes('.en')) || tracks[0];
+        if (enTrack?.baseUrl) {
+          let captionUrl = enTrack.baseUrl.replace(/\\u0026/g, '&');
+          if (!captionUrl.includes('fmt=')) captionUrl += '&fmt=srv3';
+          const xmlRes = await fetch(captionUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) });
+          if (xmlRes.ok) {
+            const segments = parseTranscriptXml(await xmlRes.text());
+            if (segments.length > 0) {
+              console.log(`VIDEO_SUMMARY: scraped ${segments.length} segments from YouTube page`);
+              return { text: segments.map(s => s.text).join(' '), segments };
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.log('VIDEO_SUMMARY: YouTube page scrape failed:', e instanceof Error ? e.message : e);
   }
 
   return null;
