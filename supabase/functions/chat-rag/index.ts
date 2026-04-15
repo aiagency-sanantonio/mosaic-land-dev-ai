@@ -24,6 +24,8 @@ DOCUMENT_SEARCH — specific document content, contracts, proposals, surveys
 
 HYBRID — needs both structured data and documents (e.g. "full status update for X project")
 
+SAVED_LINK_SEARCH — user is asking about saved web links, bookmarks, or websites the team has saved (e.g. "what links do we have for Fischer Ranch", "find saved link for TCEQ", "show me vendor links")
+
 CLARIFY — too ambiguous. For any "due diligence cost" or "DD cost" question without specified scope, set clarify_question to: "Which due diligence components do you want to include? Survey, geotechnical investigation, civil engineering, Phase I ESA, master development plan, or all of the above?"
 
 If the chat history shows the assistant just asked a clarifying question and the user's current message is a short follow-up answer (e.g. "all", "yes", "all of the above", a project name, or a list of components), do NOT return CLARIFY. Instead, combine the original question from chat history with the user's answer and classify the combined intent as AGGREGATE, STATUS_LOOKUP, DOCUMENT_SEARCH, or HYBRID accordingly.
@@ -33,7 +35,7 @@ Return: { "query_type": "...", "project_name": "name or null", "project_names": 
 If the question mentions two or more projects (e.g. "compare bids for Fischer Ranch and Clearwater"), populate "project_names" with ALL of them and set "project_name" to the first one. If only one project is mentioned, set "project_names" to null.`;
 
 interface ClassifyResult {
-  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY';
+  query_type: 'AGGREGATE' | 'STATUS_LOOKUP' | 'DOCUMENT_SEARCH' | 'HYBRID' | 'CLARIFY' | 'SAVED_LINK_SEARCH';
   project_name: string | null;
   project_names: string[] | null;
   clarify_question: string | null;
@@ -823,6 +825,51 @@ function extractTitle(content: string): string {
   return (lastSpace > 20 ? trimmed.slice(0, lastSpace) : trimmed) + '…';
 }
 
+// ── "Save this link" command detection ──
+function detectSaveLinkCommand(msg: string): boolean {
+  return /^(?:save this link|save that link|save this url|bookmark this)/i.test(msg.trim());
+}
+
+// ── Search saved web links ──
+async function searchSavedLinks(
+  supabaseAdmin: any,
+  query: string,
+  projectName: string | null
+): Promise<string> {
+  let q = supabaseAdmin
+    .from('saved_web_links')
+    .select('name, url, project_name, categories, notes, created_at')
+    .eq('is_active', true)
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  // Apply filters
+  if (projectName) {
+    q = q.ilike('project_name', `%${projectName}%`);
+  } else if (query) {
+    q = q.or(`name.ilike.%${query}%,project_name.ilike.%${query}%,url.ilike.%${query}%`);
+  }
+
+  const { data, error } = await q;
+  if (error) {
+    console.error('searchSavedLinks error:', error);
+    return 'I encountered an error searching the saved links.';
+  }
+  if (!data || data.length === 0) {
+    return 'No saved web links found matching your query. You can add links from the **Web Links** page or by using the "Save this link" button after a URL research.';
+  }
+
+  let md = `## Saved Web Links\n\nFound **${data.length}** link(s):\n\n`;
+  for (const link of data) {
+    md += `### [${link.name}](${link.url})\n`;
+    if (link.project_name) md += `**Project:** ${link.project_name}\n`;
+    if (link.categories?.length) md += `**Categories:** ${link.categories.join(', ')}\n`;
+    if (link.notes) md += `${link.notes}\n`;
+    md += `*Added ${new Date(link.created_at).toLocaleDateString()}*\n\n`;
+  }
+  return md;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -925,6 +972,31 @@ serve(async (req) => {
       }
     }
 
+    // ── Early intercept: "Save this link" command ──
+    if (detectSaveLinkCommand(message)) {
+      console.log('SAVE_LINK command detected');
+      // Extract the most recent URL from chat history
+      const historyUrls = extractPublicUrls(chatHistory || '');
+      const lastUrl = historyUrls.length > 0 ? historyUrls[historyUrls.length - 1] : null;
+
+      const responseText = lastUrl
+        ? `I found the most recently discussed URL:\n\n**${lastUrl}**\n\nPlease use the **"Save this link"** button below the URL research response, or visit the **Web Links** page to save it with a name, project, and categories.`
+        : `I couldn't find a recently researched URL in this conversation. Please paste a URL first, then ask me to save it. You can also save links directly from the **Web Links** page.`;
+
+      if (callback_url && job_id) {
+        await fetch(callback_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id, response: responseText }),
+        });
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, query_type: 'SAVE_LINK_COMMAND' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Fetch user profile and classify in parallel
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -993,6 +1065,34 @@ serve(async (req) => {
 
       return new Response(
         JSON.stringify({ success: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // SAVED_LINK_SEARCH — query saved_web_links and return formatted results
+    if (query_type === 'SAVED_LINK_SEARCH') {
+      console.log('SAVED_LINK_SEARCH query detected');
+      const searchTerm = project_name || message.replace(/(?:find|show|get|list|search|saved|links?|web|bookmarks?|for|me|do we have|what)/gi, '').trim();
+      const response = await searchSavedLinks(supabase, searchTerm, project_name);
+
+      if (callback_url && job_id) {
+        await fetch(callback_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id, response }),
+        });
+      }
+
+      await supabase.from('retrieval_logs').insert({
+        thread_id: threadId || null,
+        user_id: userId || null,
+        question: message,
+        query_type: 'SAVED_LINK_SEARCH',
+        normalized_project: project_name || null,
+      });
+
+      return new Response(
+        JSON.stringify({ success: true, query_type: 'SAVED_LINK_SEARCH' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
