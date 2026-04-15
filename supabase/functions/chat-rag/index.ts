@@ -780,7 +780,7 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
       console.log(`VIDEO_SUMMARY: trying InnerTube ${client.clientName} client...`);
       const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': client.ua },
+        headers: { 'Content-Type': 'application/json', 'User-Agent': client.ua, 'Cookie': 'CONSENT=PENDING+987; SOCS=CAESEwgDEgk2NTAyMTk0NTkaAmVuIAEaBgiA_L-uBg' },
         body: JSON.stringify({
           context: {
             client: { hl: 'en', gl: 'US', clientName: client.clientName, clientVersion: client.clientVersion }
