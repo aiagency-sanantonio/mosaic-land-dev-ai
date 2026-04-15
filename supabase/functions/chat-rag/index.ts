@@ -928,6 +928,57 @@ async function searchSavedLinks(
   return md;
 }
 
+// ── Multi-step plan executor ──
+async function executeMultiStepPlan(
+  plan: PlanStep[],
+  supabaseAdmin: any,
+  userMessage: string,
+  chatHistory: string,
+  projectName: string | null,
+): Promise<string> {
+  console.log(`executeMultiStepPlan: ${plan.length} steps`, JSON.stringify(plan));
+
+  let foundUrl: string | null = null;
+  let lastResult = '';
+
+  for (let i = 0; i < plan.length; i++) {
+    const step = plan[i];
+    console.log(`Plan step ${i + 1}/${plan.length}: action=${step.action}`);
+
+    if (step.action === 'SAVED_LINK_SEARCH') {
+      const searchResult = await searchSavedLinks(supabaseAdmin, step.search_keywords || null, projectName);
+      lastResult = searchResult;
+
+      // Extract the first URL from the saved links result
+      const urlMatch = searchResult.match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/);
+      if (urlMatch) {
+        foundUrl = urlMatch[2];
+        console.log(`Plan step ${i + 1}: found URL from saved links: ${foundUrl}`);
+      } else {
+        console.log(`Plan step ${i + 1}: no URL found in saved links results`);
+      }
+    } else if (step.action === 'URL_RESEARCH') {
+      const targetUrl = step.url || foundUrl;
+      if (!targetUrl) {
+        console.log(`Plan step ${i + 1}: URL_RESEARCH skipped — no URL available`);
+        continue;
+      }
+
+      const question = step.question || userMessage;
+      console.log(`Plan step ${i + 1}: researching URL=${targetUrl}, question=${question}`);
+
+      const research = await summarizeUrlWithPerplexity({
+        url: targetUrl,
+        userMessage: question,
+        chatHistory,
+      });
+      lastResult = research.text;
+    }
+  }
+
+  return lastResult;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
