@@ -766,61 +766,33 @@ function parseTranscriptXml(xml: string): { start: number; text: string }[] {
 }
 
 async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; segments: { start: number; text: string }[] } | null> {
-  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
-  const CONSENT_COOKIE = 'CONSENT=PENDING+987; SOCS=CAESEwgDEgk2NTAyMTk0NTkaAmVuIAEaBgiA_L-uBg';
-
-  // Method 1: Invidious API instances (reliable from server-side, no geo-blocking)
-  const invidiousInstances = [
-    'https://inv.nadeko.net',
-    'https://invidious.nerdvpn.de',
-    'https://vid.puffyan.us',
-    'https://invidious.snopyta.org',
-  ];
-  for (const instance of invidiousInstances) {
-    try {
-      console.log(`VIDEO_SUMMARY: trying Invidious ${instance}...`);
-      const res = await fetch(`${instance}/api/v1/captions/${videoId}`, {
-        signal: AbortSignal.timeout(6000),
-      });
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (!data.captions || data.captions.length === 0) {
-        console.log(`VIDEO_SUMMARY: Invidious ${instance} returned no captions`);
-        continue;
-      }
-      // Find English caption
-      const enCaption = data.captions.find((c: any) => c.language_code === 'en' || c.label?.toLowerCase().includes('english')) || data.captions[0];
-      if (!enCaption?.url) continue;
-      // Fetch the actual subtitle content - Invidious returns VTT or SRV3
-      const captionUrl = enCaption.url.startsWith('http') ? enCaption.url : `${instance}${enCaption.url}`;
-      const subRes = await fetch(captionUrl, { signal: AbortSignal.timeout(6000) });
-      if (!subRes.ok) continue;
-      const subText = await subRes.text();
-      // Try XML format first
-      let segments = parseTranscriptXml(subText);
-      // Try VTT format if XML didn't work
-      if (segments.length === 0) {
-        segments = parseVttTranscript(subText);
-      }
-      if (segments.length > 0) {
-        console.log(`VIDEO_SUMMARY: got ${segments.length} segments via Invidious ${instance}`);
-        return { text: segments.map(s => s.text).join(' '), segments };
-      }
-    } catch (e) {
-      console.log(`VIDEO_SUMMARY: Invidious ${instance} failed:`, e instanceof Error ? e.message : e);
+  // Method 1: youtube-transcript npm package via esm.sh (most reliable)
+  try {
+    console.log('VIDEO_SUMMARY: trying youtube-transcript package...');
+    const { YoutubeTranscript } = await import("https://esm.sh/youtube-transcript@1.3.0");
+    const result = await YoutubeTranscript.fetchTranscript(videoId);
+    if (Array.isArray(result) && result.length > 0) {
+      const segments = result.map((s: any) => ({
+        start: (s.offset || 0) / 1000,
+        text: String(s.text || ''),
+      }));
+      console.log(`VIDEO_SUMMARY: got ${segments.length} segments via youtube-transcript package`);
+      return { text: segments.map(s => s.text).join(' '), segments };
     }
+  } catch (e) {
+    console.log('VIDEO_SUMMARY: youtube-transcript package failed:', e instanceof Error ? e.message : e);
   }
 
   // Method 2: YouTube page scrape with consent cookie bypass
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
   try {
     console.log('VIDEO_SUMMARY: trying YouTube page scrape...');
     const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
-      headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', 'Cookie': CONSENT_COOKIE },
+      headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9', 'Cookie': 'CONSENT=PENDING+987; SOCS=CAESEwgDEgk2NTAyMTk0NTkaAmVuIAEaBgiA_L-uBg' },
       signal: AbortSignal.timeout(10000),
     });
     if (pageRes.ok) {
       const html = await pageRes.text();
-      console.log(`VIDEO_SUMMARY: page HTML length=${html.length}, has captionTracks=${html.includes('captionTracks')}`);
       const captionMatch = html.match(/"captionTracks"\s*:\s*(\[.*?\])/);
       if (captionMatch) {
         const tracks = JSON.parse(captionMatch[1]);
@@ -830,8 +802,7 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
           if (!captionUrl.includes('fmt=')) captionUrl += '&fmt=srv3';
           const xmlRes = await fetch(captionUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) });
           if (xmlRes.ok) {
-            const xml = await xmlRes.text();
-            const segments = parseTranscriptXml(xml);
+            const segments = parseTranscriptXml(await xmlRes.text());
             if (segments.length > 0) {
               console.log(`VIDEO_SUMMARY: scraped ${segments.length} segments from YouTube page`);
               return { text: segments.map(s => s.text).join(' '), segments };
@@ -844,59 +815,7 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
     console.log('VIDEO_SUMMARY: YouTube page scrape failed:', e instanceof Error ? e.message : e);
   }
 
-  // Method 3: InnerTube player API with multiple clients
-  const clients = [
-    { clientName: 'WEB', clientVersion: '2.20240313.05.00', ua: UA },
-    { clientName: 'ANDROID', clientVersion: '19.09.37', ua: 'com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip' },
-  ];
-  for (const client of clients) {
-    try {
-      const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': client.ua, 'Cookie': CONSENT_COOKIE },
-        body: JSON.stringify({ context: { client: { hl: 'en', gl: 'US', clientName: client.clientName, clientVersion: client.clientVersion } }, videoId }),
-        signal: AbortSignal.timeout(8000),
-      });
-      if (playerRes.ok) {
-        const playerData = await playerRes.json();
-        const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-        if (Array.isArray(tracks) && tracks.length > 0) {
-          const enTrack = tracks.find((t: any) => t.languageCode === 'en') || tracks[0];
-          if (enTrack?.baseUrl) {
-            let captionUrl = enTrack.baseUrl;
-            if (!captionUrl.includes('fmt=')) captionUrl += '&fmt=srv3';
-            const xmlRes = await fetch(captionUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) });
-            if (xmlRes.ok) {
-              const segments = parseTranscriptXml(await xmlRes.text());
-              if (segments.length > 0) {
-                console.log(`VIDEO_SUMMARY: got ${segments.length} segments via InnerTube ${client.clientName}`);
-                return { text: segments.map(s => s.text).join(' '), segments };
-              }
-            }
-          }
-        }
-      }
-    } catch (_) { /* skip */ }
-  }
-
   return null;
-}
-
-function parseVttTranscript(vtt: string): { start: number; text: string }[] {
-  const segments: { start: number; text: string }[] = [];
-  const blocks = vtt.split(/\n\n+/);
-  for (const block of blocks) {
-    const lines = block.trim().split('\n');
-    const timeLine = lines.find(l => l.includes('-->'));
-    if (!timeLine) continue;
-    const timeMatch = timeLine.match(/(\d{2}):(\d{2}):(\d{2})[.,](\d{3})/);
-    if (!timeMatch) continue;
-    const start = parseInt(timeMatch[1]) * 3600 + parseInt(timeMatch[2]) * 60 + parseInt(timeMatch[3]) + parseInt(timeMatch[4]) / 1000;
-    const textLines = lines.filter(l => !l.includes('-->') && !/^\d+$/.test(l.trim()));
-    const text = textLines.join(' ').replace(/<[^>]+>/g, '').trim();
-    if (text) segments.push({ start, text });
-  }
-  return segments;
 }
 
 function compressTranscript(segments: { start: number; text: string }[]): string {
