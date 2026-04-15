@@ -1,34 +1,43 @@
 
 
-## Plan: Fix YouTube Transcript Fetching
+## Plan: Use Perplexity to Fetch YouTube Transcripts
 
 ### Problem
-Both transcript APIs (`yt.vl.comp.nus.edu.sg` and `youtubetranscript.com`) are failing. The first has a DNS resolution error (host is down), and the second returns no usable data. This causes every YouTube summary to return the "couldn't access transcript" fallback.
+YouTube blocks transcript requests from cloud IPs (Supabase runs on AWS). All direct scraping methods fail.
 
 ### Solution
-Replace the two broken third-party APIs with YouTube's own internal `timedtext` API, which is what all transcript services use under the hood. The approach:
-
-1. Fetch the YouTube video page HTML to extract caption track metadata
-2. Parse the `captionTracks` data from the page's embedded player config
-3. Fetch the actual transcript XML from YouTube's `timedtext` endpoint directly
-4. Keep the broken APIs as last-resort fallbacks (they may come back online)
+Use Perplexity `sonar` as a transcript extraction tool — it has its own crawling infra that can access YouTube. Ask it to return **only the raw transcript text** (not a summary), then feed that to Haiku for the cheap summarization as before.
 
 ### Changes
 
 **File: `supabase/functions/chat-rag/index.ts`**
 
-Replace the `fetchYouTubeTranscript` function (~lines 756-803) with a new implementation:
+Replace the body of `fetchYouTubeTranscript` (~lines 768-818) with:
 
-1. **Primary method**: Fetch `https://www.youtube.com/watch?v={videoId}` with a browser-like User-Agent, extract the `captionTracks` JSON from the page source using regex, then fetch the transcript XML from the `baseUrl` in that data
-2. **Secondary method**: Try YouTube's direct timedtext endpoint `https://www.youtube.com/api/timedtext?v={videoId}&lang=en&fmt=srv3`
-3. **Tertiary fallback**: Keep existing two APIs as last-resort options
+1. **Primary method**: Call Perplexity `sonar` with a prompt like:
+   ```
+   "Extract the full spoken transcript/captions from this YouTube video: https://www.youtube.com/watch?v={videoId}. Return ONLY the raw transcript text, no commentary, no summary. If captions are unavailable, respond with exactly: NO_TRANSCRIPT"
+   ```
+   - Temperature: 0 (factual extraction, not creative)
+   - Parse the response — if it contains `NO_TRANSCRIPT`, return null
+   - Otherwise, split the text into pseudo-segments (every ~30 words = one segment, estimate timestamps)
 
-The XML parsing logic already in the function (lines 785-790) works correctly for YouTube's native XML format, so that stays the same.
+2. **Fallback**: Keep existing direct scrape methods as secondary attempts (they may work from non-cloud environments in the future)
+
+### Cost Impact
+- Perplexity `sonar` call for transcript extraction: minimal (short prompt, ~1-2K output tokens)
+- Still cheaper than sending the video to a paid transcript API
+- Haiku summarization cost stays the same (~$0.0003 per call)
+- Total cost per YouTube summary: one `sonar` call + one Haiku call
+
+### What Stays the Same
+- `compressTranscript`, `summarizeTranscriptCheap`, `shouldResearchVideo`, `researchVideoClaimsWithPerplexity` — all unchanged
+- The VIDEO_SUMMARY intercept logic in the main handler — unchanged
+- Frontend — unchanged
+- Response format — unchanged
 
 ### Technical Details
-- YouTube's video page embeds `"captionTracks":[{...}]` in the page HTML — we extract the first English track's `baseUrl`
-- The transcript XML uses `<text start="..." dur="...">content</text>` format — already handled by existing parser
-- User-Agent header needed to avoid YouTube returning a simplified page
-- No new dependencies or secrets required
-- All other code (compress, summarize, research, intercept) remains unchanged
+- Since Perplexity returns plain text (not timestamped segments), we generate synthetic segments by splitting every ~30 words with estimated timestamps — this keeps `compressTranscript` working
+- The `sonar` prompt is deliberately minimal to keep token usage low
+- `PERPLEXITY_API_KEY` is already available (connected via connector)
 
