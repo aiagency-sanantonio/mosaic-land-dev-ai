@@ -1,4 +1,4 @@
-import { Mountain, FileSearch, Map, Building2 } from 'lucide-react';
+import { Mountain, FileSearch, Map, Building2, Link } from 'lucide-react';
 
 export function EmptyState() {
   const suggestions = [
