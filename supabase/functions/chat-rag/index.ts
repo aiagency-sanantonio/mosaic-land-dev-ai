@@ -823,8 +823,12 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
   // Method 2: Scrape YouTube page for captionTracks (fallback)
   try {
     console.log('VIDEO_SUMMARY: trying YouTube page scrape for captions...');
-    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
+    const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
+      headers: {
+        'User-Agent': UA,
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'CONSENT=PENDING+987; SOCS=CAESEwgDEgk2NTAyMTk0NTkaAmVuIAEaBgiA_L-uBg',
+      },
       signal: AbortSignal.timeout(10000),
     });
     if (pageRes.ok) {
