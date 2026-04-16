@@ -334,7 +334,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
   const errors: { file: string; error: string }[] = [];
   const activity: { file: string; status: string }[] = [];
 
-  for (const file of unindexedFiles) {
+  async function processFile(file: { file_path: string; file_name: string; file_extension: string | null; file_size_bytes: number | null }) {
     const ext = (file.file_extension || '').toLowerCase().replace('.', '');
     const filePath = file.file_path;
     const fileName = file.file_name;
@@ -346,7 +346,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       }, { onConflict: 'file_path' });
       skipped++;
       activity.push({ file: fileName || filePath, status: 'skipped' });
-      continue;
+      return;
     }
 
     if (ext === 'doc') {
@@ -356,7 +356,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       }, { onConflict: 'file_path' });
       skipped++;
       activity.push({ file: fileName || filePath, status: 'skipped' });
-      continue;
+      return;
     }
 
     if (ext === 'pdf' && file.file_size_bytes && file.file_size_bytes > MAX_PDF_SIZE_BYTES) {
@@ -367,7 +367,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       }, { onConflict: 'file_path' });
       skipped++;
       activity.push({ file: fileName || filePath, status: 'skipped' });
-      continue;
+      return;
     }
 
     if (EXPORT_EXTENSIONS.has(ext) && ext !== 'pdf' && file.file_size_bytes && file.file_size_bytes > MAX_OFFICE_SIZE_BYTES) {
@@ -378,7 +378,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       }, { onConflict: 'file_path' });
       skipped++;
       activity.push({ file: fileName || filePath, status: 'skipped' });
-      continue;
+      return;
     }
 
     try {
@@ -456,6 +456,16 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       activity.push({ file: fileName || filePath, status: 'failed' });
     }
   }
+
+  // Process files with bounded concurrency
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(FILE_CONCURRENCY, unindexedFiles.length) }, async () => {
+    while (cursor < unindexedFiles.length) {
+      const idx = cursor++;
+      await processFile(unindexedFiles[idx]);
+    }
+  });
+  await Promise.all(workers);
 
   // Get remaining count
   const { count: remainingCount } = await supabase
