@@ -1,38 +1,43 @@
 
 
-## Plan: Fix Missing Dropbox Links in Chat Responses
+## Plan: Fix Broken Dropbox Links (URL Encoding)
 
 ### Root Cause
 
-The `formatDocs` function in `chat-rag/index.ts` (line 643) calls `buildDropboxUrl(d.file_path)` to generate Dropbox links. But the documents returned by `search-ranked-documents` don't include `file_path` — they include a pre-built `file_url` field instead. So `d.file_path` is always `undefined`, `buildDropboxUrl` returns `null`, and no links appear in the response.
+`buildDropboxUrl` in both `search-ranked-documents` and `chat-rag` generates URLs with unencoded parentheses. When the AI response contains a markdown link like:
+
+```text
+[View](https://www.dropbox.com/home/1-Projects/Clearwater%20Creek%20(FM%202538)/file.pdf)
+```
+
+The markdown parser sees the `)` after `2538` as the closing paren of the link syntax, producing a truncated/broken URL. Clicking it sends you to a nonexistent Dropbox path → "refused to connect."
 
 ### Fix
 
-Update `formatDocs` to use `d.file_url` (the pre-computed Dropbox URL from search-ranked-documents) instead of trying to rebuild it from a nonexistent `file_path`.
+Replace `encodeURI(filePath)` with segment-by-segment `encodeURIComponent` in both `buildDropboxUrl` functions. `encodeURIComponent` encodes `(` → `%28` and `)` → `%29`, which prevents markdown parsing conflicts while keeping the URL valid for Dropbox.
 
-### Changes — `supabase/functions/chat-rag/index.ts`
+### Changes
 
-**One-line fix in `formatDocs`** (~line 643):
+| File | Change |
+|------|--------|
+| `supabase/functions/search-ranked-documents/index.ts` | Update `buildDropboxUrl` to use per-segment `encodeURIComponent` |
+| `supabase/functions/chat-rag/index.ts` | Verify existing `buildDropboxUrl` already uses `encodeURIComponent` (it does — no change needed) |
 
+The `search-ranked-documents` fix (1 line):
 ```typescript
 // Before:
-const dbxUrl = buildDropboxUrl(d.file_path);
+return `https://www.dropbox.com/home${encodeURI(filePath)}`;
 
 // After:
-const dbxUrl = d.file_url || buildDropboxUrl(d.file_path);
+return `https://www.dropbox.com/home${filePath.split('/').map(s => encodeURIComponent(s)).join('/')}`;
 ```
-
-This uses the pre-built URL when available and falls back to building one from `file_path` for any other code paths that might still pass raw documents.
 
 ### What stays the same
 - No frontend changes
 - No database changes
-- `search-ranked-documents` unchanged
-- System prompt source citation instructions unchanged
-- All other retrieval paths (aggregate, status, bids) already build their own Dropbox URLs correctly
+- `chat-rag/buildDropboxUrl` already uses `encodeURIComponent` — unchanged
+- All other retrieval logic unchanged
 
-### Files changed
-| File | Change |
-|------|--------|
-| `supabase/functions/chat-rag/index.ts` | Fix `formatDocs` to use `d.file_url` from search results |
+### Testing note
+After deploying, also test on the **published URL** (`mosaic-land-dev-ai.lovable.app`) rather than the preview iframe, since iframe sandboxing can independently block external navigation.
 
