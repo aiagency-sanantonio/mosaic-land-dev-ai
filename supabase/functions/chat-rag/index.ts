@@ -640,7 +640,7 @@ function formatDocs(docs: any[]): string {
   if (docs.length === 0) return "No relevant documents found.";
   return docs
     .map((d: any, i: number) => {
-      const dbxUrl = buildDropboxUrl(d.file_path);
+      const dbxUrl = d.file_url || buildDropboxUrl(d.file_path);
       const linkPart = dbxUrl ? ` | [View in Dropbox](${dbxUrl})` : "";
       return `[Source ${i + 1}] ${d.file_name || "Unknown"} (${d.source_type || "document"}, ${d.document_date || "no date"})${linkPart}\n${d.content || ""}`;
     })
