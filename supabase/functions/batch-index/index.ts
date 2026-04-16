@@ -13,10 +13,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 30;
+const FILE_CONCURRENCY = 3;
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
-const EMBEDDING_BATCH_SIZE = 5;
+const EMBEDDING_BATCH_SIZE = 20; // OpenAI allows up to 2048 inputs per request
 const PER_FILE_TIMEOUT_MS = 45_000;
 const MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024;
 const MAX_OFFICE_SIZE_BYTES = 20 * 1024 * 1024;
@@ -114,16 +115,18 @@ function splitText(text: string): string[] {
   return chunks.filter(c => c.trim().length > 0);
 }
 
-async function generateEmbedding(text: string, apiKey: string, retries = 3): Promise<number[]> {
+async function embedBatchRequest(inputs: string[], apiKey: string, retries = 3): Promise<number[][]> {
   for (let attempt = 0; attempt < retries; attempt++) {
     const res = await fetch('https://api.openai.com/v1/embeddings', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'text-embedding-3-small', input: text }),
+      body: JSON.stringify({ model: 'text-embedding-3-small', input: inputs }),
     });
     if (res.ok) {
       const data = await res.json();
-      return data.data[0].embedding;
+      // OpenAI returns results in input order, but sort by index to be safe
+      const sorted = [...data.data].sort((a: { index: number }, b: { index: number }) => a.index - b.index);
+      return sorted.map((d: { embedding: number[] }) => d.embedding);
     }
     const errText = await res.text();
     if ((res.status === 429 || res.status >= 500) && attempt < retries - 1) {
@@ -139,9 +142,8 @@ async function generateEmbeddingsBatch(texts: string[], apiKey: string): Promise
   const results: number[][] = [];
   for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
     const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-    const batchResults = await Promise.all(batch.map(t => generateEmbedding(t, apiKey)));
+    const batchResults = await embedBatchRequest(batch, apiKey);
     results.push(...batchResults);
-    if (i + EMBEDDING_BATCH_SIZE < texts.length) await new Promise(r => setTimeout(r, 200));
   }
   return results;
 }
@@ -332,7 +334,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
   const errors: { file: string; error: string }[] = [];
   const activity: { file: string; status: string }[] = [];
 
-  for (const file of unindexedFiles) {
+  async function processFile(file: { file_path: string; file_name: string; file_extension: string | null; file_size_bytes: number | null }) {
     const ext = (file.file_extension || '').toLowerCase().replace('.', '');
     const filePath = file.file_path;
     const fileName = file.file_name;
@@ -344,7 +346,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       }, { onConflict: 'file_path' });
       skipped++;
       activity.push({ file: fileName || filePath, status: 'skipped' });
-      continue;
+      return;
     }
 
     if (ext === 'doc') {
@@ -354,7 +356,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       }, { onConflict: 'file_path' });
       skipped++;
       activity.push({ file: fileName || filePath, status: 'skipped' });
-      continue;
+      return;
     }
 
     if (ext === 'pdf' && file.file_size_bytes && file.file_size_bytes > MAX_PDF_SIZE_BYTES) {
@@ -365,7 +367,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       }, { onConflict: 'file_path' });
       skipped++;
       activity.push({ file: fileName || filePath, status: 'skipped' });
-      continue;
+      return;
     }
 
     if (EXPORT_EXTENSIONS.has(ext) && ext !== 'pdf' && file.file_size_bytes && file.file_size_bytes > MAX_OFFICE_SIZE_BYTES) {
@@ -376,7 +378,7 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       }, { onConflict: 'file_path' });
       skipped++;
       activity.push({ file: fileName || filePath, status: 'skipped' });
-      continue;
+      return;
     }
 
     try {
@@ -454,6 +456,16 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
       activity.push({ file: fileName || filePath, status: 'failed' });
     }
   }
+
+  // Process files with bounded concurrency
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(FILE_CONCURRENCY, unindexedFiles.length) }, async () => {
+    while (cursor < unindexedFiles.length) {
+      const idx = cursor++;
+      await processFile(unindexedFiles[idx]);
+    }
+  });
+  await Promise.all(workers);
 
   // Get remaining count
   const { count: remainingCount } = await supabase
@@ -568,16 +580,15 @@ serve(async (req) => {
           const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
           const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
           const fnUrl = `${supabaseUrl}/functions/v1/batch-index`;
-          // Delayed self-chain — EdgeRuntime.waitUntil ensures it completes
-          chainPromise = new Promise<void>(resolve => setTimeout(resolve, 500))
-            .then(() => fetch(fnUrl, {
+          // Self-chain immediately — EdgeRuntime.waitUntil ensures it completes
+          chainPromise = fetch(fnUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseAnonKey}`,
               },
               body: JSON.stringify({ cron: true }),
-            }))
+            })
             .then(r => r.text())
             .then(() => console.log('Self-chain triggered successfully'))
             .catch(err => console.error('Self-chain fetch failed:', err));
