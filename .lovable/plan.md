@@ -1,39 +1,38 @@
 
 
-## Plan: Fix SAVED_LINK_SEARCH Misclassification + Add Fallback
+## Plan: Fix Missing Dropbox Links in Chat Responses
 
-### Two Problems
+### Root Cause
 
-**Problem 1 — Misclassification:** "Who is Mosaic Land Development?" is classified as `SAVED_LINK_SEARCH` because the classifier sees it as an entity lookup. But the user is asking a general knowledge question about the company — this should be `DOCUMENT_SEARCH` (to check indexed docs) or handled by general LLM knowledge.
+The `formatDocs` function in `chat-rag/index.ts` (line 643) calls `buildDropboxUrl(d.file_path)` to generate Dropbox links. But the documents returned by `search-ranked-documents` don't include `file_path` — they include a pre-built `file_url` field instead. So `d.file_path` is always `undefined`, `buildDropboxUrl` returns `null`, and no links appear in the response.
 
-**Problem 2 — Dead-end on zero results:** When `SAVED_LINK_SEARCH` finds no matching links, it returns a hard-coded "No saved web links found" message and exits immediately. There's no fallback to document search, unlike `URL_RESEARCH` which we already fixed.
+### Fix
+
+Update `formatDocs` to use `d.file_url` (the pre-computed Dropbox URL from search-ranked-documents) instead of trying to rebuild it from a nonexistent `file_path`.
 
 ### Changes — `supabase/functions/chat-rag/index.ts`
 
-**1. Update classifier prompt to narrow `SAVED_LINK_SEARCH` scope**
+**One-line fix in `formatDocs`** (~line 643):
 
-Add explicit guidance: `SAVED_LINK_SEARCH` is ONLY for when the user explicitly asks about saved/bookmarked links (e.g. "what links do we have", "show me saved links", "find the TCEQ link we saved"). General "who is X" or "what is X" questions about companies, entities, or concepts are `DOCUMENT_SEARCH`, not `SAVED_LINK_SEARCH`.
+```typescript
+// Before:
+const dbxUrl = buildDropboxUrl(d.file_path);
 
-**2. Add fallback when `SAVED_LINK_SEARCH` finds zero results**
-
-Instead of returning the "no links found" dead-end, fall back to `DOCUMENT_SEARCH` so the system can try to answer from indexed documents or general knowledge. Change the flow:
-
-```
-if (filtered.length === 0) → don't return canned message
-  → instead, fall through to DOCUMENT_SEARCH retrieval pipeline
+// After:
+const dbxUrl = d.file_url || buildDropboxUrl(d.file_path);
 ```
 
-Implementation: In the main handler, when `SAVED_LINK_SEARCH` returns zero results, re-route `query_type` to `DOCUMENT_SEARCH` and continue instead of returning early. This mirrors the `URL_RESEARCH` fallback pattern already in place.
+This uses the pre-built URL when available and falls back to building one from `file_path` for any other code paths that might still pass raw documents.
 
 ### What stays the same
 - No frontend changes
 - No database changes
-- `searchSavedLinks` function itself unchanged
-- All other query type handlers unchanged
-- `URL_RESEARCH` fallback unchanged
+- `search-ranked-documents` unchanged
+- System prompt source citation instructions unchanged
+- All other retrieval paths (aggregate, status, bids) already build their own Dropbox URLs correctly
 
 ### Files changed
 | File | Change |
 |------|--------|
-| `supabase/functions/chat-rag/index.ts` | Narrow `SAVED_LINK_SEARCH` in classifier prompt; add zero-result fallback to `DOCUMENT_SEARCH` |
+| `supabase/functions/chat-rag/index.ts` | Fix `formatDocs` to use `d.file_url` from search results |
 
