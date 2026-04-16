@@ -88,7 +88,7 @@ function extractProjectName(filePath: string, metadata: any): string | null {
 function buildDropboxUrl(filePath: string): string | null {
   if (!filePath || !filePath.startsWith('/1-Projects')) return null;
   // Dropbox home links aren't predictable without file IDs, but we can use the search URL pattern
-  return `https://www.dropbox.com/home${encodeURI(filePath)}`;
+  return `https://www.dropbox.com/home${filePath.split('/').map(s => encodeURIComponent(s)).join('/')}`;
 }
 
 /** Check if path looks like an archive */
