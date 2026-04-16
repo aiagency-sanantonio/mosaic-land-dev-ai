@@ -467,16 +467,19 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
   });
   await Promise.all(workers);
 
-  // Get remaining count — exclude archived files since they're skipped by the indexer
+  // Get remaining count — both sides must use the same live-file filter (exclude archives)
+  // so we don't go negative when indexing_status carries legacy archived rows.
   const { count: liveTotal } = await supabase
     .from('dropbox_files')
     .select('id', { count: 'exact', head: true })
     .not('file_path', 'ilike', '%/_ARCHIVED/%')
     .not('file_path', 'ilike', '%/_archive/%');
-  const { count: indexedCount } = await supabase
+  const { count: liveIndexedCount } = await supabase
     .from('indexing_status')
-    .select('id', { count: 'exact', head: true });
-  const remaining = Math.max(0, (liveTotal || 0) - (indexedCount || 0));
+    .select('id', { count: 'exact', head: true })
+    .not('file_path', 'ilike', '%/_ARCHIVED/%')
+    .not('file_path', 'ilike', '%/_archive/%');
+  const remaining = Math.max(0, (liveTotal || 0) - (liveIndexedCount || 0));
 
   return { processed, skipped, failed, remaining, errors, activity };
 }
