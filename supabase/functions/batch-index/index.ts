@@ -115,16 +115,18 @@ function splitText(text: string): string[] {
   return chunks.filter(c => c.trim().length > 0);
 }
 
-async function generateEmbedding(text: string, apiKey: string, retries = 3): Promise<number[]> {
+async function embedBatchRequest(inputs: string[], apiKey: string, retries = 3): Promise<number[][]> {
   for (let attempt = 0; attempt < retries; attempt++) {
     const res = await fetch('https://api.openai.com/v1/embeddings', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'text-embedding-3-small', input: text }),
+      body: JSON.stringify({ model: 'text-embedding-3-small', input: inputs }),
     });
     if (res.ok) {
       const data = await res.json();
-      return data.data[0].embedding;
+      // OpenAI returns results in input order, but sort by index to be safe
+      const sorted = [...data.data].sort((a: { index: number }, b: { index: number }) => a.index - b.index);
+      return sorted.map((d: { embedding: number[] }) => d.embedding);
     }
     const errText = await res.text();
     if ((res.status === 429 || res.status >= 500) && attempt < retries - 1) {
@@ -140,9 +142,8 @@ async function generateEmbeddingsBatch(texts: string[], apiKey: string): Promise
   const results: number[][] = [];
   for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
     const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
-    const batchResults = await Promise.all(batch.map(t => generateEmbedding(t, apiKey)));
+    const batchResults = await embedBatchRequest(batch, apiKey);
     results.push(...batchResults);
-    if (i + EMBEDDING_BATCH_SIZE < texts.length) await new Promise(r => setTimeout(r, 200));
   }
   return results;
 }
