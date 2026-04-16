@@ -580,16 +580,15 @@ serve(async (req) => {
           const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
           const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
           const fnUrl = `${supabaseUrl}/functions/v1/batch-index`;
-          // Delayed self-chain — EdgeRuntime.waitUntil ensures it completes
-          chainPromise = new Promise<void>(resolve => setTimeout(resolve, 500))
-            .then(() => fetch(fnUrl, {
+          // Self-chain immediately — EdgeRuntime.waitUntil ensures it completes
+          chainPromise = fetch(fnUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseAnonKey}`,
               },
               body: JSON.stringify({ cron: true }),
-            }))
+            })
             .then(r => r.text())
             .then(() => console.log('Self-chain triggered successfully'))
             .catch(err => console.error('Self-chain fetch failed:', err));
