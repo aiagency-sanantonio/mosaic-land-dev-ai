@@ -151,14 +151,16 @@ export default function AdminIndexing() {
   }, []);
 
   const fetchRealStats = useCallback(async () => {
-    // Exclude archived files from the denominator — they're intentionally skipped by the indexer
+    // ALL counts (numerator + denominator) exclude archived files so the math stays consistent.
+    // Legacy _ARCHIVED rows in indexing_status (from before the exclusion was added) would otherwise
+    // inflate success/skipped above the live-only denominator and produce nonsense like "130% indexed".
+    const notArchived = (q: any) =>
+      q.not('file_path', 'ilike', '%/_ARCHIVED/%').not('file_path', 'ilike', '%/_archive/%');
     const [successRes, skippedRes, failedRes, totalRes, archivedRes] = await Promise.all([
-      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success'),
-      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped'),
-      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'failed'),
-      supabase.from('dropbox_files').select('*', { count: 'exact', head: true })
-        .not('file_path', 'ilike', '%/_ARCHIVED/%')
-        .not('file_path', 'ilike', '%/_archive/%'),
+      notArchived(supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success')),
+      notArchived(supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped')),
+      notArchived(supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'failed')),
+      notArchived(supabase.from('dropbox_files').select('*', { count: 'exact', head: true })),
       supabase.from('dropbox_files').select('*', { count: 'exact', head: true })
         .or('file_path.ilike.%/_ARCHIVED/%,file_path.ilike.%/_archive/%'),
     ]);
@@ -173,8 +175,15 @@ export default function AdminIndexing() {
   }, []);
 
   const fetchExtractionProgress = useCallback(async () => {
-    const totalRes = await supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success');
-    const doneRes = await (supabase.from('indexing_status') as any).select('*', { count: 'exact', head: true }).eq('status', 'success').eq('structured_extracted', true);
+    // Live-only: archived successes are not eligible for extraction in the new pipeline
+    const totalRes = await supabase.from('indexing_status').select('*', { count: 'exact', head: true })
+      .eq('status', 'success')
+      .not('file_path', 'ilike', '%/_ARCHIVED/%')
+      .not('file_path', 'ilike', '%/_archive/%');
+    const doneRes = await (supabase.from('indexing_status') as any).select('*', { count: 'exact', head: true })
+      .eq('status', 'success').eq('structured_extracted', true)
+      .not('file_path', 'ilike', '%/_ARCHIVED/%')
+      .not('file_path', 'ilike', '%/_archive/%');
     setExtractionProgress({ done: doneRes.count ?? 0, total: totalRes.count ?? 0 });
   }, []);
 
@@ -183,11 +192,14 @@ export default function AdminIndexing() {
       'Scanned/image-only PDF - no extractable text',
       ...['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'gif', 'webp'].map(e => `Non-vectorizable format: .${e}`),
     ];
+    // Live-only OCR counts: archived skipped/scanned PDFs aren't candidates for re-processing
+    const notArchived = (q: any) =>
+      q.not('file_path', 'ilike', '%/_ARCHIVED/%').not('file_path', 'ilike', '%/_archive/%');
     const [remainingRes, completedRes, insufficientRes, failedRes] = await Promise.all([
-      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped').in('error_message', ocrErrors),
-      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success').contains('metadata', { ocr_source: 'openai' }),
-      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped').eq('error_message', 'OCR returned insufficient text (< 20 chars)'),
-      supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'failed').like('error_message', 'OCR failed%'),
+      notArchived(supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped').in('error_message', ocrErrors)),
+      notArchived(supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success').contains('metadata', { ocr_source: 'openai' })),
+      notArchived(supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped').eq('error_message', 'OCR returned insufficient text (< 20 chars)')),
+      notArchived(supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'failed').like('error_message', 'OCR failed%')),
     ]);
     setOcrEligible(remainingRes.count ?? 0);
     setOcrCompleted(completedRes.count ?? 0);
@@ -512,7 +524,12 @@ export default function AdminIndexing() {
         <div className="mb-6 p-3 rounded-lg border border-green-500/30 bg-green-500/10 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 text-green-500" />
-            <span className="text-sm font-medium text-foreground">Processing Enabled</span>
+            <div>
+              <span className="text-sm font-medium text-foreground">Background Processing Enabled</span>
+              <p className="text-xs text-muted-foreground">
+                Indexing, OCR, and Extraction jobs are allowed to run. Click "Pause All" to halt every background task immediately.
+              </p>
+            </div>
           </div>
           <Button variant="outline" size="sm" onClick={handlePauseAll} className="gap-2 text-orange-600 border-orange-300 hover:bg-orange-50">
             <PauseCircle className="h-4 w-4" /> Pause All
