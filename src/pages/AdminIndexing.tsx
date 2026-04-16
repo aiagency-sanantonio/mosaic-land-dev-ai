@@ -28,6 +28,7 @@ interface RealStats {
   skipped: number;
   failed: number;
   totalDropbox: number;
+  archivedExcluded: number;
   remaining: number;
 }
 
@@ -59,7 +60,7 @@ export default function AdminIndexing() {
   const [job, setJob] = useState<IndexingJob | null>(null);
   const [killSwitchActive, setKillSwitchActive] = useState(false);
   const [killSwitchId, setKillSwitchId] = useState<string | null>(null);
-  const [realStats, setRealStats] = useState<RealStats>({ success: 0, skipped: 0, failed: 0, totalDropbox: 0, remaining: 0 });
+  const [realStats, setRealStats] = useState<RealStats>({ success: 0, skipped: 0, failed: 0, totalDropbox: 0, archivedExcluded: 0, remaining: 0 });
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [loadingJob, setLoadingJob] = useState(true);
   const [zzScanning, setZzScanning] = useState(false);
@@ -150,19 +151,25 @@ export default function AdminIndexing() {
   }, []);
 
   const fetchRealStats = useCallback(async () => {
-    const [successRes, skippedRes, failedRes, totalRes] = await Promise.all([
+    // Exclude archived files from the denominator — they're intentionally skipped by the indexer
+    const [successRes, skippedRes, failedRes, totalRes, archivedRes] = await Promise.all([
       supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'success'),
       supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'skipped'),
       supabase.from('indexing_status').select('*', { count: 'exact', head: true }).eq('status', 'failed'),
-      supabase.from('dropbox_files').select('*', { count: 'exact', head: true }),
+      supabase.from('dropbox_files').select('*', { count: 'exact', head: true })
+        .not('file_path', 'ilike', '%/_ARCHIVED/%')
+        .not('file_path', 'ilike', '%/_archive/%'),
+      supabase.from('dropbox_files').select('*', { count: 'exact', head: true })
+        .or('file_path.ilike.%/_ARCHIVED/%,file_path.ilike.%/_archive/%'),
     ]);
     if (successRes.error || skippedRes.error || failedRes.error || totalRes.error) return;
     const success = successRes.count ?? 0;
     const skipped = skippedRes.count ?? 0;
     const failed = failedRes.count ?? 0;
     const totalDropbox = totalRes.count ?? 0;
+    const archivedExcluded = archivedRes.count ?? 0;
     const remaining = Math.max(0, totalDropbox - success - skipped - failed);
-    setRealStats({ success, skipped, failed, totalDropbox, remaining });
+    setRealStats({ success, skipped, failed, totalDropbox, archivedExcluded, remaining });
   }, []);
 
   const fetchExtractionProgress = useCallback(async () => {
@@ -530,6 +537,11 @@ export default function AdminIndexing() {
               <span>{formatPercent(indexingPercent)}% indexed</span>
               <span>{realStats.skipped.toLocaleString()} skipped</span>
             </div>
+            {realStats.archivedExcluded > 0 && (
+              <p className="text-[10px] text-muted-foreground mt-1.5 italic">
+                +{realStats.archivedExcluded.toLocaleString()} archived files excluded
+              </p>
+            )}
           </CardContent>
         </Card>
 
