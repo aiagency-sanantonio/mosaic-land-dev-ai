@@ -524,7 +524,12 @@ export default function AdminIndexing() {
         <div className="mb-6 p-3 rounded-lg border border-green-500/30 bg-green-500/10 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 text-green-500" />
-            <span className="text-sm font-medium text-foreground">Processing Enabled</span>
+            <div>
+              <span className="text-sm font-medium text-foreground">Background Processing Enabled</span>
+              <p className="text-xs text-muted-foreground">
+                Indexing, OCR, and Extraction jobs are allowed to run. Click "Pause All" to halt every background task immediately.
+              </p>
+            </div>
           </div>
           <Button variant="outline" size="sm" onClick={handlePauseAll} className="gap-2 text-orange-600 border-orange-300 hover:bg-orange-50">
             <PauseCircle className="h-4 w-4" /> Pause All
