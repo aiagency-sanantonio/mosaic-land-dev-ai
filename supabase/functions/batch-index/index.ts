@@ -13,10 +13,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 30;
+const FILE_CONCURRENCY = 3;
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
-const EMBEDDING_BATCH_SIZE = 5;
+const EMBEDDING_BATCH_SIZE = 20; // OpenAI allows up to 2048 inputs per request
 const PER_FILE_TIMEOUT_MS = 45_000;
 const MAX_PDF_SIZE_BYTES = 5 * 1024 * 1024;
 const MAX_OFFICE_SIZE_BYTES = 20 * 1024 * 1024;
