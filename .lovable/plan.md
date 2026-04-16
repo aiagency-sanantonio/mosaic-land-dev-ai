@@ -1,7 +1,5 @@
 
-The user wants to understand the remaining ~31k files before we run the indexing optimization. Let me query the database to get real stats on:
-1. How many remaining files are inside vs outside ARCHIVE folders
-2. File size distribution of the unindexed files
-3. Extension breakdown
 
-I'll use read-only tools (supabase--read_query) to gather this data, then present findings + the optimization plan together.
+The user confirms: skip `_ARCHIVED/` entirely for indexing, mirroring the sync exclusion. This means option (C) from earlier — exclude the archive root, only process the ~514 live files plus future live files. Combined with speed optimizations.
+
+Let me check the current sync exclusion logic to mirror it exactly.
