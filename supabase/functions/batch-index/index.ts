@@ -467,14 +467,16 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
   });
   await Promise.all(workers);
 
-  // Get remaining count
-  const { count: remainingCount } = await supabase
+  // Get remaining count — exclude archived files since they're skipped by the indexer
+  const { count: liveTotal } = await supabase
     .from('dropbox_files')
-    .select('id', { count: 'exact', head: true });
+    .select('id', { count: 'exact', head: true })
+    .not('file_path', 'ilike', '%/_ARCHIVED/%')
+    .not('file_path', 'ilike', '%/_archive/%');
   const { count: indexedCount } = await supabase
     .from('indexing_status')
     .select('id', { count: 'exact', head: true });
-  const remaining = Math.max(0, (remainingCount || 0) - (indexedCount || 0));
+  const remaining = Math.max(0, (liveTotal || 0) - (indexedCount || 0));
 
   return { processed, skipped, failed, remaining, errors, activity };
 }
@@ -605,7 +607,18 @@ serve(async (req) => {
         return response;
 
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'Unknown error';
+        // Capture full error context (message + stack + name) so last_error is debuggable
+        let errMsg: string;
+        if (err instanceof Error) {
+          errMsg = `${err.name}: ${err.message}`;
+          if (err.stack) {
+            const firstStackLine = err.stack.split('\n').slice(0, 3).join(' | ');
+            errMsg += ` [stack: ${firstStackLine}]`;
+          }
+        } else {
+          try { errMsg = `Non-Error thrown: ${JSON.stringify(err)}`; }
+          catch { errMsg = `Non-Error thrown: ${String(err)}`; }
+        }
         console.error('Cron batch error:', errMsg);
 
         // Only mark as permanently failed if token refresh credentials are invalid
