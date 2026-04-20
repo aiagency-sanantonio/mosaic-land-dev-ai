@@ -37,6 +37,7 @@ CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 EMBEDDING_BATCH_SIZE = 5
 DELAY_BETWEEN_FILES = 0.5  # seconds
+MAX_CHUNKS_PER_FILE = 50  # Hard cap to prevent storage bloat from any single file
 
 # Extensions that CANNOT be vectorized – will be marked "skipped"
 SKIP_EXTENSIONS = {
@@ -47,8 +48,10 @@ SKIP_EXTENSIONS = {
     "mov", "mp4", "avi", "wmv", "mkv", "flv", "m4v",
     # Audio
     "mp3", "wav", "aac", "flac", "ogg", "wma",
-    # CAD / GIS
+    # CAD / GIS (junk for vector search)
     "dwg", "dgn", "dxf", "shp", "shx", "dbf", "kmz", "kml",
+    # Web pages (mostly browser-saved noise)
+    "htm", "html",
     # Archives
     "zip", "rar", "7z", "tar", "gz", "bz2",
     # Fonts
@@ -443,8 +446,11 @@ def main():
                 update_indexing_status(supabase, fp, fn, "skipped", 0, "Insufficient content (< 50 chars)", {})
                 continue
 
-            # Chunk
+            # Chunk (with hard cap to prevent storage bloat)
             chunks = split_text(content)
+            if len(chunks) > MAX_CHUNKS_PER_FILE:
+                print(f"  {progress} ⚠  {fn} produced {len(chunks)} chunks — capping at {MAX_CHUNKS_PER_FILE}")
+                chunks = chunks[:MAX_CHUNKS_PER_FILE]
 
             # Extract metadata
             extracted_meta = extract_metadata(content)
