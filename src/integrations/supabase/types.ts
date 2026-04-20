@@ -812,7 +812,17 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      get_documents_storage_stats: { Args: never; Returns: Json }
       get_filter_options: { Args: never; Returns: Json }
+      get_top_bloated_files: {
+        Args: { p_limit?: number }
+        Returns: {
+          chunk_count: number
+          file_name: string
+          file_path: string
+          total_content_bytes: number
+        }[]
+      }
       get_unindexed_dropbox_files: {
         Args: {
           p_extension_filter?: string
