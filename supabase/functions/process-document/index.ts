@@ -11,6 +11,27 @@ const corsHeaders = {
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const EMBEDDING_BATCH_SIZE = 5;
+// Hard cap to prevent a single bloated file from consuming thousands of chunks
+const MAX_CHUNKS_PER_FILE = 50;
+
+// Skip junk extensions even if they slip past the upstream filter
+const SKIP_EXTENSIONS = new Set([
+  'shp', 'shx', 'dbf', 'kml', 'kmz', 'dwg', 'dxf', 'dgn',
+  'htm', 'html',
+  'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'ico', 'webp',
+  'mp4', 'mov', 'avi', 'wmv', 'mkv',
+  'mp3', 'wav', 'aac', 'flac', 'ogg',
+  'zip', 'rar', '7z', 'tar', 'gz',
+  'ttf', 'otf', 'woff', 'woff2',
+  'exe', 'dll', 'bin', 'dat', 'bak',
+]);
+
+function getExtension(name: string | null | undefined): string {
+  if (!name) return '';
+  const idx = name.lastIndexOf('.');
+  if (idx < 0) return '';
+  return name.slice(idx + 1).toLowerCase();
+}
 
 // ─── Text Splitting ───────────────────────────────────────────────────────────
 
@@ -451,6 +472,15 @@ serve(async (req) => {
       try { metadata = JSON.parse(rawMetadata); } catch { metadata = {}; }
     }
 
+    // Skip junk extensions outright
+    const ext = getExtension(file_name || file_path);
+    if (ext && SKIP_EXTENSIONS.has(ext)) {
+      console.log(`Skipping ${ext} file: ${file_name || file_path}`);
+      if (filePath) await updateIndexingStatus(supabase, filePath, fileName, 'skipped', 0, `Non-vectorizable extension: .${ext}`, {});
+      return new Response(JSON.stringify({ success: true, skipped: true, reason: `Non-vectorizable extension: .${ext}`, chunks_created: 0 }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     // Skip minimal content
     if (!content || content.trim().length < 50) {
       console.log(`Skipping file with insufficient content: ${file_name || file_path || 'unknown'}`);
@@ -478,8 +508,12 @@ serve(async (req) => {
       if (deleteError) console.error('Error deleting existing chunks:', deleteError);
     }
 
-    // Split & embed
-    const chunks = splitText(content);
+    // Split & embed (with hard cap)
+    let chunks = splitText(content);
+    if (chunks.length > MAX_CHUNKS_PER_FILE) {
+      console.warn(`⚠ File "${file_name}" produced ${chunks.length} chunks — capping at ${MAX_CHUNKS_PER_FILE}`);
+      chunks = chunks.slice(0, MAX_CHUNKS_PER_FILE);
+    }
     console.log(`Split into ${chunks.length} chunks`);
     const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
 

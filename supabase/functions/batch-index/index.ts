@@ -26,7 +26,7 @@ const MAX_TEXT_LENGTH = 100_000;
 const EXPORT_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'xls', 'pptx']);
 
 const TEXT_EXTENSIONS = new Set([
-  'txt', 'log', 'md', 'csv', 'html', 'htm', 'xml', 'json', 'rtf', 'eml',
+  'txt', 'log', 'md', 'csv', 'xml', 'json', 'rtf', 'eml',
 ]);
 
 const SKIP_EXTENSIONS = new Set([
@@ -36,11 +36,15 @@ const SKIP_EXTENSIONS = new Set([
   'mp3', 'wav', 'aac', 'flac', 'ogg', 'wma', 'dss',
   'zip', 'rar', '7z', 'tar', 'gz', 'bz2',
   'dwg', 'dxf', 'dgn', 'shp', 'shx', 'dbf', 'kml', 'kmz', 'dat',
+  'htm', 'html',
   'ttf', 'otf', 'woff', 'woff2', 'eot',
   'exe', 'dll', 'so', 'dylib', 'bin',
   'psd', 'ai', 'indd', 'sketch', 'fig',
   'msg', 'bak', 'mjs', 'out', 'results',
 ]);
+
+// Hard cap so a single huge file can't bloat the documents table
+const MAX_CHUNKS_PER_FILE = 50;
 
 const COST_PATTERN = /\$[\d,]+(?:\.\d{2})?/g;
 const DATE_PATTERN = /\b(?:0?[1-9]|1[0-2])[-\/](?:0?[1-9]|[12]\d|3[01])[-\/](?:19|20)?\d{2}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\b/gi;
