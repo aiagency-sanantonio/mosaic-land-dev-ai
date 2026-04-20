@@ -424,7 +424,11 @@ async function processBatch(supabase: ReturnType<typeof createClient>, openaiApi
 
           const extractedMetadata = extractMetadata(text);
           await supabase.from('documents').delete().eq('file_path', filePath);
-          const chunks = splitText(text);
+          let chunks = splitText(text);
+          if (chunks.length > MAX_CHUNKS_PER_FILE) {
+            console.warn(`⚠ ${fileName} produced ${chunks.length} chunks — capping at ${MAX_CHUNKS_PER_FILE}`);
+            chunks = chunks.slice(0, MAX_CHUNKS_PER_FILE);
+          }
           const embeddings = await generateEmbeddingsBatch(chunks, openaiApiKey);
           const documents = chunks.map((chunk, i) => ({
             content: chunk,
