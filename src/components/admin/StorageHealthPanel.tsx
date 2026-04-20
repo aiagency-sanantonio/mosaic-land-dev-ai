@@ -118,13 +118,13 @@ export function StorageHealthPanel() {
 
             {/* Cost warning */}
             {totalGB > 5 && (
-              <div className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
-                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+              <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-destructive mt-0.5" />
                 <div>
-                  <p className="font-medium text-amber-900 dark:text-amber-200">
+                  <p className="font-medium text-foreground">
                     Documents table is {stats.total_size_pretty}
                   </p>
-                  <p className="text-xs text-amber-800/80 dark:text-amber-200/80 mt-0.5">
+                  <p className="text-xs text-muted-foreground mt-0.5">
                     This drives most of your Cloud storage cost. Consider purging bloated files below.
                   </p>
                 </div>
