@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
+import { StorageHealthPanel } from '@/components/admin/StorageHealthPanel';
 import { toast } from 'sonner';
 
 interface IndexingJob {
@@ -722,6 +723,9 @@ export default function AdminIndexing() {
           )}
         </CardContent>
       </Card>
+
+      {/* Storage Health */}
+      <StorageHealthPanel />
 
       {/* Detail Sections */}
       <div className="space-y-3">
